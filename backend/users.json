@@ -1,0 +1,27 @@
+{
+  "admin": {
+    "username": "admin",
+    "full_name": "Administrator",
+    "hashed_password": "$pbkdf2-sha256$29000$T2ltzVmrNSZkzJnTem9NaQ$LwYM8jcZdNKobETC0ubhYebXCrexWmo6K/SSqXMJPtY",
+    "role": "admin",
+    "created_at": "2026-07-09T21:40:02.910001",
+    "active": true
+  },
+  "testuser2": {
+    "username": "testuser2",
+    "full_name": "Test User",
+    "hashed_password": "$pbkdf2-sha256$29000$vve.t7aWslaqVUrJWcu5tw$0.kk4ExOOyR.A3YY7EU.gi2EREUQkTFsFBn.GWhfFLs",
+    "role": "user",
+    "created_at": "2026-07-09T21:40:23.658556",
+    "active": true,
+    "permissions": []
+  },
+  "sastrys": {
+    "username": "sastrys",
+    "full_name": "Subramanya",
+    "hashed_password": "$pbkdf2-sha256$29000$976XkjKm9J5zjvG.d47x3g$EkEzu.fadTApVkd37jF9G62/LipgytfH2HJGR4rOkDY",
+    "role": "user",
+    "created_at": "2026-07-10T19:02:44.930731",
+    "active": true
+  }
+}

@@ -1,0 +1,560 @@
+"""
+Paper Trade Engine — fully autonomous chunk-based trading simulator.
+
+Concepts:
+  Trade    = a configured plan for one symbol (N chunks)
+  Chunk    = a tranche: entry price, allocation %, profit book %
+  Order    = a simulated buy or sell triggered when price conditions are met
+  Position = live holdings inside a trade (unrealised P&L)
+
+The engine runs a background price-polling loop.
+For each ACTIVE trade it checks:
+  - Is chunk[n] not yet bought AND current_price <= chunk[n].entry_price?
+    → Simulate BUY, record fill price, deduct from virtual cash
+  - Is chunk[n] already bought AND current_price >= chunk[n].exit_price?
+    → Simulate SELL, record fill price, add to virtual cash, realise P&L
+"""
+
+import json, math, os, time, threading
+from datetime import datetime
+from typing import Optional
+import uuid
+
+from data.market_data import get_info, safe_get
+
+# ─── Data file ────────────────────────────────────────────────────────────────
+_DATA_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "paper_trades.json")
+
+# ─── In-memory state ──────────────────────────────────────────────────────────
+_state: dict = {
+    "virtual_cash": 1_000_000,  # ₹10 lakh starting balance
+    "trades": {},               # trade_id -> TradeConfig
+    "orders": [],               # list of filled/pending orders
+    "positions": {},            # trade_id -> PositionState
+}
+
+_lock = threading.Lock()
+_monitor_thread: Optional[threading.Thread] = None
+_running = False
+
+
+# ─── Persistence ──────────────────────────────────────────────────────────────
+
+def _load():
+    global _state
+    if os.path.exists(_DATA_FILE):
+        try:
+            with open(_DATA_FILE) as f:
+                _state = json.load(f)
+        except Exception:
+            pass
+
+
+def _save():
+    try:
+        with open(_DATA_FILE, "w") as f:
+            json.dump(_state, f, indent=2)
+    except Exception:
+        pass
+
+
+_load()
+
+
+# ─── Price fetch ──────────────────────────────────────────────────────────────
+
+def _get_live_price(symbol: str) -> float:
+    """Fetch live price bypassing the 15-min cache — used by the monitor loop."""
+    import yfinance as yf
+    try:
+        # fast_info is much lighter than full .info and returns fresh data every call
+        t = yf.Ticker(symbol)
+        fast = t.fast_info
+        price = getattr(fast, "last_price", None) or getattr(fast, "regular_market_price", None)
+        if price and float(price) > 0:
+            return float(price)
+    except Exception:
+        pass
+    # Fallback to cached info
+    from data.market_data import get_info, safe_get
+    info = get_info(symbol)
+    price = safe_get(info, "currentPrice") or safe_get(info, "regularMarketPrice") or 0
+    return float(price)
+
+
+# ─── Trade management ─────────────────────────────────────────────────────────
+
+def create_trade(
+    symbol: str,
+    company_name: str,
+    total_allocation: float,
+    chunks: list[dict],
+    notes: str = "",
+    mtm_target_pct: float | None = None,
+    mtm_target_inr: float | None = None,
+) -> dict:
+    """
+    Create a new paper trade.
+
+    chunks: list of dicts, each:
+      {
+        "chunk_no": 1,
+        "allocation_pct": 40,       # % of total_allocation for this chunk
+        "entry_price": 330.0,       # buy if price <= this
+        "profit_pct": 8.0,          # sell if price >= entry * (1 + profit_pct/100)
+      }
+    Returns the trade dict.
+    """
+    trade_id = str(uuid.uuid4())[:8]
+    now = datetime.now().isoformat()
+
+    # Compute entry/exit prices and quantities for each chunk
+    enriched_chunks = []
+    for c in chunks:
+        alloc_amount = total_allocation * c["allocation_pct"] / 100
+        entry = float(c["entry_price"])
+        profit = float(c["profit_pct"])
+        exit_price = round(entry * (1 + profit / 100), 2)
+        qty = max(1, math.floor(alloc_amount / entry))
+        actual_cost = round(qty * entry, 2)
+
+        enriched_chunks.append({
+            "chunk_no": int(c["chunk_no"]),
+            "allocation_pct": float(c["allocation_pct"]),
+            "allocation_amount": round(alloc_amount, 2),
+            "actual_cost": actual_cost,
+            "entry_price": entry,
+            "exit_price": exit_price,
+            "profit_pct": profit,
+            "quantity": qty,
+            "status": "WAITING",     # WAITING | BOUGHT | SOLD | CANCELLED
+            "buy_order_id": None,
+            "sell_order_id": None,
+            "buy_price": None,
+            "sell_price": None,
+            "buy_time": None,
+            "sell_time": None,
+            "realised_pnl": None,
+        })
+
+    trade = {
+        "trade_id": trade_id,
+        "symbol": symbol,
+        "company_name": company_name,
+        "total_allocation": round(total_allocation, 2),
+        "chunks": enriched_chunks,
+        "notes": notes,
+        "status": "ACTIVE",          # ACTIVE | COMPLETED | CANCELLED | PAUSED
+        "created_at": now,
+        "started_at": None,
+        "completed_at": None,
+        "total_realised_pnl": 0.0,
+        # MTM-level exit: set at creation or any time after
+        "mtm_target_pct": round(float(mtm_target_pct), 4) if mtm_target_pct is not None else None,
+        "mtm_target_inr": round(float(mtm_target_inr), 2) if mtm_target_inr is not None else None,
+    }
+
+    with _lock:
+        _state["trades"][trade_id] = trade
+        _save()
+
+    return trade
+
+
+def start_trade(trade_id: str) -> dict:
+    """Mark a trade as started — engine begins monitoring."""
+    with _lock:
+        trade = _state["trades"].get(trade_id)
+        if not trade:
+            raise ValueError(f"Trade {trade_id} not found")
+        trade["status"] = "ACTIVE"
+        trade["started_at"] = datetime.now().isoformat()
+        _save()
+    _ensure_monitor_running()
+    return trade
+
+
+def pause_trade(trade_id: str) -> dict:
+    with _lock:
+        trade = _state["trades"].get(trade_id)
+        if trade:
+            trade["status"] = "PAUSED"
+            _save()
+        return trade
+
+
+def cancel_trade(trade_id: str) -> dict:
+    with _lock:
+        trade = _state["trades"].get(trade_id)
+        if trade:
+            trade["status"] = "CANCELLED"
+            trade["completed_at"] = datetime.now().isoformat()
+            _save()
+        return trade
+
+
+def delete_trade(trade_id: str) -> None:
+    """Permanently delete a CANCELLED trade."""
+    with _lock:
+        trade = _state["trades"].get(trade_id)
+        if not trade:
+            raise ValueError(f"Trade {trade_id} not found")
+        if trade["status"] != "CANCELLED":
+            raise ValueError("Only CANCELLED trades can be deleted")
+        del _state["trades"][trade_id]
+        # Remove associated orders
+        _state["orders"] = [o for o in _state["orders"] if o.get("trade_id") != trade_id]
+        _save()
+
+
+def update_chunks(trade_id: str, chunks: list[dict]) -> dict:
+    """Modify WAITING chunks only. BOUGHT/SOLD chunks are unchanged."""
+    with _lock:
+        trade = _state["trades"].get(trade_id)
+        if not trade:
+            raise ValueError(f"Trade {trade_id} not found")
+        if trade["status"] == "CANCELLED":
+            raise ValueError("Cannot modify a cancelled trade")
+
+        total_alloc = trade["total_allocation"]
+        chunk_map = {c["chunk_no"]: c for c in trade["chunks"]}
+
+        for upd in chunks:
+            cn = int(upd["chunk_no"])
+            chunk = chunk_map.get(cn)
+            if not chunk or chunk["status"] != "WAITING":
+                continue
+            entry = float(upd.get("entry_price", chunk["entry_price"]))
+            profit = float(upd.get("profit_pct", chunk["profit_pct"]))
+            alloc_pct = float(upd.get("allocation_pct", chunk["allocation_pct"]))
+            alloc_amount = total_alloc * alloc_pct / 100
+            qty = max(1, math.floor(alloc_amount / entry))
+            chunk.update({
+                "entry_price": entry,
+                "profit_pct": profit,
+                "allocation_pct": alloc_pct,
+                "allocation_amount": round(alloc_amount, 2),
+                "actual_cost": round(qty * entry, 2),
+                "exit_price": round(entry * (1 + profit / 100), 2),
+                "quantity": qty,
+            })
+        _save()
+        return trade
+
+
+def set_mtm_target(trade_id: str,
+                   mtm_pct: float | None = None,
+                   mtm_inr: float | None = None) -> dict:
+    """
+    Set a trade-level MTM exit target that overrides individual chunk exit prices.
+    mtm_pct: exit all BOUGHT chunks when MTM% of invested cost hits this (negative = stop loss)
+    mtm_inr: exit all BOUGHT chunks when MTM in ₹ hits this (negative = stop loss)
+    INR takes priority if both set. Set both None to clear (revert to per-chunk exits).
+    """
+    with _lock:
+        trade = _state["trades"].get(trade_id)
+        if not trade:
+            raise ValueError(f"Trade {trade_id} not found")
+        trade["mtm_target_pct"] = round(float(mtm_pct), 4) if mtm_pct is not None else None
+        trade["mtm_target_inr"] = round(float(mtm_inr), 2) if mtm_inr is not None else None
+        _save()
+        return trade
+
+
+def update_chunk_exit_price(trade_id: str, chunk_no: int, new_exit_price: float) -> dict:
+    """Edit exit price of a BOUGHT chunk — works even after execution."""
+    with _lock:
+        trade = _state["trades"].get(trade_id)
+        if not trade:
+            raise ValueError(f"Trade {trade_id} not found")
+        chunk = next((c for c in trade["chunks"] if c["chunk_no"] == chunk_no), None)
+        if not chunk:
+            raise ValueError(f"Chunk {chunk_no} not found")
+        if chunk["status"] not in ("BOUGHT", "WAITING"):
+            raise ValueError(f"Chunk {chunk_no} is {chunk['status']} — can only edit BOUGHT or WAITING chunks")
+        chunk["exit_price"] = round(float(new_exit_price), 2)
+        # Also update profit_pct to reflect the new target
+        buy_ref = chunk.get("buy_price") or chunk["entry_price"]
+        if buy_ref and buy_ref > 0:
+            chunk["profit_pct"] = round((new_exit_price - buy_ref) / buy_ref * 100, 4)
+        _save()
+        return trade
+
+
+def manual_buy_chunk(trade_id: str, chunk_no: int) -> dict:
+    """Immediately buy a WAITING chunk at current CMP (market buy)."""
+    with _lock:
+        trade = _state["trades"].get(trade_id)
+        if not trade:
+            raise ValueError(f"Trade {trade_id} not found")
+        chunk = next((c for c in trade["chunks"] if c["chunk_no"] == chunk_no), None)
+        if not chunk:
+            raise ValueError(f"Chunk {chunk_no} not found")
+        if chunk["status"] != "WAITING":
+            raise ValueError(f"Chunk {chunk_no} is {chunk['status']} — only WAITING chunks can be manually bought")
+
+    # Get live price outside lock
+    cmp = _get_live_price(trade["symbol"])
+    if cmp <= 0:
+        raise ValueError(f"Could not get live price for {trade['symbol']}")
+
+    with _lock:
+        trade = _state["trades"][trade_id]
+        chunk = next(c for c in trade["chunks"] if c["chunk_no"] == chunk_no)
+        order = _simulate_buy(trade, chunk, cmp)
+        _save()
+    return {"order": order, "trade": trade}
+
+
+def manual_exit_chunk(trade_id: str, chunk_no: int) -> dict:
+    """Immediately exit a single BOUGHT chunk at current CMP."""
+    with _lock:
+        trade = _state["trades"].get(trade_id)
+        if not trade:
+            raise ValueError(f"Trade {trade_id} not found")
+        chunk = next((c for c in trade["chunks"] if c["chunk_no"] == chunk_no), None)
+        if not chunk:
+            raise ValueError(f"Chunk {chunk_no} not found")
+        if chunk["status"] != "BOUGHT":
+            raise ValueError(f"Chunk {chunk_no} is {chunk['status']} — only BOUGHT chunks can be exited")
+
+    cmp = _get_live_price(trade["symbol"])
+    if cmp <= 0:
+        raise ValueError(f"Could not get live price for {trade['symbol']}")
+
+    with _lock:
+        trade = _state["trades"][trade_id]
+        chunk = next(c for c in trade["chunks"] if c["chunk_no"] == chunk_no)
+        order = _simulate_sell(trade, chunk, cmp)
+        _save()
+    return {"order": order, "trade": trade}
+
+
+def manual_exit_all(trade_id: str) -> dict:
+    """Exit ALL BOUGHT chunks in a trade at current CMP."""
+    with _lock:
+        trade = _state["trades"].get(trade_id)
+        if not trade:
+            raise ValueError(f"Trade {trade_id} not found")
+        bought = [c for c in trade["chunks"] if c["status"] == "BOUGHT"]
+        if not bought:
+            raise ValueError("No executed chunks to exit")
+        sym = trade["symbol"]
+
+    cmp = _get_live_price(sym)
+    if cmp <= 0:
+        raise ValueError(f"Could not get live price for {sym}")
+
+    with _lock:
+        trade = _state["trades"][trade_id]
+        bought = [c for c in trade["chunks"] if c["status"] == "BOUGHT"]
+        orders = [_simulate_sell(trade, chunk, cmp) for chunk in bought]
+        _save()
+    return {"orders": orders, "trade": trade}
+
+
+def get_all_trades() -> list[dict]:
+    with _lock:
+        return list(_state["trades"].values())
+
+
+def get_trade(trade_id: str) -> dict | None:
+    with _lock:
+        return _state["trades"].get(trade_id)
+
+
+def get_orders() -> list[dict]:
+    with _lock:
+        return list(_state["orders"])
+
+
+def get_virtual_cash() -> float:
+    with _lock:
+        return _state["virtual_cash"]
+
+
+def set_virtual_cash(amount: float):
+    with _lock:
+        _state["virtual_cash"] = float(amount)
+        _save()
+
+
+# ─── Simulated order placement ────────────────────────────────────────────────
+
+def _simulate_buy(trade: dict, chunk: dict, fill_price: float) -> dict:
+    order_id = str(uuid.uuid4())[:8]
+    now = datetime.now().isoformat()
+    qty = chunk["quantity"]
+    cost = round(qty * fill_price, 2)
+
+    order = {
+        "order_id": order_id,
+        "trade_id": trade["trade_id"],
+        "symbol": trade["symbol"],
+        "side": "BUY",
+        "chunk_no": chunk["chunk_no"],
+        "quantity": qty,
+        "trigger_price": chunk["entry_price"],
+        "fill_price": round(fill_price, 2),
+        "amount": cost,
+        "status": "FILLED",
+        "timestamp": now,
+    }
+
+    chunk["status"] = "BOUGHT"
+    chunk["buy_order_id"] = order_id
+    chunk["buy_price"] = round(fill_price, 2)
+    chunk["buy_time"] = now
+    # Recompute exit based on actual fill price
+    chunk["exit_price"] = round(fill_price * (1 + chunk["profit_pct"] / 100), 2)
+
+    _state["virtual_cash"] = round(_state["virtual_cash"] - cost, 2)
+    _state["orders"].append(order)
+    return order
+
+
+def _simulate_sell(trade: dict, chunk: dict, fill_price: float) -> dict:
+    order_id = str(uuid.uuid4())[:8]
+    now = datetime.now().isoformat()
+    qty = chunk["quantity"]
+    proceeds = round(qty * fill_price, 2)
+    cost_basis = round(qty * chunk["buy_price"], 2)
+    pnl = round(proceeds - cost_basis, 2)
+    pnl_pct = round((fill_price / chunk["buy_price"] - 1) * 100, 2)
+
+    order = {
+        "order_id": order_id,
+        "trade_id": trade["trade_id"],
+        "symbol": trade["symbol"],
+        "side": "SELL",
+        "chunk_no": chunk["chunk_no"],
+        "quantity": qty,
+        "trigger_price": chunk["exit_price"],
+        "fill_price": round(fill_price, 2),
+        "amount": proceeds,
+        "pnl": pnl,
+        "pnl_pct": pnl_pct,
+        "status": "FILLED",
+        "timestamp": now,
+    }
+
+    chunk["status"] = "SOLD"
+    chunk["sell_order_id"] = order_id
+    chunk["sell_price"] = round(fill_price, 2)
+    chunk["sell_time"] = now
+    chunk["realised_pnl"] = pnl
+
+    _state["virtual_cash"] = round(_state["virtual_cash"] + proceeds, 2)
+    _state["orders"].append(order)
+
+    # Update trade total P&L
+    trade["total_realised_pnl"] = round(
+        sum(c.get("realised_pnl") or 0 for c in trade["chunks"]), 2
+    )
+
+    # Check if all chunks are sold → complete the trade
+    all_done = all(c["status"] in ("SOLD", "CANCELLED") for c in trade["chunks"])
+    if all_done:
+        trade["status"] = "COMPLETED"
+        trade["completed_at"] = now
+
+    return order
+
+
+# ─── Monitor loop ─────────────────────────────────────────────────────────────
+
+def _monitor_loop():
+    """Background thread: checks prices and fires simulated orders."""
+    global _running
+    while _running:
+        try:
+            _tick()
+        except Exception:
+            pass
+        time.sleep(6)  # poll every 6 seconds
+
+
+def _tick():
+    with _lock:
+        active_trades = [
+            t for t in _state["trades"].values()
+            if t["status"] == "ACTIVE"
+        ]
+
+    if not active_trades:
+        return
+
+    symbols = list({t["symbol"] for t in active_trades})
+    prices: dict[str, float] = {}
+    for sym in symbols:
+        try:
+            prices[sym] = _get_live_price(sym)
+        except Exception:
+            pass
+
+    with _lock:
+        for trade in active_trades:
+            sym = trade["symbol"]
+            price = prices.get(sym)
+            if not price:
+                continue
+
+            mtm_target_inr = trade.get("mtm_target_inr")
+            mtm_target_pct = trade.get("mtm_target_pct")
+            has_mtm_target = (mtm_target_inr is not None) or (mtm_target_pct is not None)
+
+            # ── Compute live MTM across all currently BOUGHT chunks ───────────
+            bought_chunks = [c for c in trade["chunks"] if c["status"] == "BOUGHT" and c.get("buy_price")]
+            if has_mtm_target and bought_chunks:
+                total_invested = sum(c["quantity"] * c["buy_price"] for c in bought_chunks)
+                total_current  = sum(c["quantity"] * price          for c in bought_chunks)
+                live_mtm_inr   = total_current - total_invested
+                live_mtm_pct   = (live_mtm_inr / total_invested * 100) if total_invested else 0
+
+                # Check if MTM target is hit (works for profit AND stop-loss)
+                mtm_hit = False
+                if mtm_target_inr is not None:
+                    # Positive target: exit when gain ≥ target
+                    # Negative target: exit when loss ≤ target (stop loss)
+                    mtm_hit = (live_mtm_inr >= mtm_target_inr) if mtm_target_inr >= 0 \
+                              else (live_mtm_inr <= mtm_target_inr)
+                elif mtm_target_pct is not None:
+                    mtm_hit = (live_mtm_pct >= mtm_target_pct) if mtm_target_pct >= 0 \
+                              else (live_mtm_pct <= mtm_target_pct)
+
+                if mtm_hit:
+                    # Exit all BOUGHT chunks at current price
+                    for chunk in bought_chunks:
+                        _simulate_sell(trade, chunk, price)
+                    continue  # skip per-chunk exit check for this trade
+
+            # ── Per-chunk entry and exit logic ────────────────────────────────
+            for chunk in trade["chunks"]:
+                if chunk["status"] == "WAITING":
+                    if price <= chunk["entry_price"]:
+                        _simulate_buy(trade, chunk, price)
+
+                elif chunk["status"] == "BOUGHT":
+                    if price >= chunk["exit_price"]:
+                        _simulate_sell(trade, chunk, price)
+
+        _save()
+
+
+def _ensure_monitor_running():
+    global _monitor_thread, _running
+    if _monitor_thread and _monitor_thread.is_alive():
+        return
+    _running = True
+    _monitor_thread = threading.Thread(target=_monitor_loop, daemon=True)
+    _monitor_thread.start()
+
+
+def stop_monitor():
+    global _running
+    _running = False
+
+
+# Start monitor on import if there are active trades
+if any(t.get("status") == "ACTIVE" for t in _state.get("trades", {}).values()):
+    _ensure_monitor_running()

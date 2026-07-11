@@ -1,0 +1,44 @@
+[
+  {
+    "symbol": "SAP.DE",
+    "name": "SAP SE                        I",
+    "exchange": "XETRA",
+    "sector": ""
+  },
+  {
+    "symbol": "ORCL",
+    "name": "Oracle Corporation",
+    "exchange": "NYSE",
+    "sector": "Technology"
+  },
+  {
+    "symbol": "NVDA",
+    "name": "NVIDIA Corporation",
+    "exchange": "NASDAQ",
+    "sector": "Technology"
+  },
+  {
+    "symbol": "MSFT",
+    "name": "Microsoft Corporation",
+    "exchange": "NASDAQ",
+    "sector": "Technology"
+  },
+  {
+    "symbol": "AMZN",
+    "name": "Amazon.com, Inc.",
+    "exchange": "NASDAQ",
+    "sector": "Consumer Cyclical"
+  },
+  {
+    "symbol": "SPCX",
+    "name": "Space Exploration Technologies",
+    "exchange": "NASDAQ",
+    "sector": "Industrials"
+  },
+  {
+    "symbol": "RKLB",
+    "name": "Rocket Lab Corporation",
+    "exchange": "NASDAQ",
+    "sector": "Industrials"
+  }
+]

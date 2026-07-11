@@ -1,0 +1,77 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── CSS custom properties (dark = default) ── */
+:root {
+  --color-background: #0f172a;
+  --color-card: #1e293b;
+  --color-border: #334155;
+  --color-muted: #475569;
+}
+
+:root.light {
+  --color-background: #f1f5f9;
+  --color-card: #ffffff;
+  --color-border: #cbd5e1;
+  --color-muted: #64748b;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  background-color: var(--color-background);
+  font-family: 'Inter', system-ui, sans-serif;
+  margin: 0;
+  transition: background-color 0.2s, color 0.2s;
+}
+
+/* Dark mode body text */
+body { color: #e2e8f0; }
+
+/* ── Light mode overrides ── */
+:root.light body { color: #0f172a; }
+
+/* Text colour corrections */
+:root.light .text-white    { color: #0f172a !important; }
+:root.light .text-slate-200 { color: #1e293b !important; }
+:root.light .text-slate-300 { color: #334155 !important; }
+:root.light .text-slate-400 { color: #475569 !important; }
+:root.light .text-slate-500 { color: #64748b !important; }
+:root.light .text-slate-600 { color: #94a3b8 !important; }
+
+/* Background corrections */
+:root.light .bg-slate-800  { background-color: #e2e8f0 !important; }
+:root.light .bg-slate-700  { background-color: #cbd5e1 !important; }
+:root.light .bg-background { background-color: var(--color-background) !important; }
+
+/* Hover states */
+:root.light .hover\:bg-slate-800:hover  { background-color: #e2e8f0 !important; }
+:root.light .hover\:bg-slate-600:hover  { background-color: #cbd5e1 !important; }
+
+/* Opacity variants used for section backgrounds */
+:root.light [class*="bg-slate-800\/"] { background-color: #e2e8f0 !important; }
+
+/* Inputs */
+:root.light input,
+:root.light select,
+:root.light textarea {
+  background-color: #f8fafc !important;
+  color: #0f172a !important;
+  border-color: #cbd5e1 !important;
+}
+:root.light input::placeholder { color: #94a3b8 !important; }
+
+/* Sidebar and header — keep dark so contrast stays readable */
+:root.light aside.bg-card { background-color: #1e293b !important; }
+:root.light aside .text-white  { color: #e2e8f0 !important; }
+:root.light aside .text-slate-400 { color: #94a3b8 !important; }
+:root.light aside .text-muted  { color: #64748b !important; }
+
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: var(--color-card); }
+::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 3px; }
+
+.animate-pulse-slow {
+  animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}

@@ -1,0 +1,26 @@
+
+> aegisai-frontend@1.0.0 dev
+> vite --host 0.0.0.0
+
+
+  VITE v6.4.3  ready in 458 ms
+
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: http://192.168.0.100:5173/
+11:06:55 am [vite] (client) hmr update /src/pages/AIInsights.tsx, /src/index.css
+11:16:00 am [vite] (client) hmr update /src/pages/Discover.tsx, /src/index.css
+11:16:24 am [vite] (client) hmr update /src/pages/Discover.tsx, /src/index.css
+11:16:50 am [vite] (client) hmr update /src/pages/Discover.tsx, /src/index.css
+11:17:00 am [vite] (client) hmr update /src/pages/Discover.tsx, /src/index.css
+11:17:18 am [vite] (client) hmr update /src/pages/Discover.tsx, /src/index.css
+11:17:29 am [vite] (client) hmr update /src/pages/Discover.tsx, /src/index.css
+11:17:57 am [vite] (client) hmr update /src/pages/AIInsights.tsx, /src/index.css
+11:18:05 am [vite] (client) hmr update /src/pages/AIInsights.tsx, /src/index.css
+11:18:13 am [vite] (client) hmr update /src/pages/AIInsights.tsx, /src/index.css
+11:18:23 am [vite] (client) hmr update /src/pages/AIInsights.tsx, /src/index.css
+12:15:09 pm [vite] (client) hmr update /src/components/NseStockSearch.tsx, /src/index.css
+12:15:40 pm [vite] (client) hmr update /src/pages/AIInsights.tsx, /src/index.css
+12:15:57 pm [vite] (client) hmr update /src/pages/AIInsights.tsx, /src/index.css
+12:16:10 pm [vite] (client) hmr update /src/pages/AIInsights.tsx, /src/index.css
+12:16:18 pm [vite] (client) hmr update /src/pages/AIInsights.tsx, /src/index.css
+12:16:26 pm [vite] (client) hmr update /src/pages/Discover.tsx, /src/index.css
