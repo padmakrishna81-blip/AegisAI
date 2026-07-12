@@ -13,6 +13,7 @@ interface User {
 
 const PERM_LABELS: Record<string, string> = {
   covered_calls: 'Covered Calls',
+  wheel:         'Wheel Strategy',
   market:        'Market',
   ai_insights:   'AI Insights',
 }

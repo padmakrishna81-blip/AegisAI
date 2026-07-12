@@ -225,18 +225,59 @@ function SectorResult({ data }: { data: Record<string, unknown> }) {
 
 function StockResult({ data }: { data: Record<string, unknown> }) {
   const verdict = data.verdict as Record<string, unknown> | undefined
-  const score = (data.overall_score as number) || 0
+  const score   = (data.overall_score as number) || 0
+  const cmp     = data.current_price as number | null
+  const prev    = data.prev_close   as number | null
+  const chgInr  = data.change_inr   as number | null
+  const chgPct  = data.change_pct   as number | null
+  const aiPowered = (verdict as Record<string, unknown> | undefined)?.ai_powered as boolean | undefined
+
   if (!verdict) return <div className="text-muted text-sm">No analysis data</div>
   const action = (verdict.action as string) || 'HOLD'
   const actionColors: Record<string, string> = {
-    BUY: 'bg-green-950 border-green-800 text-score-green',
+    BUY:  'bg-green-950 border-green-800 text-score-green',
     HOLD: 'bg-blue-950 border-blue-800 text-score-blue',
     SELL: 'bg-red-950 border-red-800 text-score-red',
-    AVOID: 'bg-red-950 border-red-800 text-score-red',
+    AVOID:'bg-red-950 border-red-800 text-score-red',
   }
   return (
     <div className="space-y-4">
-      {/* Header */}
+      {/* CMP + day change strip */}
+      {cmp != null && (
+        <div className="bg-card border border-border rounded-xl px-4 py-3 flex items-center gap-4">
+          <div>
+            <div className="text-[10px] text-muted mb-0.5">Current Price</div>
+            <div className="text-2xl font-bold text-white">₹{cmp.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</div>
+          </div>
+          {prev != null && (
+            <div>
+              <div className="text-[10px] text-muted mb-0.5">Prev Close</div>
+              <div className="text-sm text-slate-400">₹{prev.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</div>
+            </div>
+          )}
+          {chgPct != null && (
+            <div className={`ml-2 px-3 py-1.5 rounded-xl border ${chgPct >= 0 ? 'bg-green-950 border-green-800' : 'bg-red-950 border-red-800'}`}>
+              <div className={`text-lg font-bold ${chgPct >= 0 ? 'text-score-green' : 'text-score-red'}`}>
+                {chgPct >= 0 ? '▲' : '▼'} {Math.abs(chgPct).toFixed(2)}%
+              </div>
+              {chgInr != null && (
+                <div className={`text-xs ${chgPct >= 0 ? 'text-score-green' : 'text-score-red'}`}>
+                  {chgInr >= 0 ? '+' : ''}₹{Math.abs(chgInr).toFixed(2)}
+                </div>
+              )}
+            </div>
+          )}
+          <div className="ml-auto flex items-center gap-2">
+            {aiPowered ? (
+              <span className="px-2 py-1 bg-blue-950 border border-blue-800 text-score-blue rounded-lg text-[10px] font-bold">◆ AI Powered</span>
+            ) : (
+              <span className="px-2 py-1 bg-slate-700 text-muted rounded-lg text-[10px]">Rule-based</span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Score + Recommendation + Stars */}
       <div className="flex items-center gap-4">
         <div className="bg-card border border-border rounded-xl p-4 text-center">
           <div className="text-xs text-muted mb-1">Overall Score</div>

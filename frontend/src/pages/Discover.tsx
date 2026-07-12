@@ -32,15 +32,17 @@ interface EtfEntry {
 }
 
 const INDICES = [
-  { key: 'nifty50', label: 'Nifty 50' },
-  { key: 'nifty_bank', label: 'Nifty Bank' },
-  { key: 'nifty_it', label: 'Nifty IT' },
-  { key: 'nifty_pharma', label: 'Nifty Pharma' },
-  { key: 'nifty_auto', label: 'Nifty Auto' },
-  { key: 'nifty_fmcg', label: 'Nifty FMCG' },
-  { key: 'nifty_metal', label: 'Nifty Metal' },
-  { key: 'nifty_energy', label: 'Nifty Energy' },
-  { key: 'nifty_midcap', label: 'Midcap Select' },
+  { key: 'nifty50',        label: 'Nifty 50' },
+  { key: 'nifty_bank',     label: 'Nifty Bank' },
+  { key: 'nifty_it',       label: 'Nifty IT' },
+  { key: 'nifty_fin',      label: 'Nifty Fin Services' },
+  { key: 'nifty_pharma',   label: 'Nifty Pharma' },
+  { key: 'nifty_auto',     label: 'Nifty Auto' },
+  { key: 'nifty_fmcg',     label: 'Nifty FMCG' },
+  { key: 'nifty_metal',    label: 'Nifty Metal' },
+  { key: 'nifty_energy',   label: 'Nifty Energy' },
+  { key: 'nifty_midcap',   label: 'Midcap Select' },
+  { key: 'nifty_smallcap', label: 'Nifty Smallcap' },
 ]
 
 type Tab = 'individual' | 'index' | 'watchlist' | 'etf'

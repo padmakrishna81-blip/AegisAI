@@ -187,6 +187,19 @@ def cancel_trade(trade_id: str) -> dict:
     with _lock:
         trade = _state["trades"].get(trade_id)
         if trade:
+            # Protect: cannot cancel if any chunk is already BOUGHT
+            bought_chunks = [c for c in trade.get("chunks", []) if c["status"] == "BOUGHT"]
+            if bought_chunks:
+                raise ValueError(
+                    f"Cannot cancel — {len(bought_chunks)} chunk(s) already executed (BOUGHT). "
+                    "Exit those positions first, then cancel."
+                )
+            # Refund any WAITING chunk allocation amounts to virtual cash
+            refund = 0.0
+            for c in trade.get("chunks", []):
+                if c["status"] == "WAITING":
+                    c["status"] = "CANCELLED"
+                    # No cash was deployed yet for WAITING chunks — nothing to refund
             trade["status"] = "CANCELLED"
             trade["completed_at"] = datetime.now().isoformat()
             _save()
@@ -539,6 +552,261 @@ def _tick():
                         _simulate_sell(trade, chunk, price)
 
         _save()
+
+
+# ─── Covered Call trade creation ──────────────────────────────────────────────
+
+def create_covered_call_trade(
+    symbol: str,
+    company_name: str,
+    phase1_qty: int,
+    phase1_limit: float,
+    phase2_qty: int,
+    phase2_limit: float,
+    phase2_trigger: float,
+    strike: float,
+    expiry: str,
+    sell_premium: float,
+    premium_income: float,
+    lots: int,
+    lot_size: int,
+    avg_pct: float = 3.0,
+    notes: str = "",
+) -> dict:
+    """
+    Create a Covered Call paper trade.
+    Phase 1 and Phase 2 are two buy chunks with limit prices.
+    Stock exits are MANUAL only (profit_pct=999 prevents auto-exit).
+    The short CE option is tracked as metadata only.
+    """
+    trade_id = str(uuid.uuid4())[:8]
+    now = datetime.now().isoformat()
+
+    total_allocation = round(phase1_qty * phase1_limit + phase2_qty * phase2_limit, 2)
+    alloc1_pct = round(phase1_qty * phase1_limit / total_allocation * 100, 2)
+    alloc2_pct = round(100 - alloc1_pct, 2)
+
+    chunks = [
+        {
+            "chunk_no": 1,
+            "allocation_pct": alloc1_pct,
+            "allocation_amount": round(phase1_qty * phase1_limit, 2),
+            "actual_cost": round(phase1_qty * phase1_limit, 2),
+            "entry_price": round(phase1_limit, 2),
+            "exit_price": round(phase1_limit * 999, 2),  # effectively no auto-exit
+            "profit_pct": 999.0,
+            "quantity": phase1_qty,
+            "status": "WAITING",
+            "buy_order_id": None, "sell_order_id": None,
+            "buy_price": None, "sell_price": None,
+            "buy_time": None, "sell_time": None,
+            "realised_pnl": None,
+            "label": "Phase 1 Entry",
+        },
+        {
+            "chunk_no": 2,
+            "allocation_pct": alloc2_pct,
+            "allocation_amount": round(phase2_qty * phase2_limit, 2),
+            "actual_cost": round(phase2_qty * phase2_limit, 2),
+            "entry_price": round(phase2_limit, 2),
+            "exit_price": round(phase2_limit * 999, 2),
+            "profit_pct": 999.0,
+            "quantity": phase2_qty,
+            "status": "WAITING",
+            "buy_order_id": None, "sell_order_id": None,
+            "buy_price": None, "sell_price": None,
+            "buy_time": None, "sell_time": None,
+            "realised_pnl": None,
+            "label": f"Phase 2 Entry (avg trigger ₹{phase2_trigger:.2f})",
+        },
+    ]
+
+    option_symbol = f"{symbol.replace('.NS','')}{int(strike)}CE"
+
+    trade = {
+        "trade_id": trade_id,
+        "symbol": symbol,
+        "company_name": company_name,
+        "total_allocation": total_allocation,
+        "chunks": chunks,
+        "notes": notes or f"Covered Call — Sell {option_symbol} {expiry}",
+        "status": "ACTIVE",
+        "trade_type": "COVERED_CALL",
+        "created_at": now,
+        "started_at": now,
+        "completed_at": None,
+        "total_realised_pnl": 0.0,
+        "mtm_target_pct": None,
+        "mtm_target_inr": None,
+        "cc_option": {
+            "option_symbol": option_symbol,
+            "underlying": symbol,
+            "strike": strike,
+            "expiry": expiry,
+            "sell_premium": round(sell_premium, 2),
+            "premium_income": round(premium_income, 2),
+            "lots": lots,
+            "lot_size": lot_size,
+            "avg_pct": avg_pct,
+            "status": "OPEN",      # OPEN | CLOSED | EXPIRED
+            "opened_at": now,
+            "closed_at": None,
+            "close_premium": None,
+            "option_pnl": None,
+        },
+    }
+
+    with _lock:
+        _state["trades"][trade_id] = trade
+        _save()
+
+    return trade
+
+
+def close_cc_option(trade_id: str, close_premium: float) -> dict:
+    """Buy back the short CE at close_premium to close the options position."""
+    with _lock:
+        trade = _state["trades"].get(trade_id)
+        if not trade or trade.get("trade_type") != "COVERED_CALL":
+            raise ValueError("Not a covered call trade")
+        opt = trade["cc_option"]
+        if opt["status"] != "OPEN":
+            raise ValueError("Option position is already closed")
+        close_cost = round(close_premium * opt["lots"] * opt["lot_size"], 2)
+        pnl = round(opt["premium_income"] - close_cost, 2)
+        opt.update({
+            "status": "CLOSED",
+            "closed_at": datetime.now().isoformat(),
+            "close_premium": round(close_premium, 2),
+            "option_pnl": pnl,
+        })
+        _save()
+    return trade
+
+
+# ─── Wheel Strategy trade creation ────────────────────────────────────────────
+
+def create_wheel_trade(
+    symbol: str, company_name: str,
+    put_strike: float, put_expiry: str,
+    put_premium: float, put_premium_income: float,
+    lots: int, lot_size: int,
+    planned_call_strike: float, planned_call_expiry: str, planned_call_premium: float,
+    assignment_limit: float, phase2_pct: float = 3.0, notes: str = "",
+) -> dict:
+    """
+    Phase 1 (CSP): Sell put → collect premium.
+    Phase 2 (CC):  If assigned, own stock → sell covered call.
+    """
+    trade_id = str(uuid.uuid4())[:8]
+    now = datetime.now().isoformat()
+    total_contract_value = round(put_strike * lots * lot_size, 2)
+    effective_buy = round(put_strike - put_premium, 2)
+    half_qty = (lots * lot_size) // 2
+    phase2_trigger = round(effective_buy * (1 - phase2_pct / 100), 2)
+
+    trade = {
+        "trade_id": trade_id, "symbol": symbol, "company_name": company_name,
+        "total_allocation": total_contract_value,
+        "chunks": [],
+        "notes": notes or f"Wheel — Sell {symbol.replace('.NS','')}{int(put_strike)}PE {put_expiry}",
+        "status": "ACTIVE", "trade_type": "WHEEL", "wheel_phase": "PUT",
+        "created_at": now, "started_at": now, "completed_at": None,
+        "total_realised_pnl": 0.0, "mtm_target_pct": None, "mtm_target_inr": None,
+        "put_option": {
+            "option_symbol": f"{symbol.replace('.NS','')}{int(put_strike)}PE",
+            "underlying": symbol, "strike": put_strike, "expiry": put_expiry,
+            "sell_premium": round(put_premium, 2),
+            "premium_income": round(put_premium_income, 2),
+            "lots": lots, "lot_size": lot_size,
+            "status": "OPEN", "opened_at": now, "closed_at": None,
+            "close_premium": None, "option_pnl": None,
+        },
+        "planned_cc": {
+            "strike": planned_call_strike, "expiry": planned_call_expiry,
+            "premium": planned_call_premium,
+        },
+        "stock_config": {
+            "assignment_limit": assignment_limit, "effective_buy": effective_buy,
+            "half_qty": half_qty, "phase2_trigger": phase2_trigger, "phase2_pct": phase2_pct,
+        },
+        "cc_option": None,
+        "total_put_premium": round(put_premium_income, 2),
+        "total_call_premium": 0.0,
+    }
+    with _lock:
+        _state["trades"][trade_id] = trade
+        _save()
+    return trade
+
+
+def wheel_assign_put(trade_id: str, call_strike: float, call_expiry: str, call_premium: float) -> dict:
+    """Trigger PUT assignment → create stock chunks + open CC leg."""
+    with _lock:
+        trade = _state["trades"].get(trade_id)
+        if not trade or trade.get("trade_type") != "WHEEL":
+            raise ValueError("Not a wheel trade")
+        if trade["wheel_phase"] != "PUT":
+            raise ValueError("Wheel is not in PUT phase")
+        now = datetime.now().isoformat()
+        cfg = trade["stock_config"]
+        lots = trade["put_option"]["lots"]
+        lot_size = trade["put_option"]["lot_size"]
+        half_qty = cfg["half_qty"]
+        remaining_qty = lots * lot_size - half_qty
+        effective_buy = cfg["effective_buy"]
+        phase2_trigger = cfg["phase2_trigger"]
+
+        trade["put_option"].update({"status": "ASSIGNED", "closed_at": now,
+                                    "option_pnl": trade["put_option"]["premium_income"]})
+        total_alloc = round(half_qty * effective_buy + remaining_qty * phase2_trigger, 2)
+        alloc1_pct = round(half_qty * effective_buy / total_alloc * 100, 2)
+        alloc2_pct = round(100 - alloc1_pct, 2)
+        trade["chunks"] = [
+            {"chunk_no": 1, "label": "Phase 1 (Put Assigned)",
+             "allocation_pct": alloc1_pct, "allocation_amount": round(half_qty * effective_buy, 2),
+             "actual_cost": round(half_qty * effective_buy, 2), "entry_price": round(effective_buy, 2),
+             "exit_price": round(effective_buy * 999, 2), "profit_pct": 999.0, "quantity": half_qty,
+             "status": "WAITING", "buy_order_id": None, "sell_order_id": None,
+             "buy_price": None, "sell_price": None, "buy_time": None, "sell_time": None, "realised_pnl": None},
+            {"chunk_no": 2, "label": f"Phase 2 (avg ₹{phase2_trigger:.2f})",
+             "allocation_pct": alloc2_pct, "allocation_amount": round(remaining_qty * phase2_trigger, 2),
+             "actual_cost": round(remaining_qty * phase2_trigger, 2), "entry_price": round(phase2_trigger, 2),
+             "exit_price": round(phase2_trigger * 999, 2), "profit_pct": 999.0, "quantity": remaining_qty,
+             "status": "WAITING", "buy_order_id": None, "sell_order_id": None,
+             "buy_price": None, "sell_price": None, "buy_time": None, "sell_time": None, "realised_pnl": None},
+        ]
+        trade["total_allocation"] = total_alloc
+        prem_income = round(call_premium * lots * lot_size, 2)
+        trade["cc_option"] = {
+            "option_symbol": f"{trade['symbol'].replace('.NS','')}{int(call_strike)}CE",
+            "underlying": trade["symbol"], "strike": call_strike, "expiry": call_expiry,
+            "sell_premium": round(call_premium, 2), "premium_income": prem_income,
+            "lots": lots, "lot_size": lot_size,
+            "status": "OPEN", "opened_at": now, "closed_at": None, "close_premium": None, "option_pnl": None,
+        }
+        trade["total_call_premium"] = round(trade.get("total_call_premium", 0) + prem_income, 2)
+        trade["wheel_phase"] = "COVERED_CALL"
+        _save()
+    return trade
+
+
+def wheel_expire_put(trade_id: str) -> dict:
+    """Put expires worthless → keep premium, reset to PUT phase for next spin."""
+    with _lock:
+        trade = _state["trades"].get(trade_id)
+        if not trade or trade.get("trade_type") != "WHEEL":
+            raise ValueError("Not a wheel trade")
+        opt = trade["put_option"]
+        if opt["status"] != "OPEN":
+            raise ValueError("Put is not OPEN")
+        now = datetime.now().isoformat()
+        opt.update({"status": "EXPIRED", "closed_at": now, "close_premium": 0.0,
+                    "option_pnl": opt["premium_income"]})
+        trade["total_realised_pnl"] = round(trade.get("total_realised_pnl", 0) + opt["premium_income"], 2)
+        trade["wheel_phase"] = "PUT"
+        _save()
+    return trade
 
 
 def _ensure_monitor_running():

@@ -58,6 +58,24 @@ NIFTY_MIDCAP_SELECTION = [
     "VEDL.NS", "NMDC.NS", "SAIL.NS", "ASHOKLEY.NS", "ESCORTS.NS",
 ]
 
+NIFTY_FIN_SERVICES = [
+    "HDFCBANK.NS", "ICICIBANK.NS", "KOTAKBANK.NS", "AXISBANK.NS", "SBIN.NS",
+    "BAJFINANCE.NS", "BAJAJFINSV.NS", "SBILIFE.NS", "HDFCLIFE.NS", "ICICIGI.NS",
+    "ICICIPRULI.NS", "HDFCAMC.NS", "CHOLAFIN.NS", "MUTHOOTFIN.NS", "SHRIRAMFIN.NS",
+    "MANAPPURAM.NS", "LICHSGFIN.NS", "RECLTD.NS", "PFC.NS", "IRFC.NS",
+    "SBICARD.NS", "ANGELONE.NS", "CDSL.NS", "MCX.NS",
+]
+
+NIFTY_SMALLCAP = [
+    "IREDA.NS", "HUDCO.NS", "SJVN.NS", "NHPC.NS", "RAILTEL.NS",
+    "RVNL.NS", "IRCON.NS", "NBCC.NS", "RITES.NS", "MMTC.NS",
+    "TATAELXSI.NS", "TANLA.NS", "ROUTE.NS", "KPITTECH.NS", "LTTS.NS",
+    "HAPPSTMNDS.NS", "MASTEK.NS", "CYIENT.NS", "ZENSAR.NS", "NIITLTD.NS",
+    "LALPATHLAB.NS", "METROPOLIS.NS", "THYROCARE.NS", "VIJAYABANK.NS",
+    "CANBK.NS", "UNIONBANK.NS", "BANKBARODA.NS", "PNB.NS", "IOB.NS",
+    "CENTRALBK.NS", "MAHABANK.NS", "ANDHRABANK.NS",
+]
+
 # Sector index tickers (Yahoo Finance)
 SECTOR_INDEX_MAP = {
     "IT": "^CNXIT",
@@ -121,15 +139,17 @@ STOCK_SECTOR_MAP = {
 }
 
 INDEX_GROUPS = {
-    "nifty50": NIFTY50,
-    "nifty_bank": NIFTY_BANK,
-    "nifty_it": NIFTY_IT,
-    "nifty_pharma": NIFTY_PHARMA,
-    "nifty_auto": NIFTY_AUTO,
-    "nifty_fmcg": NIFTY_FMCG,
-    "nifty_metal": NIFTY_METAL,
-    "nifty_energy": NIFTY_ENERGY,
-    "nifty_midcap": NIFTY_MIDCAP_SELECTION,
+    "nifty50":        NIFTY50,
+    "nifty_bank":     NIFTY_BANK,
+    "nifty_it":       NIFTY_IT,
+    "nifty_pharma":   NIFTY_PHARMA,
+    "nifty_auto":     NIFTY_AUTO,
+    "nifty_fmcg":     NIFTY_FMCG,
+    "nifty_metal":    NIFTY_METAL,
+    "nifty_energy":   NIFTY_ENERGY,
+    "nifty_midcap":   NIFTY_MIDCAP_SELECTION,
+    "nifty_fin":      NIFTY_FIN_SERVICES,
+    "nifty_smallcap": NIFTY_SMALLCAP,
 }
 
 

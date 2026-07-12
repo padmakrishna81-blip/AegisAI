@@ -113,22 +113,10 @@ def classify_sentiment(text: str) -> str:
     return "NEUTRAL"
 
 
-def update_settings(provider: str, anthropic_key: str = "", openai_key: str = "") -> None:
-    """Update .env file with new settings."""
+def update_settings(provider: str, anthropic_key: str = "", openai_key: str = "", overwrite_keys: bool = False) -> None:
+    """Update .env and os.environ. Only overwrites keys when overwrite_keys=True."""
     env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
-    lines = []
-    if provider:
-        lines.append(f"LLM_PROVIDER={provider}")
-    if anthropic_key:
-        lines.append(f"ANTHROPIC_API_KEY={anthropic_key}")
-        os.environ["ANTHROPIC_API_KEY"] = anthropic_key
-    if openai_key:
-        lines.append(f"OPENAI_API_KEY={openai_key}")
-        os.environ["OPENAI_API_KEY"] = openai_key
-    if provider:
-        os.environ["LLM_PROVIDER"] = provider
 
-    # Read existing .env and update
     existing = {}
     try:
         with open(env_path) as f:
@@ -142,10 +130,22 @@ def update_settings(provider: str, anthropic_key: str = "", openai_key: str = ""
 
     if provider:
         existing["LLM_PROVIDER"] = provider
-    if anthropic_key:
+        os.environ["LLM_PROVIDER"] = provider
+
+    if overwrite_keys:
+        # User explicitly typed new keys — update them (even if empty = clear)
         existing["ANTHROPIC_API_KEY"] = anthropic_key
-    if openai_key:
+        os.environ["ANTHROPIC_API_KEY"] = anthropic_key
         existing["OPENAI_API_KEY"] = openai_key
+        os.environ["OPENAI_API_KEY"] = openai_key
+    else:
+        # Only update if non-empty (keep old keys if user left fields blank)
+        if anthropic_key:
+            existing["ANTHROPIC_API_KEY"] = anthropic_key
+            os.environ["ANTHROPIC_API_KEY"] = anthropic_key
+        if openai_key:
+            existing["OPENAI_API_KEY"] = openai_key
+            os.environ["OPENAI_API_KEY"] = openai_key
 
     with open(env_path, "w") as f:
         for k, v in existing.items():

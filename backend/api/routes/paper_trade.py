@@ -234,6 +234,106 @@ async def get_summary():
             "chunk_details": chunk_details_for_holding,
         })
 
+    # ── CC Positions (options metadata from covered call trades) ──────────────
+    # ── Fetch live option premiums for OPEN CC positions ─────────────────────
+    # Collect unique (underlying, expiry) pairs to minimise NSE API calls
+    open_opts: list[dict] = [
+        t.get("cc_option", {}) for t in trades
+        if t.get("trade_type") == "COVERED_CALL"
+        and t.get("cc_option", {}).get("status") == "OPEN"
+    ]
+    # Build live premium map: option_symbol -> current_ltp
+    live_option_prices: dict[str, float | None] = {}
+    if open_opts:
+        try:
+            from jugaad_data.nse import NSELive
+            nse = NSELive()
+            import time as _time
+            # Group by underlying+expiry to avoid duplicate calls
+            seen_chains: set[tuple] = set()
+            for opt in open_opts:
+                underlying = opt.get("underlying", "").replace(".NS", "")
+                expiry     = opt.get("expiry", "")
+                strike     = opt.get("strike", 0)
+                sym_key    = opt.get("option_symbol", "")
+                key = (underlying, expiry)
+                if key in seen_chains:
+                    continue
+                seen_chains.add(key)
+                try:
+                    data = nse.equities_option_chain(underlying, expiry=expiry)
+                    rows = data.get("filtered", {}).get("data", []) or data.get("records", {}).get("data", [])
+                    for r in rows:
+                        ce = r.get("CE", {})
+                        s  = r.get("strikePrice") or ce.get("strikePrice", 0)
+                        ltp = ce.get("lastPrice", 0)
+                        # map all strikes we know about from open options
+                        for o2 in open_opts:
+                            if o2.get("underlying","").replace(".NS","") == underlying and abs(float(s or 0) - float(o2.get("strike",0) or 0)) < 0.1:
+                                live_option_prices[o2.get("option_symbol", "")] = float(ltp) if ltp else None
+                    _time.sleep(0.08)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    # ── Build CC positions with live MTM ──────────────────────────────────────
+    cc_positions = []
+    for trade in trades:
+        if trade.get("trade_type") != "COVERED_CALL":
+            continue
+        opt = trade.get("cc_option", {})
+        if not opt:
+            continue
+        chunks = trade.get("chunks", [])
+
+        # MTM calculation for OPEN positions
+        current_ltp  = live_option_prices.get(opt.get("option_symbol", "")) if opt.get("status") == "OPEN" else None
+        lots         = opt.get("lots", 1)
+        lot_size     = opt.get("lot_size", 1)
+        sell_premium = opt.get("sell_premium", 0)
+        prem_income  = opt.get("premium_income", 0)
+
+        # As a CE seller: MTM profit = premium_received - current_value_to_close
+        # Positive MTM = CE value has fallen (good for seller)
+        # Negative MTM = CE value has risen (bad for seller — would cost more to close)
+        option_mtm_inr   = None
+        option_mtm_pct   = None
+        buy_back_cost    = None
+        if current_ltp is not None and sell_premium:
+            buy_back_cost  = round(current_ltp * lots * lot_size, 2)
+            option_mtm_inr = round(prem_income - buy_back_cost, 2)  # +ve = profit so far
+            option_mtm_pct = round((sell_premium - current_ltp) / sell_premium * 100, 1)
+
+        cc_positions.append({
+            "trade_id":           trade["trade_id"],
+            "symbol":             trade["symbol"],
+            "company_name":       trade["company_name"],
+            "trade_status":       trade["status"],
+            "option_symbol":      opt.get("option_symbol", ""),
+            "strike":             opt.get("strike"),
+            "expiry":             opt.get("expiry", ""),
+            "sell_premium":       sell_premium,
+            "premium_income":     prem_income,
+            "lots":               lots,
+            "lot_size":           lot_size,
+            "option_status":      opt.get("status", "OPEN"),
+            "option_pnl":         opt.get("option_pnl"),
+            "close_premium":      opt.get("close_premium"),
+            "opened_at":          opt.get("opened_at"),
+            "closed_at":          opt.get("closed_at"),
+            # Live MTM fields
+            "current_ltp":        current_ltp,
+            "buy_back_cost":      buy_back_cost,
+            "option_mtm_inr":     option_mtm_inr,
+            "option_mtm_pct":     option_mtm_pct,
+            # Stock chunk statuses
+            "phase1_status":      next((c["status"] for c in chunks if c["chunk_no"] == 1), "WAITING"),
+            "phase2_status":      next((c["status"] for c in chunks if c["chunk_no"] == 2), "WAITING"),
+            "phase1_buy_price":   next((c.get("buy_price") for c in chunks if c["chunk_no"] == 1), None),
+            "phase2_buy_price":   next((c.get("buy_price") for c in chunks if c["chunk_no"] == 2), None),
+        })
+
     return JSONResponse(content=clean_for_json({
         "virtual_cash": cash,
         "total_invested": round(total_invested, 2),
@@ -242,8 +342,9 @@ async def get_summary():
         "total_pnl": round(unrealised_pnl + realised_pnl, 2),
         "portfolio_value": round(cash + total_invested + unrealised_pnl, 2),
         "active_trade_count": sum(1 for t in trades if t["status"] == "ACTIVE"),
-        "holdings": holdings,       # aggregated per symbol
-        "positions": positions,     # per trade detail
+        "holdings": holdings,
+        "positions": positions,
+        "cc_positions": cc_positions,
     }))
 
 
@@ -310,7 +411,10 @@ async def cancel_trade(trade_id: str):
     trade = pt.get_trade(trade_id)
     if not trade:
         raise HTTPException(status_code=404, detail="Trade not found")
-    return JSONResponse(content=clean_for_json(pt.cancel_trade(trade_id)))
+    try:
+        return JSONResponse(content=clean_for_json(pt.cancel_trade(trade_id)))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.delete("/paper/trades/{trade_id}")
@@ -427,3 +531,406 @@ async def add_funds(body: AddFundsInput):
     new_total = max(0.0, current + body.amount)
     pt.set_virtual_cash(new_total)
     return JSONResponse(content={"virtual_cash": new_total, "added": body.amount, "message": f"Funds updated"})
+
+
+# ─── Covered Call endpoints ────────────────────────────────────────────────────
+
+class CreateCcTradeInput(BaseModel):
+    symbol:             str
+    company_name:       str = ""
+    lots:               int = 1
+    lot_size:           int = 1000
+    phase1_qty:         int
+    phase1_limit:       float
+    phase2_qty:         int
+    phase2_limit:       float
+    phase2_trigger:     float
+    strike:             float
+    expiry:             str
+    sell_premium:       float
+    premium_income:     float
+    avg_pct:            float = 3.0
+    notes:              str = ""
+
+
+@router.post("/paper/covered-call")
+async def create_cc_trade(body: CreateCcTradeInput):
+    """Create a Covered Call paper trade (stock + short CE metadata)."""
+    from data.market_data import get_info, safe_get, normalize_symbol
+    sym = normalize_symbol(body.symbol)
+    company_name = body.company_name
+    if not company_name:
+        info = get_info(sym)
+        company_name = safe_get(info, "longName", default=None) or safe_get(info, "shortName", default=body.symbol) or body.symbol
+
+    trade = pt.create_covered_call_trade(
+        symbol=sym,
+        company_name=company_name,
+        phase1_qty=body.phase1_qty,
+        phase1_limit=body.phase1_limit,
+        phase2_qty=body.phase2_qty,
+        phase2_limit=body.phase2_limit,
+        phase2_trigger=body.phase2_trigger,
+        strike=body.strike,
+        expiry=body.expiry,
+        sell_premium=body.sell_premium,
+        premium_income=body.premium_income,
+        lots=body.lots,
+        lot_size=body.lot_size,
+        avg_pct=body.avg_pct,
+        notes=body.notes,
+    )
+    return JSONResponse(content=clean_for_json({
+        "message": f"Covered Call trade created for {sym}",
+        "trade_id": trade["trade_id"],
+        "trade": trade,
+    }))
+
+
+class CloseCcOptionInput(BaseModel):
+    close_premium: float
+
+
+@router.post("/paper/cc-option/{trade_id}/close")
+async def close_cc_option(trade_id: str, body: CloseCcOptionInput):
+    """Buy back the short CE to close the option position."""
+    try:
+        trade = pt.close_cc_option(trade_id, body.close_premium)
+        return JSONResponse(content=clean_for_json({
+            "message": "Option position closed",
+            "trade_id": trade_id,
+            "option_pnl": trade["cc_option"]["option_pnl"],
+        }))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/paper/cc-option/{trade_id}/expire")
+async def expire_cc_option(trade_id: str):
+    """Mark the CE as expired worthless — full premium is P&L."""
+    try:
+        trade = pt.expire_cc_option(trade_id)
+        return JSONResponse(content=clean_for_json({
+            "message": "Option expired worthless — full premium kept",
+            "trade_id": trade_id,
+            "option_pnl": trade["cc_option"]["option_pnl"],
+        }))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+
+# ─── Wheel Strategy endpoints ──────────────────────────────────────────────────
+
+class CreateWheelTradeInput(BaseModel):
+    symbol:                 str
+    company_name:           str = ""
+    lots:                   int = 1
+    lot_size:               int = 1000
+    put_strike:             float
+    put_expiry:             str
+    put_premium:            float
+    put_premium_income:     float
+    planned_call_strike:    float
+    planned_call_expiry:    str
+    planned_call_premium:   float
+    assignment_limit:       float   # effective buy price = put_strike - put_premium
+    phase2_pct:             float = 3.0
+    notes:                  str = ""
+
+
+@router.post("/paper/wheel")
+async def create_wheel_trade(body: CreateWheelTradeInput):
+    """Create a Wheel Strategy paper trade (CSP phase 1)."""
+    from data.market_data import get_info, safe_get, normalize_symbol
+    sym = normalize_symbol(body.symbol)
+    company_name = body.company_name
+    if not company_name:
+        info = get_info(sym)
+        company_name = safe_get(info, "longName", default=None) or safe_get(info, "shortName", default=body.symbol) or body.symbol
+
+    trade = pt.create_wheel_trade(
+        symbol=sym, company_name=company_name,
+        put_strike=body.put_strike, put_expiry=body.put_expiry,
+        put_premium=body.put_premium, put_premium_income=body.put_premium_income,
+        lots=body.lots, lot_size=body.lot_size,
+        planned_call_strike=body.planned_call_strike,
+        planned_call_expiry=body.planned_call_expiry,
+        planned_call_premium=body.planned_call_premium,
+        assignment_limit=body.assignment_limit,
+        phase2_pct=body.phase2_pct, notes=body.notes,
+    )
+    return JSONResponse(content=clean_for_json({
+        "message": f"Wheel trade created for {sym}",
+        "trade_id": trade["trade_id"], "trade": trade,
+    }))
+
+
+class AssignPutInput(BaseModel):
+    call_strike:   float
+    call_expiry:   str
+    call_premium:  float
+
+
+@router.post("/paper/wheel/{trade_id}/assign-put")
+async def wheel_assign_put(trade_id: str, body: AssignPutInput):
+    """Trigger PUT assignment → switch to Covered Call phase."""
+    try:
+        trade = pt.wheel_assign_put(trade_id, body.call_strike, body.call_expiry, body.call_premium)
+        return JSONResponse(content=clean_for_json({"message": "Put assigned — CC phase started", "trade": trade}))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/paper/wheel/{trade_id}/expire-put")
+async def wheel_expire_put(trade_id: str):
+    """Put expires worthless → keep premium, reset for next spin."""
+    try:
+        trade = pt.wheel_expire_put(trade_id)
+        return JSONResponse(content=clean_for_json({
+            "message": "Put expired — full premium kept. Sell another put to spin the wheel.",
+            "total_realised_pnl": trade["total_realised_pnl"],
+        }))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ─── Wheel Plan endpoint (proper live put strikes from NSE) ────────────────────
+
+@router.get("/paper/wheel/plan/{symbol}")
+async def get_wheel_plan(
+    symbol:          str,
+    lots:            int   = 1,
+    avg_pct:         float = 3.0,
+    expiry:          str   = "",
+    strike_override: float = 0,
+):
+    """
+    Generate a Wheel Strategy plan using REAL NSE put strikes.
+    Fetches live put chain, picks best delta-targeted put strike,
+    and suggests adjacent real strikes — no invented strikes.
+    """
+    import asyncio, math
+    from concurrent.futures import ThreadPoolExecutor
+    from data.market_data import get_info, safe_get, normalize_symbol
+    from api.routes.covered_calls import _pick_best_expiry
+
+    sym  = normalize_symbol(symbol)
+    bare = sym.replace(".NS", "")
+
+    def ncdf(x): return (1 + math.erf(x / math.sqrt(2))) / 2
+    def npdf(x): return math.exp(-x * x / 2) / math.sqrt(2 * math.pi)
+
+    def put_greeks(spot, strike, iv_pct, days, rf=0.065):
+        T = days / 365; s = iv_pct / 100
+        if T <= 0 or s <= 0 or spot <= 0 or strike <= 0: return {}
+        d1 = (math.log(spot / strike) + (rf + 0.5 * s * s) * T) / (s * math.sqrt(T))
+        d2 = d1 - s * math.sqrt(T)
+        return {
+            "delta": round(ncdf(d1) - 1, 3),      # PUT delta is negative
+            "theta": round((-(spot*npdf(d1)*s)/(2*math.sqrt(T)) + rf*strike*math.exp(-rf*T)*ncdf(-d2))/365, 2),
+            "vega":  round(spot * npdf(d1) * math.sqrt(T) / 100, 2),
+        }
+
+    def _do_plan():
+        from jugaad_data.nse import NSELive
+        import time as _t
+
+        nse  = NSELive()
+        spot_raw = nse.equities_option_chain(bare).get("records", {}).get("underlyingValue", 0)
+        spot = float(spot_raw) if spot_raw else 0
+        if spot <= 0:
+            info = get_info(sym)
+            spot = float(safe_get(info, "currentPrice") or safe_get(info, "regularMarketPrice") or 0)
+        if spot <= 0:
+            raise ValueError(f"Could not get live price for {bare}")
+
+        company_name = safe_get(get_info(sym), "longName") or bare
+        lot_size = pt.get_all_trades  # won't call this — get from cc_strategy
+        from api.routes.cc_strategy import _get_lot_size, _bs_greeks
+        lot_size = _get_lot_size(sym)
+
+        # Find best expiry (24-50 days)
+        expiry_dates = nse.equities_option_chain(bare).get("records", {}).get("expiryDates", [])
+        selected_expiry = expiry if expiry and expiry in expiry_dates else _pick_best_expiry(expiry_dates)
+        if not selected_expiry:
+            selected_expiry = expiry_dates[0] if expiry_dates else ""
+
+        days_to_expiry = 0
+        if selected_expiry:
+            from datetime import datetime, date as date_cls
+            for fmt_s in ["%d-%b-%Y", "%d-%m-%Y"]:
+                try:
+                    exp_dt = datetime.strptime(selected_expiry, fmt_s).date()
+                    days_to_expiry = (exp_dt - date_cls.today()).days
+                    break
+                except Exception: pass
+
+        # Fetch put chain for selected expiry
+        _t.sleep(0.1)
+        chain_data = nse.equities_option_chain(bare, expiry=selected_expiry)
+        rows = chain_data.get("filtered", {}).get("data", []) or chain_data.get("records", {}).get("data", [])
+
+        # Collect ALL OTM puts (strike < spot) with real LTP and OI
+        otm_puts = []
+        for r in rows:
+            pe     = r.get("PE", {})
+            strike = float(r.get("strikePrice") or pe.get("strikePrice") or 0)
+            ltp    = float(pe.get("lastPrice") or 0)
+            oi     = int(pe.get("openInterest") or 0)
+            iv     = float(pe.get("impliedVolatility") or 0)
+            if strike <= 0 or ltp <= 0 or oi < 1:   # must have actual traded premium
+                continue
+            # Only OTM puts for wheel (we want to sell at a price BELOW current spot)
+            # Note: strike can be above or below spot — we want ITM puts (puts where strike < spot = OTM in terms of assignment risk)
+            g = put_greeks(spot, strike, iv, days_to_expiry or 44)
+            pct_otm = round((strike / spot - 1) * 100, 1)  # negative = below spot
+            otm_puts.append({
+                "strike":  strike, "ltp": ltp, "oi": oi, "iv": iv,
+                "pct_otm": pct_otm, **g,
+            })
+        otm_puts.sort(key=lambda x: x["strike"])
+
+        if not otm_puts:
+            # All strikes either have no volume or the chain is empty
+            # Try previous expiry
+            prev_expiry = expiry_dates[0] if expiry_dates and selected_expiry != expiry_dates[0] else None
+            if prev_expiry:
+                _t.sleep(0.1)
+                chain_data2 = nse.equities_option_chain(bare, expiry=prev_expiry)
+                rows2 = chain_data2.get("filtered", {}).get("data", []) or chain_data2.get("records", {}).get("data", [])
+                for r in rows2:
+                    pe = r.get("PE", {})
+                    strike = float(r.get("strikePrice") or pe.get("strikePrice") or 0)
+                    ltp = float(pe.get("lastPrice") or 0)
+                    oi  = int(pe.get("openInterest") or 0)
+                    iv  = float(pe.get("impliedVolatility") or 0)
+                    if strike <= 0 or ltp <= 0 or oi < 1: continue
+                    g = put_greeks(spot, strike, iv, days_to_expiry or 44)
+                    otm_puts.append({"strike": strike, "ltp": ltp, "oi": oi, "iv": iv,
+                                     "pct_otm": round((strike/spot-1)*100,1), **g})
+                otm_puts.sort(key=lambda x: x["strike"])
+                if otm_puts:
+                    selected_expiry = prev_expiry
+
+        if not otm_puts:
+            raise ValueError(f"No liquid put options found for {bare} on any available expiry")
+
+        # Find best put: target PUT delta between -0.25 and -0.40
+        target_delta = -0.30
+        best_put = None; best_diff = 999.0
+        for p in otm_puts:
+            d = p.get("delta", 0)
+            diff = abs(d - target_delta)
+            if diff < best_diff and p["oi"] >= 1:
+                best_diff = diff; best_put = p
+
+        if strike_override > 0:
+            # User selected a specific strike — use it if it exists in the real chain
+            override_put = next((p for p in otm_puts if abs(p["strike"] - strike_override) < 0.1), None)
+            if override_put:
+                best_put = override_put
+
+        if not best_put:
+            raise ValueError("No suitable put strike found with adequate liquidity")
+
+        # Adjacent strikes (real ones from chain, sorted by strike)
+        chosen_idx = next((i for i, p in enumerate(otm_puts) if abs(p["strike"] - best_put["strike"]) < 0.1), 0)
+        adj_range  = sorted(set(range(max(0, chosen_idx-2), min(len(otm_puts), chosen_idx+3))))
+        adjacent   = [
+            {**otm_puts[i], "is_recommended": i == chosen_idx}
+            for i in adj_range
+        ]
+
+        # Effective buy price = put_strike - put_premium/share
+        put_strike  = best_put["strike"]
+        put_premium = best_put["ltp"]
+        effective_buy = round(put_strike - put_premium, 2)
+        premium_income = round(put_premium * lots * lot_size, 2)
+        margin_est = round(put_strike * lot_size * lots * 0.12, 2)
+
+        # Also compute a planned CC after assignment using existing CC logic
+        from api.routes.cc_strategy import _find_delta_target_strike, _bs_greeks as _call_greeks, _price_range
+        _t.sleep(0.1)
+        cc_chain = nse.equities_option_chain(bare, expiry=expiry_dates[1] if len(expiry_dates) > 1 else selected_expiry)
+        cc_rows_raw = cc_chain.get("filtered", {}).get("data", []) or cc_chain.get("records", {}).get("data", [])
+        cc_strikes = [{"strike": float(r.get("strikePrice") or r.get("CE",{}).get("strikePrice",0)),
+                       "ce": {"ltp": float(r.get("CE",{}).get("lastPrice",0)),
+                              "iv": float(r.get("CE",{}).get("impliedVolatility",0)),
+                              "oi": int(r.get("CE",{}).get("openInterest",0))}}
+                      for r in cc_rows_raw]
+        cc_expiry = expiry_dates[1] if len(expiry_dates) > 1 else selected_expiry
+        best_cc = _find_delta_target_strike(cc_strikes, spot, days_to_expiry + 30, target_delta=0.225, min_oi=1)
+
+        planned_call_strike  = best_cc["strike"] if best_cc else round(spot * 1.06 / 5) * 5
+        planned_call_premium = best_cc["ltp"]    if best_cc else round(spot * 0.02, 1)
+
+        # IV for price range
+        atm_iv = next((p["iv"] for p in otm_puts if abs(p["strike"] - spot) == min(abs(p2["strike"]-spot) for p2 in otm_puts)), best_put["iv"])
+        pr = _price_range(spot, atm_iv, days_to_expiry or 44)
+
+        # Scenario probabilities using Black-Scholes
+        p_put_expires  = round((1 - abs(best_put.get("delta", 0.30))) * 100, 1)
+        p_assigned_full = round(abs(best_put.get("delta", 0.30)) * 100, 1)
+
+        return clean_for_json({
+            "symbol": bare, "name": company_name,
+            "cmp": round(spot, 2), "lot_size": lot_size, "lots": lots,
+            "high_52w": float(safe_get(get_info(sym), "fiftyTwoWeekHigh") or spot),
+            "low_52w":  float(safe_get(get_info(sym), "fiftyTwoWeekLow")  or spot),
+            "atm_iv": round(atm_iv, 1),
+            # PUT leg
+            "put_strike":          put_strike,
+            "put_expiry":          selected_expiry,
+            "put_days_to_expiry":  days_to_expiry,
+            "put_premium_live":    round(put_premium, 2),
+            "put_premium_income":  int(premium_income),
+            "put_delta":           best_put.get("delta"),
+            "put_theta":           best_put.get("theta"),
+            "put_vega":            best_put.get("vega"),
+            "put_oi":              best_put["oi"],
+            "effective_buy":       effective_buy,
+            "margin_required":     int(margin_est),
+            # Planned CC
+            "planned_call_strike":  planned_call_strike,
+            "planned_call_expiry":  cc_expiry,
+            "planned_call_premium": round(planned_call_premium, 2),
+            # Adjacent PUT strikes (REAL from NSE)
+            "adjacent_strikes": adjacent,
+            "all_available_puts": [{"strike":p["strike"],"ltp":p["ltp"],"oi":p["oi"],"delta":p.get("delta"),"pct_otm":p["pct_otm"]} for p in otm_puts],
+            # Scenarios
+            "scenarios": {
+                "put_expires_worthless": {
+                    "probability": p_put_expires,
+                    "income": int(premium_income),
+                    "action": f"Keep ₹{int(premium_income):,} premium. Sell another put for next expiry.",
+                },
+                "assigned_stock_rises": {
+                    "probability": round(p_assigned_full * 0.6, 1),
+                    "income": int(premium_income),
+                    "effective_buy": effective_buy,
+                    "action": f"Own {bare} at ₹{effective_buy}. Sell CC at ₹{planned_call_strike}. Stock rises → called away at profit.",
+                },
+                "assigned_stock_flat": {
+                    "probability": round(p_assigned_full * 0.25, 1),
+                    "income": int(premium_income),
+                    "effective_buy": effective_buy,
+                    "action": f"Own {bare} at ₹{effective_buy}. Keep selling CCs each month to reduce cost basis.",
+                },
+                "assigned_stock_falls": {
+                    "probability": round(p_assigned_full * 0.15, 1),
+                    "probable_loss": int(round((effective_buy - spot * 0.88) * lot_size * lots, 0)),
+                    "action": "Own stock at discount. Keep selling CCs. Premium income offsets paper loss over time.",
+                },
+            },
+            "price_range": {**pr, "days_to_expiry": days_to_expiry},
+            "expiry_note": f"Recommended expiry: {selected_expiry} ({days_to_expiry} days). Only real NSE strikes shown.",
+        })
+
+    loop = asyncio.get_event_loop()
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        result = await loop.run_in_executor(executor, _do_plan)
+        return JSONResponse(content=result)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))

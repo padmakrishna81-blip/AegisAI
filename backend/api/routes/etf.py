@@ -32,16 +32,17 @@ ETF_CATALOG = [
 
 # ─── Index catalog (benchmarks — NOT directly tradeable as single units) ──────
 INDICES_CATALOG = [
-    {"symbol": "^NSEI",       "name": "NIFTY 50",           "category": "Broad Market", "etf": "NIFTYBEES.NS"},
-    {"symbol": "^NSEMDCP50",  "name": "NIFTY Midcap 50",    "category": "Broad Market", "etf": None},
-    {"symbol": "^NSEBANK",    "name": "NIFTY Bank",          "category": "Sector",       "etf": "BANKBEES.NS"},
-    {"symbol": "^CNXIT",      "name": "NIFTY IT",            "category": "Sector",       "etf": "ITBEES.NS"},
-    {"symbol": "^CNXPHARMA",  "name": "NIFTY Pharma",        "category": "Sector",       "etf": "PHARMABEES.NS"},
-    {"symbol": "^CNXAUTO",    "name": "NIFTY Auto",          "category": "Sector",       "etf": "AUTOBEES.NS"},
-    {"symbol": "^CNXFMCG",    "name": "NIFTY FMCG",         "category": "Sector",       "etf": None},
-    {"symbol": "^CNXMETAL",   "name": "NIFTY Metal",         "category": "Sector",       "etf": None},
-    {"symbol": "^CNXENERGY",  "name": "NIFTY Energy",        "category": "Sector",       "etf": None},
-    {"symbol": "^CNXFIN",     "name": "NIFTY Fin Services",  "category": "Sector",       "etf": None},
+    {"symbol": "^NSEI",                "name": "NIFTY 50",           "category": "Broad Market", "etf": "NIFTYBEES.NS"},
+    {"symbol": "^NSEMDCP50",           "name": "NIFTY Midcap 50",    "category": "Broad Market", "etf": None},
+    {"symbol": "^NSMIDCP",             "name": "NIFTY Smallcap 100", "category": "Broad Market", "etf": None},
+    {"symbol": "^NSEBANK",             "name": "NIFTY Bank",          "category": "Sector",       "etf": "BANKBEES.NS"},
+    {"symbol": "^CNXIT",               "name": "NIFTY IT",            "category": "Sector",       "etf": "ITBEES.NS"},
+    {"symbol": "^CNXPHARMA",           "name": "NIFTY Pharma",        "category": "Sector",       "etf": "PHARMABEES.NS"},
+    {"symbol": "^CNXAUTO",             "name": "NIFTY Auto",          "category": "Sector",       "etf": "AUTOBEES.NS"},
+    {"symbol": "^CNXFMCG",             "name": "NIFTY FMCG",         "category": "Sector",       "etf": None},
+    {"symbol": "^CNXMETAL",            "name": "NIFTY Metal",         "category": "Sector",       "etf": None},
+    {"symbol": "^CNXENERGY",           "name": "NIFTY Energy",        "category": "Sector",       "etf": None},
+    {"symbol": "NIFTY_FIN_SERVICE.NS", "name": "NIFTY Fin Services",  "category": "Sector",       "etf": None},
 ]
 
 

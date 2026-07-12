@@ -9,6 +9,7 @@ import Discover from './pages/Discover'
 import Portfolio from './pages/Portfolio'
 import Trade from './pages/Trade'
 import CoveredCalls from './pages/CoveredCalls'
+import Wheel from './pages/Wheel'
 import Market from './pages/Market'
 import AIInsights from './pages/AIInsights'
 import Settings from './pages/Settings'
@@ -38,6 +39,9 @@ function ProtectedLayout() {
             <Route path="/trade" element={<Trade />} />
             <Route path="/covered-calls" element={
               hasPermission(user, 'covered_calls') ? <CoveredCalls /> : <AccessDenied />
+            } />
+            <Route path="/wheel" element={
+              hasPermission(user, 'wheel') ? <Wheel /> : <AccessDenied />
             } />
             <Route path="/market" element={
               hasPermission(user, 'market') ? <Market /> : <AccessDenied />

@@ -28,7 +28,7 @@ def convert_numpy(obj):
         return None if (math.isnan(obj) or math.isinf(obj)) else obj
     return obj
 
-from api.routes import analyze, discover, portfolio, covered_calls, market, ai_advisor, settings, validate, etf, paper_trade, global_stocks, nse_search
+from api.routes import analyze, discover, portfolio, covered_calls, market, ai_advisor, settings, validate, etf, paper_trade, global_stocks, nse_search, cc_strategy
 from api.routes import auth as auth_routes
 
 app = FastAPI(
@@ -48,6 +48,7 @@ app.add_middleware(
 app.include_router(analyze.router, prefix="/api", tags=["analyze"])
 app.include_router(discover.router, prefix="/api", tags=["discover"])
 app.include_router(portfolio.router, prefix="/api", tags=["portfolio"])
+app.include_router(cc_strategy.router, prefix="/api", tags=["cc-strategy"])  # must be before covered_calls
 app.include_router(covered_calls.router, prefix="/api", tags=["covered-calls"])
 app.include_router(market.router, prefix="/api", tags=["market"])
 app.include_router(ai_advisor.router, prefix="/api", tags=["ai"])
@@ -58,6 +59,7 @@ app.include_router(paper_trade.router, prefix="/api", tags=["paper-trade"])
 app.include_router(auth_routes.router, prefix="/api", tags=["auth"])
 app.include_router(global_stocks.router, prefix="/api", tags=["global-stocks"])
 app.include_router(nse_search.router, prefix="/api", tags=["nse-search"])
+# cc_strategy already registered above before covered_calls
 
 
 @app.get("/")

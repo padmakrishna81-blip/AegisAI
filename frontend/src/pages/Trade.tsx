@@ -24,7 +24,8 @@ interface ChunkState extends ChunkConfig {
   sell_time: string | null
   realised_pnl: number | null
   unrealised_pnl: number | null
-  cmp: number | null                  // live price at last refresh
+  label?: string                    // optional label e.g. "Phase 1 Entry" for CC trades
+  cmp: number | null
   dist_to_entry: number | null        // CMP - entry_price: +ve = waiting to fall, -ve = missed
   dist_to_entry_pct: number | null
 }
@@ -46,7 +47,8 @@ interface Position {
   symbol: string
   company_name: string
   status: string
-  has_any_fill: boolean      // true only when at least one chunk is BOUGHT or SOLD
+  trade_type?: string           // "EQUITY" | "COVERED_CALL"
+  has_any_fill: boolean
   total_allocation: number
   invested: number
   current_value: number
@@ -59,6 +61,35 @@ interface Position {
   chunks: ChunkState[]
 }
 
+interface CcPosition {
+  trade_id: string
+  symbol: string
+  company_name: string
+  trade_status: string
+  option_symbol: string
+  strike: number
+  expiry: string
+  sell_premium: number
+  premium_income: number
+  lots: number
+  lot_size: number
+  option_status: 'OPEN' | 'CLOSED' | 'EXPIRED'
+  option_pnl: number | null
+  close_premium: number | null
+  opened_at: string
+  closed_at: string | null
+  // Live MTM fields
+  current_ltp:     number | null
+  buy_back_cost:   number | null
+  option_mtm_inr:  number | null   // +ve = profit (CE decayed), -ve = loss (CE rose)
+  option_mtm_pct:  number | null
+  // Stock chunks
+  phase1_status: string
+  phase2_status: string
+  phase1_buy_price: number | null
+  phase2_buy_price: number | null
+}
+
 interface Summary {
   virtual_cash: number
   total_invested: number
@@ -69,6 +100,7 @@ interface Summary {
   active_trade_count: number
   holdings: HoldingAgg[]
   positions: Position[]
+  cc_positions: CcPosition[]
 }
 
 interface ChunkDetail {
@@ -497,8 +529,12 @@ function TradeCard({ pos, onAction }: { pos: Position; onAction: () => void }) {
     try {
       await client.post(`/paper/trades/${pos.trade_id}/${action}`)
       onAction()
+    } catch (e: unknown) {
+      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      if (msg) alert(msg)
     } finally {
-      setActing(false) }
+      setActing(false)
+    }
   }
 
   const doDelete = async () => {
@@ -526,6 +562,9 @@ function TradeCard({ pos, onAction }: { pos: Position; onAction: () => void }) {
             <div className="font-semibold text-white">{shortSymbol(pos.symbol)}</div>
             <div className="text-xs text-muted truncate max-w-[160px]">{pos.company_name}</div>
           </div>
+          {pos.trade_type === 'COVERED_CALL' && (
+            <span className="px-2 py-0.5 bg-amber-950 border border-amber-700 text-score-amber rounded text-[10px] font-bold">CC</span>
+          )}
           <span className={`px-2 py-0.5 rounded text-xs font-bold ${STATUS_STYLES[pos.status] || 'text-muted'}`}>
             {pos.status}
           </span>
@@ -602,9 +641,13 @@ function TradeCard({ pos, onAction }: { pos: Position; onAction: () => void }) {
                 return (
                   <tr key={chunk.chunk_no} className={`border-b border-border/30 ${isWaiting && dist != null && dist <= 0 ? 'bg-green-950/20' : ''}`}>
                     <td className="py-2 text-center">
-                      <span className="w-5 h-5 rounded-full bg-blue-950 border border-blue-800 text-score-blue text-[10px] font-bold inline-flex items-center justify-center">
-                        {chunk.chunk_no}
-                      </span>
+                      {chunk.label ? (
+                        <span className="text-[10px] text-blue-400 font-medium whitespace-nowrap">{chunk.label.replace(' Entry','')}</span>
+                      ) : (
+                        <span className="w-5 h-5 rounded-full bg-blue-950 border border-blue-800 text-score-blue text-[10px] font-bold inline-flex items-center justify-center">
+                          {chunk.chunk_no}
+                        </span>
+                      )}
                     </td>
                     <td className="py-2 text-right text-white font-medium">₹{chunk.entry_price.toFixed(2)}</td>
                     <td className="py-2 text-right">
@@ -1184,9 +1227,207 @@ function OrdersLog() {
   )
 }
 
+// ─── CC Options Positions Tab ─────────────────────────────────────────────────
+
+function CcPositionsTab({ positions, onRefresh }: { positions: CcPosition[]; onRefresh: () => void }) {
+  const [closing, setClosing]       = useState<string | null>(null)
+  const [closePremium, setClosePremium] = useState<Record<string, string>>({})
+  const [acting, setActing]         = useState(false)
+
+  const doClose = async (tid: string) => {
+    const p = parseFloat(closePremium[tid] || '0')
+    if (!p || p <= 0) return
+    setActing(true)
+    try {
+      await client.post(`/paper/cc-option/${tid}/close`, { close_premium: p })
+      setClosing(null)
+      onRefresh()
+    } finally { setActing(false) }
+  }
+
+  const doExpire = async (tid: string) => {
+    if (!window.confirm('Mark this CE as expired worthless? You keep the full premium.')) return
+    setActing(true)
+    try {
+      await client.post(`/paper/cc-option/${tid}/expire`)
+      onRefresh()
+    } finally { setActing(false) }
+  }
+
+  const statusBadge = (s: string) => {
+    if (s === 'OPEN')    return 'bg-blue-950 border-blue-800 text-score-blue'
+    if (s === 'CLOSED')  return 'bg-slate-700 border-slate-600 text-muted'
+    if (s === 'EXPIRED') return 'bg-green-950 border-green-800 text-score-green'
+    return ''
+  }
+
+  if (positions.length === 0) return (
+    <div className="bg-card border border-border rounded-xl p-10 text-center">
+      <div className="text-3xl mb-3">🔒</div>
+      <div className="text-white font-semibold mb-1">No options positions yet</div>
+      <div className="text-sm text-muted">Short CE positions from Covered Call plans appear here.</div>
+    </div>
+  )
+
+  return (
+    <div className="space-y-3">
+      <div className="text-xs text-blue-400 px-1">
+        Short CE positions from Covered Call plans. Close by buying back at a lower premium, or mark as Expired if the option expires worthless.
+      </div>
+      <div className="bg-card border border-border rounded-xl overflow-hidden">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-[10px] text-muted border-b border-border bg-slate-800/40">
+              <th className="text-left px-5 py-2.5">Stock / Option</th>
+              <th className="text-left px-3 py-2.5">Expiry</th>
+              <th className="text-right px-3 py-2.5">Sold @</th>
+              <th className="text-right px-3 py-2.5">Current LTP</th>
+              <th className="text-right px-3 py-2.5">Total Income</th>
+              <th className="text-right px-3 py-2.5">MTM P&L</th>
+              <th className="text-right px-3 py-2.5">Buy-back Cost</th>
+              <th className="text-center px-3 py-2.5">Phase 1</th>
+              <th className="text-center px-3 py-2.5">Phase 2</th>
+              <th className="text-center px-3 py-2.5">Status</th>
+              <th className="text-right px-3 py-2.5">Final P&L</th>
+              <th className="px-3 py-2.5">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {positions.map(p => (
+              <>
+                <tr key={p.trade_id} className="border-b border-border/40 hover:bg-slate-800/20">
+                  <td className="px-5 py-3">
+                    <div className="font-bold text-white">{p.option_symbol}</div>
+                    <div className="text-[10px] text-muted">{p.company_name} · Strike ₹{p.strike} · {p.lots}L × {p.lot_size.toLocaleString('en-IN')}</div>
+                  </td>
+                  <td className="px-3 py-3 text-xs text-slate-300">{p.expiry}</td>
+                  <td className="px-3 py-3 text-right">
+                    <div className="text-score-green font-semibold">₹{p.sell_premium}</div>
+                    <div className="text-[10px] text-muted">per share</div>
+                  </td>
+                  <td className="px-3 py-3 text-right">
+                    {p.option_status === 'OPEN' ? (
+                      p.current_ltp != null ? (
+                        <div>
+                          <div className={`font-semibold ${p.current_ltp < p.sell_premium ? 'text-score-green' : 'text-score-red'}`}>
+                            ₹{p.current_ltp.toFixed(2)}
+                          </div>
+                          <div className="text-[10px] text-muted">live</div>
+                        </div>
+                      ) : <span className="text-muted text-xs">fetching…</span>
+                    ) : (
+                      p.close_premium != null
+                        ? <span className="text-slate-400 text-xs">₹{p.close_premium} (closed)</span>
+                        : <span className="text-score-green text-xs">₹0 (expired)</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-3 text-right text-score-green font-bold">₹{p.premium_income.toLocaleString('en-IN')}</td>
+                  <td className="px-3 py-3 text-right">
+                    {p.option_status === 'OPEN' && p.option_mtm_inr != null ? (
+                      <div>
+                        <div className={`font-bold ${p.option_mtm_inr >= 0 ? 'text-score-green' : 'text-score-red'}`}>
+                          {p.option_mtm_inr >= 0 ? '+' : ''}₹{Math.abs(p.option_mtm_inr).toLocaleString('en-IN')}
+                        </div>
+                        <div className={`text-[10px] ${p.option_mtm_pct != null && p.option_mtm_pct >= 0 ? 'text-score-green' : 'text-score-red'}`}>
+                          {p.option_mtm_pct != null ? `${p.option_mtm_pct >= 0 ? '+' : ''}${p.option_mtm_pct}%` : ''}
+                        </div>
+                      </div>
+                    ) : (
+                      <span className="text-muted text-xs">—</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-3 text-right text-xs text-slate-400">
+                    {p.option_status === 'OPEN' && p.buy_back_cost != null
+                      ? `₹${p.buy_back_cost.toLocaleString('en-IN')}`
+                      : '—'}
+                  </td>
+                  <td className="px-3 py-3 text-center">
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${
+                      p.phase1_status === 'BOUGHT' ? 'bg-blue-950 border border-blue-800 text-score-blue' :
+                      p.phase1_status === 'SOLD' ? 'bg-green-950 border border-green-800 text-score-green' :
+                      'bg-slate-700 text-muted'}`}>
+                      {p.phase1_status}
+                      {p.phase1_buy_price ? ` @₹${p.phase1_buy_price}` : ''}
+                    </span>
+                  </td>
+                  <td className="px-3 py-3 text-center">
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${
+                      p.phase2_status === 'BOUGHT' ? 'bg-blue-950 border border-blue-800 text-score-blue' :
+                      p.phase2_status === 'SOLD' ? 'bg-green-950 border border-green-800 text-score-green' :
+                      'bg-slate-700 text-muted'}`}>
+                      {p.phase2_status}
+                      {p.phase2_buy_price ? ` @₹${p.phase2_buy_price}` : ''}
+                    </span>
+                  </td>
+                  <td className="px-3 py-3 text-center">
+                    <span className={`text-[10px] px-2 py-0.5 rounded border font-bold ${statusBadge(p.option_status)}`}>
+                      {p.option_status}
+                    </span>
+                  </td>
+                  <td className="px-3 py-3 text-right">
+                    {p.option_pnl != null ? (
+                      <span className={`font-bold ${p.option_pnl >= 0 ? 'text-score-green' : 'text-score-red'}`}>
+                        {p.option_pnl >= 0 ? '+' : ''}₹{p.option_pnl.toLocaleString('en-IN')}
+                      </span>
+                    ) : (
+                      <span className="text-muted text-xs">—</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-3">
+                    {p.option_status === 'OPEN' && (
+                      <div className="flex gap-1">
+                        <button onClick={() => setClosing(closing === p.trade_id ? null : p.trade_id)}
+                          className="px-2 py-1 bg-card border border-border text-muted hover:text-white rounded text-xs">
+                          Close
+                        </button>
+                        <button onClick={() => doExpire(p.trade_id)} disabled={acting}
+                          className="px-2 py-1 bg-green-950 border border-green-800 text-score-green hover:bg-green-900 rounded text-xs">
+                          Expired
+                        </button>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+                {closing === p.trade_id && (
+                  <tr key={`${p.trade_id}-close`} className="border-b border-border/40 bg-slate-800/20">
+                    <td colSpan={12} className="px-5 py-3">
+                      <div className="flex items-center gap-3">
+                        <span className="text-xs text-slate-300">Buy back {p.option_symbol} at premium:</span>
+                        <input type="number" value={closePremium[p.trade_id] || ''} step={0.05} min={0.05}
+                          onChange={e => setClosePremium(prev => ({...prev, [p.trade_id]: e.target.value}))}
+                          placeholder="e.g. 2.50"
+                          className="w-28 bg-slate-800 border border-border rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-blue-500"
+                        />
+                        {closePremium[p.trade_id] && (
+                          <span className="text-xs text-slate-400">
+                            Cost: ₹{Math.round(parseFloat(closePremium[p.trade_id] || '0') * p.lots * p.lot_size).toLocaleString('en-IN')} |
+                            P&L: <span className={p.premium_income - parseFloat(closePremium[p.trade_id] || '0') * p.lots * p.lot_size >= 0 ? 'text-score-green' : 'text-score-red'}>
+                              {p.premium_income - parseFloat(closePremium[p.trade_id] || '0') * p.lots * p.lot_size >= 0 ? '+' : ''}
+                              ₹{Math.round(p.premium_income - parseFloat(closePremium[p.trade_id] || '0') * p.lots * p.lot_size).toLocaleString('en-IN')}
+                            </span>
+                          </span>
+                        )}
+                        <button onClick={() => doClose(p.trade_id)} disabled={acting || !closePremium[p.trade_id]}
+                          className="px-3 py-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded text-xs font-medium">
+                          Confirm Close
+                        </button>
+                        <button onClick={() => setClosing(null)} className="text-xs text-muted hover:text-white">Cancel</button>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 // ─── Main Trade Page ──────────────────────────────────────────────────────────
 
-type TradeTab = 'holdings' | 'portfolio' | 'new_trade' | 'orders'
+type TradeTab = 'holdings' | 'portfolio' | 'new_trade' | 'orders' | 'options'
 
 export default function Trade() {
   const [tab, setTab] = useState<TradeTab>('holdings')
@@ -1271,6 +1512,7 @@ export default function Trade() {
           { key: 'portfolio',  label: '📊 Active Trades' },
           { key: 'new_trade',  label: '+ New Trade' },
           { key: 'orders',     label: '📋 Order Log' },
+          { key: 'options',    label: '🔒 Options' },
         ] as { key: TradeTab; label: string }[]).map(({ key, label }) => (
           <button
             key={key}
@@ -1361,6 +1603,10 @@ export default function Trade() {
       )}
 
       {tab === 'orders' && <OrdersLog />}
+
+      {tab === 'options' && (
+        <CcPositionsTab positions={summary?.cc_positions || []} onRefresh={refresh} />
+      )}
 
       {/* Info footer */}
       <div className="bg-slate-800/60 border border-border rounded-xl p-4 text-xs text-muted space-y-1">

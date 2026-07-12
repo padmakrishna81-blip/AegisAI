@@ -12,6 +12,7 @@ const BASE_NAV = [
 
 const GATED_NAV = [
   { path: '/covered-calls', label: 'Covered Calls', icon: '◉', perm: 'covered_calls' },
+  { path: '/wheel',         label: 'Wheel Strategy', icon: '🎡', perm: 'wheel' },
   { path: '/market',        label: 'Market',         icon: '◊', perm: 'market' },
   { path: '/ai-insights',   label: 'AI Insights',    icon: '◇', perm: 'ai_insights' },
 ]

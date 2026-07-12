@@ -14,12 +14,24 @@ async def explain_stock(symbol: str):
     """Get AI explanation and verdict for a stock."""
     sym = normalize_symbol(symbol)
     result = calculate_full(sym)
+
+    # Fetch prev close + day change
+    info       = get_info(sym)
+    cmp        = safe_get(info, "currentPrice") or safe_get(info, "regularMarketPrice") or result.get("current_price", 0)
+    prev_close = safe_get(info, "previousClose") or safe_get(info, "regularMarketPreviousClose")
+    change_inr = round(float(cmp) - float(prev_close), 2) if cmp and prev_close else None
+    change_pct = round((float(cmp) / float(prev_close) - 1) * 100, 2) if cmp and prev_close and float(prev_close) > 0 else None
+
     return {
-        "symbol": sym,
+        "symbol":       sym,
         "company_name": result.get("company_name", sym),
-        "verdict": result.get("verdict", {}),
-        "overall_score": result.get("overall_score", 0),
-        "scores": result.get("scores", {}),
+        "verdict":      result.get("verdict", {}),
+        "overall_score":result.get("overall_score", 0),
+        "scores":       result.get("scores", {}),
+        "current_price":round(float(cmp), 2) if cmp else 0,
+        "prev_close":   round(float(prev_close), 2) if prev_close else None,
+        "change_inr":   change_inr,
+        "change_pct":   change_pct,
     }
 
 

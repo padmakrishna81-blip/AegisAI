@@ -117,7 +117,7 @@ def list_users() -> list[dict]:
             for u in users.values()]
 
 
-ALL_PERMISSIONS = ["covered_calls", "market", "ai_insights"]
+ALL_PERMISSIONS = ["covered_calls", "wheel", "market", "ai_insights"]
 
 
 def create_user(username: str, full_name: str, password: str, role: str = "user",

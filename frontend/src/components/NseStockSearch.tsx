@@ -19,13 +19,15 @@ interface Props {
 // Static ETF + Index entries shown when query matches
 const ETF_INDEX_CATALOG: NseResult[] = [
   // Indices
-  { symbol: '^NSEI',     name: 'NIFTY 50',         sector: 'Index',  type: 'index' },
-  { symbol: '^NSEBANK',  name: 'NIFTY Bank',        sector: 'Index',  type: 'index' },
-  { symbol: '^CNXIT',    name: 'NIFTY IT',          sector: 'Index',  type: 'index' },
-  { symbol: '^CNXPHARMA',name: 'NIFTY Pharma',      sector: 'Index',  type: 'index' },
-  { symbol: '^CNXAUTO',  name: 'NIFTY Auto',        sector: 'Index',  type: 'index' },
-  { symbol: '^CNXFMCG',  name: 'NIFTY FMCG',       sector: 'Index',  type: 'index' },
-  { symbol: '^NSEMDCP50',name: 'NIFTY Midcap 50',   sector: 'Index',  type: 'index' },
+  { symbol: '^NSEI',              name: 'NIFTY 50',           sector: 'Index',  type: 'index' },
+  { symbol: '^NSEBANK',           name: 'NIFTY Bank',          sector: 'Index',  type: 'index' },
+  { symbol: '^CNXIT',             name: 'NIFTY IT',            sector: 'Index',  type: 'index' },
+  { symbol: 'NIFTY_FIN_SERVICE.NS', name: 'NIFTY Fin Services', sector: 'Index', type: 'index' },
+  { symbol: '^CNXPHARMA',         name: 'NIFTY Pharma',        sector: 'Index',  type: 'index' },
+  { symbol: '^CNXAUTO',           name: 'NIFTY Auto',          sector: 'Index',  type: 'index' },
+  { symbol: '^CNXFMCG',           name: 'NIFTY FMCG',         sector: 'Index',  type: 'index' },
+  { symbol: '^NSEMDCP50',         name: 'NIFTY Midcap 50',     sector: 'Index',  type: 'index' },
+  { symbol: '^NSMIDCP',           name: 'NIFTY Smallcap 100',  sector: 'Index',  type: 'index' },
   // Top ETFs
   { symbol: 'NIFTYBEES.NS', name: 'Nippon Nifty BeES',      sector: 'ETF', type: 'etf' },
   { symbol: 'BANKBEES.NS',  name: 'Nippon Bank BeES',        sector: 'ETF', type: 'etf' },
