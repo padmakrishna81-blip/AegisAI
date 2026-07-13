@@ -51,6 +51,8 @@ export interface StockAnalysis {
   symbol: string
   company_name: string
   current_price: number
+  high_52w: number | null
+  low_52w: number | null
   overall_score: number
   recommendation: 'BUY' | 'HOLD' | 'SELL'
   market_mode: string

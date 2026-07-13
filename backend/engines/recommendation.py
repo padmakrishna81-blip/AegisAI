@@ -46,6 +46,8 @@ def calculate_full(symbol: str) -> dict:
     info = get_info(symbol)
     company_name = safe_get(info, "longName", default=symbol) or symbol
     current_price = safe_get(info, "currentPrice", default=None) or safe_get(info, "regularMarketPrice", default=0) or 0
+    high_52w = safe_get(info, "fiftyTwoWeekHigh", default=None)
+    low_52w  = safe_get(info, "fiftyTwoWeekLow",  default=None)
 
     scores_for_verdict = {
         "overall": overall,
@@ -75,6 +77,8 @@ def calculate_full(symbol: str) -> dict:
         "symbol": symbol,
         "company_name": company_name,
         "current_price": current_price,
+        "high_52w": float(high_52w) if high_52w is not None else None,
+        "low_52w":  float(low_52w)  if low_52w  is not None else None,
         "overall_score": overall,
         "recommendation": recommendation,
         "market_mode": market_mode,

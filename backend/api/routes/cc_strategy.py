@@ -530,6 +530,7 @@ async def scan_cc_strategy(
     # Only fall back to expiry-specific call when the default chain yields no ATM IV
     # (happens when nearest expiry < 24 days — e.g. week before monthly expiry).
     iv_map: dict[str, float | None] = {}
+    spot_map: dict[str, float] = {}  # bare -> live spot (captured during IV pre-fetch)
     if min_iv > 0:
         try:
             import time as _time
@@ -540,11 +541,12 @@ async def scan_cc_strategy(
                 bare = sym.replace(".NS", "")
                 try:
                     data = nse_shared.equities_option_chain(bare)
-                    _time.sleep(0.08)
+                    _time.sleep(0.06)
                     spot = float(data.get("records", {}).get("underlyingValue") or 0)
                     if spot <= 0:
                         iv_map[bare] = None
                         continue
+                    spot_map[bare] = spot
                     rows = (data.get("filtered", {}).get("data", [])
                             or data.get("records", {}).get("data", []))
                     best_iv, best_diff = _find_atm_iv(rows, spot)
@@ -555,7 +557,7 @@ async def scan_cc_strategy(
                         if best_exp:
                             try:
                                 data2 = nse_shared.equities_option_chain(bare, expiry=best_exp)
-                                _time.sleep(0.08)
+                                _time.sleep(0.06)
                                 rows2 = (data2.get("filtered", {}).get("data", [])
                                          or data2.get("records", {}).get("data", []))
                                 best_iv, _ = _find_atm_iv(rows2, spot)
@@ -574,7 +576,8 @@ async def scan_cc_strategy(
         "below_sma50_pct": below_sma50_pct,
         "min_score":       min_score,
         "min_iv":          min_iv,
-        "iv_map":          iv_map,   # pass pre-fetched IVs to each scan
+        "iv_map":          iv_map,
+        "spot_map":        spot_map,  # pre-fetched spots — no extra NSE call per stock
     }
 
     loop     = asyncio.get_event_loop()
@@ -624,6 +627,39 @@ async def assess_stocks(body: dict):
         if s:
             normalized.append(s + ".NS")
 
+    # ── Batch-fetch spot + IV via single shared NSE session (fast) ────────────
+    import time as _time
+    nse_data: dict[str, dict] = {}  # bare -> {spot, iv, expiry_dates}
+    try:
+        from jugaad_data.nse import NSELive
+        from api.routes.covered_calls import _pick_best_expiry as _pbe
+        nse_shared = NSELive()
+        for sym in normalized:
+            bare = sym.replace(".NS", "")
+            try:
+                data = nse_shared.equities_option_chain(bare)
+                _time.sleep(0.05)
+                rec  = data.get("records", {})
+                spot = float(rec.get("underlyingValue") or 0)
+                rows = data.get("filtered", {}).get("data", []) or rec.get("data", [])
+                iv, _ = _find_atm_iv(rows, spot)
+                if iv is None:
+                    exp_dates = rec.get("expiryDates", [])
+                    best_exp  = _pbe(exp_dates)
+                    if best_exp:
+                        try:
+                            d2   = nse_shared.equities_option_chain(bare, expiry=best_exp)
+                            _time.sleep(0.05)
+                            r2   = d2.get("filtered", {}).get("data", []) or d2.get("records", {}).get("data", [])
+                            iv, _ = _find_atm_iv(r2, spot)
+                        except Exception:
+                            pass
+                nse_data[bare] = {"spot": spot if spot > 0 else None, "iv": iv}
+            except Exception:
+                nse_data[bare] = {"spot": None, "iv": None}
+    except Exception:
+        pass
+
     loop     = asyncio.get_event_loop()
     executor = ThreadPoolExecutor(max_workers=8)
 
@@ -632,35 +668,44 @@ async def assess_stocks(body: dict):
         import yfinance as yf
         from data.market_data import get_info, safe_get
         try:
+            # Use pre-fetched NSE data — no extra NSE call per stock
+            pre   = nse_data.get(bare, {})
+            cmp   = pre.get("spot") or 0
+            atm_iv = pre.get("iv")
+
             t    = yf.Ticker(sym)
-            info = t.info
-            cmp  = float(_get_live_spot(bare) or safe_get(info, "currentPrice") or safe_get(info, "regularMarketPrice") or 0)
+            # fast_info is much lighter than .info — avoids the 3-5s full info call
+            fi   = t.fast_info
+            if cmp <= 0:
+                cmp = float(getattr(fi, "last_price", None) or getattr(fi, "regular_market_price", None) or 0)
             if cmp <= 0:
                 return {"symbol": bare, "eligible": False, "warnings": [{"level":"high","category":"Data","message":"Could not fetch price data."}]}
 
-            high52 = float(safe_get(info, "fiftyTwoWeekHigh") or cmp)
-            low52  = float(safe_get(info, "fiftyTwoWeekLow")  or cmp)
+            high52 = float(getattr(fi, "year_high", None) or cmp)
+            low52  = float(getattr(fi, "year_low",  None) or cmp)
+
+            # .info only for name/sector (these aren't in fast_info)
+            info   = t.info
             name   = safe_get(info, "longName") or safe_get(info, "shortName") or bare
             sector = safe_get(info, "sector") or ""
 
-            hist5  = t.history(period="5d")
+            # 5-day history only (much faster than 1y)
+            hist5     = t.history(period="5d")
             change_5d = round((float(hist5["Close"].iloc[-1]) / float(hist5["Close"].iloc[0]) - 1) * 100, 2) if not hist5.empty and len(hist5) >= 2 else 0.0
 
-            hist1y = t.history(period="1y")
+            # 3-month history for 50/200 DMA (3mo ≈ 65 bars — enough for 50 DMA, skip 200 DMA)
             above_200dma = False
             sma50_val    = None
             score_adj    = 50
-            if not hist1y.empty and len(hist1y) >= 50:
-                close = hist1y["Close"]
+            hist3m = t.history(period="3mo")
+            if not hist3m.empty and len(hist3m) >= 50:
+                close        = hist3m["Close"]
                 sma50_val    = float(close.rolling(50).mean().iloc[-1])
-                sma200       = float(close.rolling(200).mean().iloc[-1]) if len(hist1y) >= 200 else None
-                above_200dma = bool(sma200 and cmp > sma200)
-                score_adj = 60
-                if above_200dma:      score_adj += 15
-                if cmp > sma50_val:   score_adj += 10
-                if change_5d >= -1:   score_adj += 5
+                above_200dma = False  # can't compute 200 DMA from 3mo, skip
+                score_adj    = 60
+                if cmp > sma50_val:  score_adj += 10
+                if change_5d >= -1:  score_adj += 5
 
-            atm_iv   = _get_atm_iv(bare)
             lot_size = _get_lot_size(sym)
 
             # Build all warnings (no filters skipped)
@@ -729,25 +774,23 @@ def _scan_one_with_criteria(symbol: str, criteria: dict) -> dict | None:
 
     bare = symbol.replace(".NS", "").upper()
     try:
-        t    = yf.Ticker(symbol)
-        info = t.info
+        t  = yf.Ticker(symbol)
+        fi = t.fast_info
 
-        cmp = _get_live_spot(bare)
-        if not cmp:
-            cmp = safe_get(info, "currentPrice") or safe_get(info, "regularMarketPrice")
-        if not cmp or float(cmp) <= 0:
+        # Use pre-fetched NSE spot — skip extra NSE call
+        spot_map = criteria.get("spot_map", {})
+        cmp = float(spot_map.get(bare) or 0)
+        if cmp <= 0:
+            cmp = float(getattr(fi, "last_price", None) or getattr(fi, "regular_market_price", None) or 0)
+        if cmp <= 0:
             return None
-        cmp = float(cmp)
 
-        high52 = safe_get(info, "fiftyTwoWeekHigh")
-        low52  = safe_get(info, "fiftyTwoWeekLow")
-        name   = safe_get(info, "longName") or safe_get(info, "shortName") or bare
-        sector = safe_get(info, "sector") or ""
-
+        high52 = float(getattr(fi, "year_high", None) or 0)
+        low52  = float(getattr(fi, "year_low",  None) or 0)
         if not high52 or not low52:
             return None
-        high52, low52 = float(high52), float(low52)
 
+        # name/sector — only fetched if stock passes price filters (lazy)
         hist5 = t.history(period="5d")
         if hist5.empty or len(hist5) < 3:
             return None
@@ -765,33 +808,32 @@ def _scan_one_with_criteria(symbol: str, criteria: dict) -> dict | None:
 
         lot_size = _get_lot_size(symbol)
 
-        hist1y = t.history(period="1y")
+        # 3-month history is enough for 50 DMA (65 bars) — much faster than 1y
+        hist3m = t.history(period="3mo")
         above_200dma = False
         score_adj    = 50
-        if not hist1y.empty and len(hist1y) >= 50:
-            close    = hist1y["Close"]
+        if not hist3m.empty and len(hist3m) >= 50:
+            close    = hist3m["Close"]
             sma50    = float(close.rolling(50).mean().iloc[-1])
-            sma200   = float(close.rolling(200).mean().iloc[-1]) if len(hist1y) >= 200 else None
-            above_200dma = bool(sma200 and cmp > sma200)
+            above_200dma = False  # can't compute 200 DMA from 3mo
             if cmp < sma50 * (1 - below_sma50_pct / 100):
                 return None
             score_adj = 60
-            if above_200dma:    score_adj += 15
             if cmp > sma50:     score_adj += 10
             if change_5d >= -1: score_adj += 5
+
+        # Fetch name/sector only after all quick filters passed
+        info   = t.info
+        name   = safe_get(info, "longName") or safe_get(info, "shortName") or bare
+        sector = safe_get(info, "sector") or ""
 
         # ── IV filter — use pre-fetched IV map (reliable) ─────────────────
         iv_map   = criteria.get("iv_map", {})
         atm_iv   = iv_map.get(bare) if iv_map else None
-        if atm_iv is None and min_iv > 0:
-            # Fallback: try live fetch (may fail in parallel but worth trying)
-            atm_iv = _get_atm_iv(bare)
         if min_iv > 0 and atm_iv is not None and atm_iv < min_iv:
             return None  # confirmed low IV — exclude
 
         # ── Upcoming results check — only exclude if event within 21 days ──
-        # Use 21d not 45d: during Q1/Q2 results season all large-caps have results
-        # in 45d window which blocks the entire scanner
         upcoming_event = _get_upcoming_event(bare, days=21)
         if upcoming_event:
             return None  # imminent IV spike risk
@@ -855,22 +897,27 @@ async def get_cc_plan(
 
     def _fetch():
         t      = yf.Ticker(sym)
+        fi     = t.fast_info
+        # Use fast_info for 52W range (avoids slow full .info call)
+        high52 = float(getattr(fi, "year_high", None) or 0)
+        low52  = float(getattr(fi, "year_low",  None) or 0)
+        # Still need .info for name — but only fetch it once
         info   = t.info
         name   = safe_get(info, "longName") or safe_get(info, "shortName") or bare
-        high52 = float(safe_get(info, "fiftyTwoWeekHigh") or 0)
-        low52  = float(safe_get(info, "fiftyTwoWeekLow")  or 0)
+        if not high52: high52 = float(safe_get(info, "fiftyTwoWeekHigh") or 0)
+        if not low52:  low52  = float(safe_get(info, "fiftyTwoWeekLow")  or 0)
         hist5  = t.history(period="5d")
         chg5   = round((float(hist5["Close"].iloc[-1]) / float(hist5["Close"].iloc[0]) - 1) * 100, 2) if not hist5.empty and len(hist5) >= 2 else 0.0
-        return name, high52, low52, chg5
+        # Also get spot from fast_info as fallback
+        fallback_spot = float(getattr(fi, "last_price", None) or getattr(fi, "regular_market_price", None) or safe_get(info, "currentPrice") or safe_get(info, "regularMarketPrice") or 0)
+        return name, high52, low52, chg5, fallback_spot
 
-    # Get live spot from NSE (most accurate)
-    spot = _get_live_spot(bare)
-    name, high52, low52, change_5d = await loop.run_in_executor(executor, _fetch)
+    # Run NSE spot fetch and yfinance fetch in parallel
+    spot_future  = loop.run_in_executor(executor, _get_live_spot, bare)
+    yf_future    = loop.run_in_executor(executor, _fetch)
+    spot_raw, (name, high52, low52, change_5d, fallback_spot) = await asyncio.gather(spot_future, yf_future)
 
-    if not spot:
-        t    = yf.Ticker(sym)
-        info = t.info
-        spot = float(safe_get(info, "currentPrice") or safe_get(info, "regularMarketPrice") or 0)
+    spot = spot_raw or fallback_spot
     if not spot:
         raise HTTPException(status_code=404, detail=f"No price data for {bare}")
 

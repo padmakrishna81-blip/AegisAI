@@ -179,35 +179,49 @@ export default function StockDetailModal({ symbol, onClose }: StockDetailModalPr
                   </div>
                 </div>
 
-                {/* Row 2: 30-day range strip */}
-                {quote && (quote.high_30d != null || quote.low_30d != null) && (
-                  <div className="grid grid-cols-4 gap-2 border-t border-border pt-3">
-                    <div className="bg-slate-800 rounded-lg p-2.5 text-center">
-                      <div className="text-[10px] text-muted mb-0.5">30D High</div>
-                      <div className="text-xs font-semibold text-white">
-                        {quote.high_30d != null ? `₹${quote.high_30d.toLocaleString('en-IN', { maximumFractionDigits: 2 })}` : '—'}
-                      </div>
+                {/* Row 2: 52W range + 30D range strip */}
+                <div className="grid grid-cols-4 gap-2 border-t border-border pt-3">
+                  <div className="bg-slate-800 rounded-lg p-2.5 text-center">
+                    <div className="text-[10px] text-muted mb-0.5">52W High</div>
+                    <div className="text-xs font-semibold text-white">
+                      {data.high_52w != null ? `₹${data.high_52w.toLocaleString('en-IN', { maximumFractionDigits: 2 })}` : '—'}
                     </div>
-                    <div className="bg-slate-800 rounded-lg p-2.5 text-center">
-                      <div className="text-[10px] text-muted mb-0.5">↓ From 30H</div>
-                      <div className={`text-xs font-semibold ${quote.drop_from_30d_high_pct != null ? 'text-score-red' : 'text-muted'}`}>
-                        {quote.drop_from_30d_high_pct != null ? `${quote.drop_from_30d_high_pct.toFixed(1)}%` : '—'}
+                    {data.high_52w != null && (quote?.cmp ?? data.current_price) > 0 && (
+                      <div className="text-[10px] text-score-red mt-0.5">
+                        {(((quote?.cmp ?? data.current_price) / data.high_52w - 1) * 100).toFixed(1)}%
                       </div>
-                    </div>
-                    <div className="bg-slate-800 rounded-lg p-2.5 text-center">
-                      <div className="text-[10px] text-muted mb-0.5">30D Low</div>
-                      <div className="text-xs font-semibold text-white">
-                        {quote.low_30d != null ? `₹${quote.low_30d.toLocaleString('en-IN', { maximumFractionDigits: 2 })}` : '—'}
-                      </div>
-                    </div>
-                    <div className="bg-slate-800 rounded-lg p-2.5 text-center">
-                      <div className="text-[10px] text-muted mb-0.5">↑ From 30L</div>
-                      <div className={`text-xs font-semibold ${quote.lift_from_30d_low_pct != null ? 'text-score-green' : 'text-muted'}`}>
-                        {quote.lift_from_30d_low_pct != null ? `+${quote.lift_from_30d_low_pct.toFixed(1)}%` : '—'}
-                      </div>
-                    </div>
+                    )}
                   </div>
-                )}
+                  <div className="bg-slate-800 rounded-lg p-2.5 text-center">
+                    <div className="text-[10px] text-muted mb-0.5">52W Low</div>
+                    <div className="text-xs font-semibold text-white">
+                      {data.low_52w != null ? `₹${data.low_52w.toLocaleString('en-IN', { maximumFractionDigits: 2 })}` : '—'}
+                    </div>
+                    {data.low_52w != null && (quote?.cmp ?? data.current_price) > 0 && (
+                      <div className="text-[10px] text-score-green mt-0.5">
+                        +{(((quote?.cmp ?? data.current_price) / data.low_52w - 1) * 100).toFixed(1)}%
+                      </div>
+                    )}
+                  </div>
+                  <div className="bg-slate-800 rounded-lg p-2.5 text-center">
+                    <div className="text-[10px] text-muted mb-0.5">30D High</div>
+                    <div className="text-xs font-semibold text-white">
+                      {quote?.high_30d != null ? `₹${quote.high_30d.toLocaleString('en-IN', { maximumFractionDigits: 2 })}` : '—'}
+                    </div>
+                    {quote?.drop_from_30d_high_pct != null && (
+                      <div className="text-[10px] text-score-red mt-0.5">{quote.drop_from_30d_high_pct.toFixed(1)}%</div>
+                    )}
+                  </div>
+                  <div className="bg-slate-800 rounded-lg p-2.5 text-center">
+                    <div className="text-[10px] text-muted mb-0.5">30D Low</div>
+                    <div className="text-xs font-semibold text-white">
+                      {quote?.low_30d != null ? `₹${quote.low_30d.toLocaleString('en-IN', { maximumFractionDigits: 2 })}` : '—'}
+                    </div>
+                    {quote?.lift_from_30d_low_pct != null && (
+                      <div className="text-[10px] text-score-green mt-0.5">+{quote.lift_from_30d_low_pct.toFixed(1)}%</div>
+                    )}
+                  </div>
+                </div>
               </div>
 
               {/* AI Verdict */}
