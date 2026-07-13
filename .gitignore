@@ -1,0 +1,26 @@
+# Environment / secrets
+backend/.env
+backend/.jwt_secret
+*.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Runtime / state files
+logs/
+paper_trades*.json
+backend/users.json
+backend/portfolio_data.json
+
+# Node / frontend build
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# OS
+.DS_Store
+Thumbs.db
