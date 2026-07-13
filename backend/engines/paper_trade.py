@@ -23,14 +23,70 @@ import uuid
 from data.market_data import get_info, safe_get
 
 # ─── Data file ────────────────────────────────────────────────────────────────
-_DATA_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "paper_trades.json")
+_DATA_DIR  = os.path.join(os.path.dirname(__file__), "..", "..")
+_DATA_FILE = os.path.join(_DATA_DIR, "paper_trades.json")
 
-# ─── In-memory state ──────────────────────────────────────────────────────────
+# ─── Per-user file helper ─────────────────────────────────────────────────────
+import threading as _threading
+
+_current_username = _threading.local()   # thread-local: set by API before each call
+
+
+def set_current_user(username: str) -> None:
+    """Call from API routes to set the active user for this request thread."""
+    _current_username.value = username
+
+
+def _get_current_user() -> str:
+    return getattr(_current_username, "value", "")
+
+
+def _current_data_file() -> str:
+    u = _get_current_user()
+    if u and u != "admin":
+        return os.path.join(_DATA_DIR, f"paper_trades_{u}.json")
+    return _DATA_FILE
+
+
+def _user_data_file(username: str) -> str:
+    if username and username != "admin":
+        return os.path.join(_DATA_DIR, f"paper_trades_{username}.json")
+    return _DATA_FILE
+
+
+def load_user_state(username: str) -> None:
+    """Reload the engine state from a specific user's data file."""
+    global _state
+    path = _user_data_file(username)
+    with _lock:
+        if os.path.exists(path):
+            try:
+                with open(path) as f:
+                    _state = json.load(f)
+                return
+            except Exception:
+                pass
+        # First time for this user — fresh state
+        _state = {"virtual_cash": 1_000_000, "trades": {}, "orders": [], "positions": {}}
+
+
+def get_user_summary_data(username: str) -> dict:
+    """Return a fresh copy of state for a specific user without modifying _state."""
+    path = _user_data_file(username)
+    if os.path.exists(path):
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"virtual_cash": 1_000_000, "trades": {}, "orders": [], "positions": {}}
+
+# ─── In-memory state (legacy — kept for backward compat with monitor loop) ────
 _state: dict = {
-    "virtual_cash": 1_000_000,  # ₹10 lakh starting balance
-    "trades": {},               # trade_id -> TradeConfig
-    "orders": [],               # list of filled/pending orders
-    "positions": {},            # trade_id -> PositionState
+    "virtual_cash": 1_000_000,
+    "trades": {},
+    "orders": [],
+    "positions": {},
 }
 
 _lock = threading.Lock()
@@ -38,7 +94,7 @@ _monitor_thread: Optional[threading.Thread] = None
 _running = False
 
 
-# ─── Persistence ──────────────────────────────────────────────────────────────
+# ─── Persistence (legacy) ─────────────────────────────────────────────────────
 
 def _load():
     global _state
@@ -52,7 +108,8 @@ def _load():
 
 def _save():
     try:
-        with open(_DATA_FILE, "w") as f:
+        path = _current_data_file()
+        with open(path, "w") as f:
             json.dump(_state, f, indent=2)
     except Exception:
         pass
@@ -149,12 +206,18 @@ def create_trade(
         "started_at": None,
         "completed_at": None,
         "total_realised_pnl": 0.0,
-        # MTM-level exit: set at creation or any time after
         "mtm_target_pct": round(float(mtm_target_pct), 4) if mtm_target_pct is not None else None,
         "mtm_target_inr": round(float(mtm_target_inr), 2) if mtm_target_inr is not None else None,
     }
 
     with _lock:
+        # Block the full allocation immediately — reserves cash for WAITING chunks
+        available = _state["virtual_cash"]
+        if available < total_allocation:
+            raise ValueError(
+                f"Insufficient virtual cash. Available: ₹{available:,.0f}, Required: ₹{total_allocation:,.0f}"
+            )
+        _state["virtual_cash"] = round(available - total_allocation, 2)
         _state["trades"][trade_id] = trade
         _save()
 
@@ -194,12 +257,14 @@ def cancel_trade(trade_id: str) -> dict:
                     f"Cannot cancel — {len(bought_chunks)} chunk(s) already executed (BOUGHT). "
                     "Exit those positions first, then cancel."
                 )
-            # Refund any WAITING chunk allocation amounts to virtual cash
+            # Refund the allocation for all WAITING chunks (cash was blocked on creation)
             refund = 0.0
             for c in trade.get("chunks", []):
                 if c["status"] == "WAITING":
                     c["status"] = "CANCELLED"
-                    # No cash was deployed yet for WAITING chunks — nothing to refund
+                    refund += float(c.get("allocation_amount", c.get("actual_cost", 0)))
+            if refund > 0:
+                _state["virtual_cash"] = round(_state["virtual_cash"] + refund, 2)
             trade["status"] = "CANCELLED"
             trade["completed_at"] = datetime.now().isoformat()
             _save()
@@ -386,7 +451,7 @@ def get_virtual_cash() -> float:
         return _state["virtual_cash"]
 
 
-def set_virtual_cash(amount: float):
+def set_virtual_cash(amount: float) -> None:
     with _lock:
         _state["virtual_cash"] = float(amount)
         _save()
@@ -421,7 +486,11 @@ def _simulate_buy(trade: dict, chunk: dict, fill_price: float) -> dict:
     # Recompute exit based on actual fill price
     chunk["exit_price"] = round(fill_price * (1 + chunk["profit_pct"] / 100), 2)
 
-    _state["virtual_cash"] = round(_state["virtual_cash"] - cost, 2)
+    # Cash was already blocked when the trade was created (total_allocation deducted).
+    # Adjust for any difference between allocated amount and actual fill cost.
+    allocated = round(chunk.get("allocation_amount", chunk["actual_cost"]), 2)
+    adjustment = round(allocated - cost, 2)  # positive = over-blocked, refund; negative = under-blocked, deduct more
+    _state["virtual_cash"] = round(_state["virtual_cash"] + adjustment, 2)
     _state["orders"].append(order)
     return order
 
@@ -657,6 +726,10 @@ def create_covered_call_trade(
     }
 
     with _lock:
+        available = _state["virtual_cash"]
+        if available < total_allocation:
+            raise ValueError(f"Insufficient virtual cash. Available: ₹{available:,.0f}, Required: ₹{total_allocation:,.0f}")
+        _state["virtual_cash"] = round(available - total_allocation, 2)
         _state["trades"][trade_id] = trade
         _save()
 
@@ -664,14 +737,23 @@ def create_covered_call_trade(
 
 
 def close_cc_option(trade_id: str, close_premium: float) -> dict:
-    """Buy back the short CE at close_premium to close the options position."""
+    """Buy back the short option (CE or PE) at close_premium to close the position."""
     with _lock:
         trade = _state["trades"].get(trade_id)
-        if not trade or trade.get("trade_type") != "COVERED_CALL":
-            raise ValueError("Not a covered call trade")
-        opt = trade["cc_option"]
-        if opt["status"] != "OPEN":
-            raise ValueError("Option position is already closed")
+        if not trade:
+            raise ValueError("Trade not found")
+        tt = trade.get("trade_type")
+        wp = trade.get("wheel_phase")
+        if tt == "COVERED_CALL":
+            opt = trade["cc_option"]
+        elif tt == "WHEEL" and wp == "PUT":
+            opt = trade["put_option"]
+        elif tt == "WHEEL":
+            opt = trade.get("cc_option") or {}
+        else:
+            raise ValueError("Not a covered call or wheel trade")
+        if not opt or opt.get("status") != "OPEN":
+            raise ValueError("Option position is already closed or not found")
         close_cost = round(close_premium * opt["lots"] * opt["lot_size"], 2)
         pnl = round(opt["premium_income"] - close_cost, 2)
         opt.update({
@@ -679,6 +761,34 @@ def close_cc_option(trade_id: str, close_premium: float) -> dict:
             "closed_at": datetime.now().isoformat(),
             "close_premium": round(close_premium, 2),
             "option_pnl": pnl,
+        })
+        _save()
+    return trade
+
+
+def expire_cc_option(trade_id: str) -> dict:
+    """Mark option as expired worthless — full premium income is P&L."""
+    with _lock:
+        trade = _state["trades"].get(trade_id)
+        if not trade:
+            raise ValueError("Trade not found")
+        tt = trade.get("trade_type")
+        wp = trade.get("wheel_phase")
+        if tt == "COVERED_CALL":
+            opt = trade["cc_option"]
+        elif tt == "WHEEL" and wp == "PUT":
+            opt = trade["put_option"]
+        elif tt == "WHEEL":
+            opt = trade.get("cc_option") or {}
+        else:
+            raise ValueError("Not a covered call or wheel trade")
+        if not opt or opt.get("status") != "OPEN":
+            raise ValueError("Option position is already closed or not found")
+        opt.update({
+            "status": "EXPIRED",
+            "closed_at": datetime.now().isoformat(),
+            "close_premium": 0.0,
+            "option_pnl": opt["premium_income"],
         })
         _save()
     return trade
@@ -735,6 +845,14 @@ def create_wheel_trade(
         "total_call_premium": 0.0,
     }
     with _lock:
+        available = _state["virtual_cash"]
+        # For Wheel, block margin (SPAN ~12%) not full contract value
+        # User's total_allocation is the margin needed for the short put
+        margin_block = round(put_strike * lots * lot_size * 0.12, 2)
+        if available < margin_block:
+            raise ValueError(f"Insufficient virtual cash for margin. Available: ₹{available:,.0f}, Required: ₹{margin_block:,.0f}")
+        _state["virtual_cash"] = round(available - margin_block, 2)
+        trade["margin_blocked"] = margin_block
         _state["trades"][trade_id] = trade
         _save()
     return trade
@@ -787,6 +905,32 @@ def wheel_assign_put(trade_id: str, call_strike: float, call_expiry: str, call_p
         }
         trade["total_call_premium"] = round(trade.get("total_call_premium", 0) + prem_income, 2)
         trade["wheel_phase"] = "COVERED_CALL"
+        _save()
+    return trade
+
+
+def cancel_wheel_put(trade_id: str) -> dict:
+    """Cancel a WHEEL trade that is still in PUT phase (no stock bought yet).
+    Refunds the margin cash that was blocked on creation and marks trade CANCELLED.
+    """
+    with _lock:
+        trade = _state["trades"].get(trade_id)
+        if not trade:
+            raise ValueError("Trade not found")
+        if trade.get("trade_type") != "WHEEL":
+            raise ValueError("Not a wheel trade")
+        if trade.get("wheel_phase") != "PUT":
+            raise ValueError("Can only cancel while in PUT phase — stock already assigned, exit manually")
+        opt = trade.get("put_option", {})
+        if opt.get("status") != "OPEN":
+            raise ValueError("Put is not OPEN — already closed or expired")
+        # Refund the blocked margin (total_allocation was blocked on creation)
+        refund = float(trade.get("total_allocation", 0))
+        if refund > 0:
+            _state["virtual_cash"] = round(_state["virtual_cash"] + refund, 2)
+        opt["status"] = "CANCELLED"
+        trade["status"] = "CANCELLED"
+        trade["completed_at"] = datetime.now().isoformat()
         _save()
     return trade
 

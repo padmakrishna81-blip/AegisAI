@@ -89,7 +89,12 @@ export default function NseStockSearch({ onSelect, placeholder, autoFocus, class
   }, [query, includeEtfIndex])
 
   const select = (r: NseResult) => {
-    onSelect(r.symbol, r.name)
+    // Ensure stock symbols always have .NS suffix; ETFs/indices already have it
+    let sym = r.symbol
+    if (r.type === 'stock' && !sym.includes('.') && !sym.startsWith('^')) {
+      sym = sym + '.NS'
+    }
+    onSelect(sym, r.name)
     setQuery('')
     setResults([])
     setOpen(false)

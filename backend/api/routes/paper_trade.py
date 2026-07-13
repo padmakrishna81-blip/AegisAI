@@ -101,10 +101,14 @@ async def get_summary():
                 # Aggregate by symbol — only BOUGHT chunks count as holdings
                 if sym not in symbol_agg:
                     symbol_agg[sym] = {"total_qty": 0, "total_cost": 0.0,
-                                       "company_name": trade["company_name"], "live": live}
+                                       "company_name": trade["company_name"], "live": live,
+                                       "trade_type": trade.get("trade_type", "EQUITY")}
                 symbol_agg[sym]["total_qty"] += qty
                 symbol_agg[sym]["total_cost"] += cost
                 symbol_agg[sym]["live"] = live
+                # Upgrade trade_type if any holding is CC/Wheel
+                if trade.get("trade_type") in ("COVERED_CALL", "WHEEL"):
+                    symbol_agg[sym]["trade_type"] = trade["trade_type"]
 
             elif status == "SOLD":
                 realised_pnl += chunk.get("realised_pnl") or 0
@@ -140,12 +144,21 @@ async def get_summary():
         # has_any_fill: at least one chunk is BOUGHT or SOLD
         has_any_fill = any(c["status"] in ("BOUGHT", "SOLD") for c in trade["chunks"])
 
+        # WHEEL trades in PUT phase have no stock chunks — skip from positions list
+        # They should only appear in cc_positions (Options tab)
+        trade_type  = trade.get("trade_type", "EQUITY")
+        wheel_phase = trade.get("wheel_phase")
+        if trade_type == "WHEEL" and wheel_phase == "PUT":
+            continue   # show in Options tab only, not in Active Trades
+
         positions.append({
             "trade_id": trade["trade_id"],
             "symbol": sym,
             "company_name": trade["company_name"],
             "status": trade["status"],
-            "has_any_fill": has_any_fill,          # False = pure trade plan, no executions yet
+            "trade_type": trade_type,
+            "wheel_phase": wheel_phase,
+            "has_any_fill": has_any_fill,
             "total_allocation": trade["total_allocation"],
             "invested": round(trade_invested, 2),
             "current_value": round(trade_invested + trade_unrealised, 2),
@@ -187,21 +200,24 @@ async def get_summary():
                     bp = c["buy_price"]
                     ep = c["exit_price"]
                     qty = c["quantity"]
+                    is_cc_chunk = trade.get("trade_type") in ("COVERED_CALL", "WHEEL")
                     chunk_details_for_holding.append({
                         "trade_id": trade["trade_id"],
                         "chunk_no": c["chunk_no"],
                         "buy_price": round(bp, 2),
-                        "exit_price": round(ep, 2),
+                        "exit_price": None if is_cc_chunk else round(ep, 2),
                         "quantity": qty,
-                        "profit_pct": c["profit_pct"],
+                        "profit_pct": None if is_cc_chunk else c["profit_pct"],
                         "cost": round(qty * bp, 2),
-                        "target_value": round(qty * ep, 2),
+                        "target_value": None if is_cc_chunk else round(qty * ep, 2),
                         "current_value": round(qty * live, 2) if live else 0,
                         "unrealised_pnl": round((live - bp) * qty, 2) if live else 0,
                         "buy_time": c.get("buy_time"),
                     })
 
         # Target value: MTM-based if set, otherwise sum of individual chunk exit values
+        # For CC/Wheel trades the exit_price is a 999× sentinel — use premium income instead
+        holding_trade_type = agg.get("trade_type", "EQUITY")
         if mtm_target_inr is not None:
             target_value = round(total_cost + mtm_target_inr, 2)
             target_pnl = mtm_target_inr
@@ -210,6 +226,22 @@ async def get_summary():
             target_pnl = round(total_cost * mtm_target_pct / 100, 2)
             target_value = round(total_cost + target_pnl, 2)
             target_label = f"MTM {mtm_target_pct:+.1f}%"
+        elif holding_trade_type in ("COVERED_CALL", "WHEEL"):
+            # Stock target = cost basis (manual exit strategy); P&L comes from option premium
+            cc_premium_income = 0.0
+            for trade in trades:
+                if trade["symbol"] != sym:
+                    continue
+                tt = trade.get("trade_type")
+                if tt == "COVERED_CALL":
+                    opt = trade.get("cc_option") or {}
+                    cc_premium_income += float(opt.get("premium_income") or 0)
+                elif tt == "WHEEL":
+                    cc_premium_income += float((trade.get("put_option") or {}).get("premium_income") or 0)
+                    cc_premium_income += float((trade.get("cc_option") or {}).get("premium_income") or 0)
+            target_value = round(total_cost + cc_premium_income, 2)
+            target_pnl = round(cc_premium_income, 2)
+            target_label = f"Premium income ₹{cc_premium_income:,.0f}"
         else:
             target_value = sum(c["quantity"] * c["exit_price"] for c in bought_chunks_for_sym)
             target_value = round(target_value, 2)
@@ -232,16 +264,28 @@ async def get_summary():
             "mtm_target_pct": mtm_target_pct,
             "mtm_target_inr": mtm_target_inr,
             "chunk_details": chunk_details_for_holding,
+            "trade_type": agg.get("trade_type", "EQUITY"),
         })
 
-    # ── CC Positions (options metadata from covered call trades) ──────────────
-    # ── Fetch live option premiums for OPEN CC positions ─────────────────────
-    # Collect unique (underlying, expiry) pairs to minimise NSE API calls
-    open_opts: list[dict] = [
-        t.get("cc_option", {}) for t in trades
-        if t.get("trade_type") == "COVERED_CALL"
-        and t.get("cc_option", {}).get("status") == "OPEN"
-    ]
+    # ── CC Positions (options metadata from covered call + wheel trades) ────────
+    # ── Fetch live option premiums for OPEN options ──────────────────────────
+    open_opts: list[dict] = []
+    for t in trades:
+        tt = t.get("trade_type", "EQUITY")
+        if tt == "COVERED_CALL":
+            opt = t.get("cc_option", {})
+            if opt and opt.get("status") == "OPEN":
+                open_opts.append({**opt, "_opt_type": "CE"})
+        elif tt == "WHEEL":
+            wheel_phase_tmp = t.get("wheel_phase", "PUT")
+            if wheel_phase_tmp == "PUT":
+                opt = t.get("put_option", {})
+                if opt and opt.get("status") == "OPEN":
+                    open_opts.append({**opt, "_opt_type": "PE"})
+            else:
+                opt = t.get("cc_option", {})
+                if opt and opt.get("status") == "OPEN":
+                    open_opts.append({**opt, "_opt_type": "CE"})
     # Build live premium map: option_symbol -> current_ltp
     live_option_prices: dict[str, float | None] = {}
     if open_opts:
@@ -264,12 +308,14 @@ async def get_summary():
                     data = nse.equities_option_chain(underlying, expiry=expiry)
                     rows = data.get("filtered", {}).get("data", []) or data.get("records", {}).get("data", [])
                     for r in rows:
-                        ce = r.get("CE", {})
-                        s  = r.get("strikePrice") or ce.get("strikePrice", 0)
-                        ltp = ce.get("lastPrice", 0)
-                        # map all strikes we know about from open options
+                        s = r.get("strikePrice", 0)
+                        # Match CE options
+                        ce_ltp = (r.get("CE") or {}).get("lastPrice", 0)
+                        # Match PE options
+                        pe_ltp = (r.get("PE") or {}).get("lastPrice", 0)
                         for o2 in open_opts:
                             if o2.get("underlying","").replace(".NS","") == underlying and abs(float(s or 0) - float(o2.get("strike",0) or 0)) < 0.1:
+                                ltp = pe_ltp if o2.get("_opt_type") == "PE" else ce_ltp
                                 live_option_prices[o2.get("option_symbol", "")] = float(ltp) if ltp else None
                     _time.sleep(0.08)
                 except Exception:
@@ -277,12 +323,27 @@ async def get_summary():
         except Exception:
             pass
 
-    # ── Build CC positions with live MTM ──────────────────────────────────────
+    # ── Build CC positions with live MTM (includes WHEEL trades) ──────────────
     cc_positions = []
     for trade in trades:
-        if trade.get("trade_type") != "COVERED_CALL":
+        trade_type = trade.get("trade_type", "EQUITY")
+
+        # Determine which option field to use
+        if trade_type == "COVERED_CALL":
+            opt = trade.get("cc_option", {})
+            position_type = "CE"   # short call
+        elif trade_type == "WHEEL":
+            wheel_phase = trade.get("wheel_phase", "PUT")
+            if wheel_phase == "PUT":
+                opt = trade.get("put_option", {})
+                position_type = "PE"   # short put
+            else:
+                # WHEEL in CC phase — use cc_option
+                opt = trade.get("cc_option", {})
+                position_type = "CE"
+        else:
             continue
-        opt = trade.get("cc_option", {})
+
         if not opt:
             continue
         chunks = trade.get("chunks", [])
@@ -294,15 +355,12 @@ async def get_summary():
         sell_premium = opt.get("sell_premium", 0)
         prem_income  = opt.get("premium_income", 0)
 
-        # As a CE seller: MTM profit = premium_received - current_value_to_close
-        # Positive MTM = CE value has fallen (good for seller)
-        # Negative MTM = CE value has risen (bad for seller — would cost more to close)
         option_mtm_inr   = None
         option_mtm_pct   = None
         buy_back_cost    = None
         if current_ltp is not None and sell_premium:
             buy_back_cost  = round(current_ltp * lots * lot_size, 2)
-            option_mtm_inr = round(prem_income - buy_back_cost, 2)  # +ve = profit so far
+            option_mtm_inr = round(prem_income - buy_back_cost, 2)
             option_mtm_pct = round((sell_premium - current_ltp) / sell_premium * 100, 1)
 
         cc_positions.append({
@@ -322,25 +380,35 @@ async def get_summary():
             "close_premium":      opt.get("close_premium"),
             "opened_at":          opt.get("opened_at"),
             "closed_at":          opt.get("closed_at"),
+            # Trade metadata
+            "trade_type":         trade_type,
+            "position_type":      position_type,   # "CE" or "PE"
+            "wheel_phase":        trade.get("wheel_phase"),
             # Live MTM fields
             "current_ltp":        current_ltp,
             "buy_back_cost":      buy_back_cost,
             "option_mtm_inr":     option_mtm_inr,
             "option_mtm_pct":     option_mtm_pct,
-            # Stock chunk statuses
-            "phase1_status":      next((c["status"] for c in chunks if c["chunk_no"] == 1), "WAITING"),
-            "phase2_status":      next((c["status"] for c in chunks if c["chunk_no"] == 2), "WAITING"),
+            # Stock chunk statuses (only relevant when in CC phase)
+            "phase1_status":      next((c["status"] for c in chunks if c["chunk_no"] == 1), "N/A" if not chunks else "WAITING"),
+            "phase2_status":      next((c["status"] for c in chunks if c["chunk_no"] == 2), "N/A" if not chunks else "WAITING"),
             "phase1_buy_price":   next((c.get("buy_price") for c in chunks if c["chunk_no"] == 1), None),
             "phase2_buy_price":   next((c.get("buy_price") for c in chunks if c["chunk_no"] == 2), None),
         })
+
+    option_mtm_total = sum(
+        p["option_mtm_inr"] for p in cc_positions
+        if p.get("option_mtm_inr") is not None
+    )
 
     return JSONResponse(content=clean_for_json({
         "virtual_cash": cash,
         "total_invested": round(total_invested, 2),
         "unrealised_pnl": round(unrealised_pnl, 2),
+        "option_mtm_total": round(option_mtm_total, 2),
         "realised_pnl": round(realised_pnl, 2),
-        "total_pnl": round(unrealised_pnl + realised_pnl, 2),
-        "portfolio_value": round(cash + total_invested + unrealised_pnl, 2),
+        "total_pnl": round(unrealised_pnl + option_mtm_total + realised_pnl, 2),
+        "portfolio_value": round(cash + total_invested + unrealised_pnl + option_mtm_total, 2),
         "active_trade_count": sum(1 for t in trades if t["status"] == "ACTIVE"),
         "holdings": holdings,
         "positions": positions,
@@ -378,15 +446,18 @@ async def create_trade(body: CreateTradeInput):
         raise HTTPException(status_code=400, detail="Must have 1–10 chunks")
 
     chunks_input = [c.model_dump() for c in body.chunks]
-    trade = pt.create_trade(
-        symbol=sym,
-        company_name=company_name,
-        total_allocation=body.total_allocation,
-        chunks=chunks_input,
-        notes=body.notes,
-        mtm_target_pct=body.mtm_target_pct,
-        mtm_target_inr=body.mtm_target_inr,
-    )
+    try:
+        trade = pt.create_trade(
+            symbol=sym,
+            company_name=company_name,
+            total_allocation=body.total_allocation,
+            chunks=chunks_input,
+            notes=body.notes,
+            mtm_target_pct=body.mtm_target_pct,
+            mtm_target_inr=body.mtm_target_inr,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return JSONResponse(content=clean_for_json(trade))
 
 
@@ -563,23 +634,26 @@ async def create_cc_trade(body: CreateCcTradeInput):
         info = get_info(sym)
         company_name = safe_get(info, "longName", default=None) or safe_get(info, "shortName", default=body.symbol) or body.symbol
 
-    trade = pt.create_covered_call_trade(
-        symbol=sym,
-        company_name=company_name,
-        phase1_qty=body.phase1_qty,
-        phase1_limit=body.phase1_limit,
-        phase2_qty=body.phase2_qty,
-        phase2_limit=body.phase2_limit,
-        phase2_trigger=body.phase2_trigger,
-        strike=body.strike,
-        expiry=body.expiry,
-        sell_premium=body.sell_premium,
-        premium_income=body.premium_income,
-        lots=body.lots,
-        lot_size=body.lot_size,
-        avg_pct=body.avg_pct,
-        notes=body.notes,
-    )
+    try:
+        trade = pt.create_covered_call_trade(
+            symbol=sym,
+            company_name=company_name,
+            phase1_qty=body.phase1_qty,
+            phase1_limit=body.phase1_limit,
+            phase2_qty=body.phase2_qty,
+            phase2_limit=body.phase2_limit,
+            phase2_trigger=body.phase2_trigger,
+            strike=body.strike,
+            expiry=body.expiry,
+            sell_premium=body.sell_premium,
+            premium_income=body.premium_income,
+            lots=body.lots,
+            lot_size=body.lot_size,
+            avg_pct=body.avg_pct,
+            notes=body.notes,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return JSONResponse(content=clean_for_json({
         "message": f"Covered Call trade created for {sym}",
         "trade_id": trade["trade_id"],
@@ -593,13 +667,16 @@ class CloseCcOptionInput(BaseModel):
 
 @router.post("/paper/cc-option/{trade_id}/close")
 async def close_cc_option(trade_id: str, body: CloseCcOptionInput):
-    """Buy back the short CE to close the option position."""
+    """Buy back the short option (CE or PE) to close the position."""
     try:
         trade = pt.close_cc_option(trade_id, body.close_premium)
+        tt = trade.get("trade_type")
+        wp = trade.get("wheel_phase")
+        opt = trade.get("put_option") if (tt == "WHEEL" and wp == "PUT") else trade.get("cc_option", {})
         return JSONResponse(content=clean_for_json({
             "message": "Option position closed",
             "trade_id": trade_id,
-            "option_pnl": trade["cc_option"]["option_pnl"],
+            "option_pnl": (opt or {}).get("option_pnl"),
         }))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -607,13 +684,17 @@ async def close_cc_option(trade_id: str, body: CloseCcOptionInput):
 
 @router.post("/paper/cc-option/{trade_id}/expire")
 async def expire_cc_option(trade_id: str):
-    """Mark the CE as expired worthless — full premium is P&L."""
+    """Mark the option as expired worthless — full premium is P&L."""
     try:
         trade = pt.expire_cc_option(trade_id)
+        # Determine which option field was updated (CC vs Wheel PUT)
+        tt = trade.get("trade_type")
+        wp = trade.get("wheel_phase")
+        opt = trade.get("put_option") if (tt == "WHEEL" and wp == "PUT") else trade.get("cc_option", {})
         return JSONResponse(content=clean_for_json({
             "message": "Option expired worthless — full premium kept",
             "trade_id": trade_id,
-            "option_pnl": trade["cc_option"]["option_pnl"],
+            "option_pnl": (opt or {}).get("option_pnl"),
         }))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -649,17 +730,20 @@ async def create_wheel_trade(body: CreateWheelTradeInput):
         info = get_info(sym)
         company_name = safe_get(info, "longName", default=None) or safe_get(info, "shortName", default=body.symbol) or body.symbol
 
-    trade = pt.create_wheel_trade(
-        symbol=sym, company_name=company_name,
-        put_strike=body.put_strike, put_expiry=body.put_expiry,
-        put_premium=body.put_premium, put_premium_income=body.put_premium_income,
-        lots=body.lots, lot_size=body.lot_size,
-        planned_call_strike=body.planned_call_strike,
-        planned_call_expiry=body.planned_call_expiry,
-        planned_call_premium=body.planned_call_premium,
-        assignment_limit=body.assignment_limit,
-        phase2_pct=body.phase2_pct, notes=body.notes,
-    )
+    try:
+        trade = pt.create_wheel_trade(
+            symbol=sym, company_name=company_name,
+            put_strike=body.put_strike, put_expiry=body.put_expiry,
+            put_premium=body.put_premium, put_premium_income=body.put_premium_income,
+            lots=body.lots, lot_size=body.lot_size,
+            planned_call_strike=body.planned_call_strike,
+            planned_call_expiry=body.planned_call_expiry,
+            planned_call_premium=body.planned_call_premium,
+            assignment_limit=body.assignment_limit,
+            phase2_pct=body.phase2_pct, notes=body.notes,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return JSONResponse(content=clean_for_json({
         "message": f"Wheel trade created for {sym}",
         "trade_id": trade["trade_id"], "trade": trade,
@@ -691,6 +775,29 @@ async def wheel_expire_put(trade_id: str):
             "message": "Put expired — full premium kept. Sell another put to spin the wheel.",
             "total_realised_pnl": trade["total_realised_pnl"],
         }))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/paper/wheel/{trade_id}/cancel-put")
+async def cancel_wheel_put(trade_id: str):
+    """Cancel a WHEEL trade while still in PUT phase (no assignment yet). Refunds margin."""
+    try:
+        trade = pt.cancel_wheel_put(trade_id)
+        return JSONResponse(content=clean_for_json({
+            "message": "Wheel PUT cancelled — margin refunded.",
+            "trade_id": trade_id,
+        }))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/paper/wheel/{trade_id}")
+async def delete_wheel_trade(trade_id: str):
+    """Permanently delete a CANCELLED wheel trade (PUT phase only)."""
+    try:
+        pt.delete_trade(trade_id)
+        return JSONResponse(content={"message": f"Wheel trade {trade_id} deleted"})
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -816,14 +923,30 @@ async def get_wheel_plan(
         if not otm_puts:
             raise ValueError(f"No liquid put options found for {bare} on any available expiry")
 
-        # Find best put: target PUT delta between -0.25 and -0.40
-        target_delta = -0.30
+        # Find best put: ideal = 8-12% OTM (delta ~0.20-0.30) for safer wheel
+        # Primary criterion: OTM% between 8-12%, secondary: delta closest to -0.25
+        target_delta  = -0.25   # 25% assignment probability — safer for wheel
+        target_otm_pct = -10.0  # 10% below spot
+
+        # First try to find strike 8-12% OTM with decent OI
         best_put = None; best_diff = 999.0
         for p in otm_puts:
+            otm_pct = p["pct_otm"]   # negative = below spot
             d = p.get("delta", 0)
-            diff = abs(d - target_delta)
-            if diff < best_diff and p["oi"] >= 1:
-                best_diff = diff; best_put = p
+            # Prefer 8-12% OTM range; score by closeness to -10% AND delta -0.25
+            otm_score  = abs(otm_pct - target_otm_pct)
+            delta_score = abs(d - target_delta)
+            combined = otm_score * 0.6 + delta_score * 20  # weight OTM% more
+            if combined < best_diff and p["oi"] >= 1:
+                best_diff = combined; best_put = p
+
+        # If nothing in 8-12% range, fall back to closest to delta -0.25
+        if not best_put:
+            best_diff = 999.0
+            for p in otm_puts:
+                diff = abs(p.get("delta", 0) - target_delta)
+                if diff < best_diff and p["oi"] >= 1:
+                    best_diff = diff; best_put = p
 
         if strike_override > 0:
             # User selected a specific strike — use it if it exists in the real chain
@@ -934,3 +1057,10 @@ async def get_wheel_plan(
         return JSONResponse(content=result)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/paper/admin/reload")
+async def admin_reload():
+    """Force reload in-memory state from disk (admin use only)."""
+    pt._load()
+    return JSONResponse(content={"message": "State reloaded from disk", "trades": len(pt._state.get("trades", {}))})

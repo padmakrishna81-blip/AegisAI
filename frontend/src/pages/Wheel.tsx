@@ -13,6 +13,7 @@ import { useState } from 'react'
 import client from '../api/client'
 import { shortSymbol, scoreToColor } from '../utils/formatters'
 import NseStockSearch from '../components/NseStockSearch'
+import VolatilityPanel from '../components/VolatilityPanel'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -281,31 +282,143 @@ function PutPlanPanel({ plan, onClose, onPaperTrade, onRefetch }: {
               </div>
             </div>
           </div>
-          {/* Greeks strip */}
-          <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
-            {plan.put_delta != null && (
-              <span className="bg-slate-800 rounded px-2 py-1 text-slate-300">
-                Δ Delta: <span className="text-score-amber font-semibold">{plan.put_delta}</span>
-                <span className="text-muted ml-1">({Math.abs(Math.round(plan.put_delta * 100))}% assignment chance)</span>
-              </span>
-            )}
-            {plan.put_theta != null && (
-              <span className="bg-slate-800 rounded px-2 py-1 text-slate-300">
-                Θ Theta: <span className="text-score-green font-semibold">+₹{Math.abs(plan.put_theta).toFixed(2)}/share/day</span>
-                <span className="text-muted ml-1">(time decay income)</span>
-              </span>
-            )}
-            {plan.put_vega != null && (
-              <span className="bg-slate-800 rounded px-2 py-1 text-slate-300">
-                ν Vega: <span className="text-score-red font-semibold">-₹{plan.put_vega.toFixed(2)}/1% IV rise</span>
-              </span>
-            )}
-            {plan.put_oi != null && (
-              <span className={`bg-slate-800 rounded px-2 py-1 ${plan.put_oi >= 10 ? 'text-score-green' : plan.put_oi >= 3 ? 'text-score-amber' : 'text-score-red'}`}>
-                OI: {plan.put_oi} contracts {plan.put_oi < 5 ? '⚠ low liquidity' : '✓'}
-              </span>
-            )}
-          </div>
+          {/* ── Full Greeks Panel — same style as Covered Call ── */}
+          {(plan.put_delta != null || plan.put_theta != null) && (
+            <div className="mt-4 bg-slate-800/50 border border-border/50 rounded-xl p-4">
+              <div className="text-xs font-semibold text-white mb-3 uppercase tracking-wide">
+                Option Greeks — {plan.symbol.replace('.NS','')} {Math.round(selectedStrike)} PE
+              </div>
+              <div className="space-y-2.5">
+
+                {/* Delta */}
+                {plan.put_delta != null && (() => {
+                  const absD = Math.abs(plan.put_delta)
+                  const displayDelta = Math.round(absD * 100) / 100
+                  const assignPct   = Math.round(absD * 100)
+                  const verdict = absD >= 0.20 && absD <= 0.40 ? 'Sweet spot ✓' : absD < 0.20 ? 'Low premium risk' : 'High assignment risk ⚠'
+                  const vColor  = absD >= 0.20 && absD <= 0.40 ? 'text-score-green' : absD < 0.20 ? 'text-score-amber' : 'text-score-red'
+                  return (
+                    <div className="bg-slate-800 rounded-lg p-3">
+                      <div className="flex items-start justify-between gap-3 mb-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-white w-20">Δ Delta</span>
+                          <span className="text-xs font-semibold text-score-amber">{displayDelta} ({assignPct}% assignment probability)</span>
+                        </div>
+                        <span className={`text-[10px] font-bold shrink-0 ${vColor}`}>{verdict}</span>
+                      </div>
+                      <div className="text-[11px] text-blue-400 leading-relaxed">
+                        For every ₹1 fall in {plan.symbol.replace('.NS','')}, this PUT gains ₹{displayDelta}.
+                        As the seller, you want stock to stay ABOVE ₹{selectedStrike} — {Math.round((1-absD)*100)}% probability it expires worthless.
+                        <br/>
+                        <span className="text-score-amber font-medium">
+                          OTM% rule: Strike at {Math.round((selectedStrike/plan.cmp - 1)*100*10)/10}% from CMP.
+                          {Math.abs((selectedStrike/plan.cmp - 1)*100) >= 8 && Math.abs((selectedStrike/plan.cmp - 1)*100) <= 12
+                            ? ' ✓ Ideal range (8-12% OTM) — safer wheel strategy.'
+                            : Math.abs((selectedStrike/plan.cmp - 1)*100) < 8
+                            ? ' ⚠ Too close to CMP (< 8% OTM) — higher assignment risk. Consider going further OTM.'
+                            : ' ℹ Far OTM (> 12%) — lower premium but safer. Good for conservative approach.'}
+                        </span>
+                        <br/>
+                        Target: delta 0.20–0.30 (8-12% OTM) for balanced wheel. Note: Sensibull shows absolute delta (positive); ours follows standard -ve convention.
+                      </div>
+                    </div>
+                  )
+                })()}
+
+                {/* Theta */}
+                {plan.put_theta != null && (() => {
+                  const dailyIncome = Math.round(Math.abs(plan.put_theta) * plan.lot_size * localLots)
+                  return (
+                    <div className="bg-slate-800 rounded-lg p-3">
+                      <div className="flex items-start justify-between gap-3 mb-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-white w-20">Θ Theta</span>
+                          <span className="text-xs font-semibold text-score-green">+₹{dailyIncome.toLocaleString('en-IN')}/day premium decay income</span>
+                        </div>
+                        <span className="text-[10px] font-bold shrink-0 text-score-green">Working for you ✓</span>
+                      </div>
+                      <div className="text-[11px] text-blue-400 leading-relaxed">
+                        PUT loses ₹{Math.abs(plan.put_theta).toFixed(3)}/share/day due to time decay — YOU collect this as seller.
+                        On {(plan.lot_size * localLots).toLocaleString('en-IN')} shares: +₹{dailyIncome.toLocaleString('en-IN')}/day.
+                        Theta accelerates in the last 14 days — maximum income near expiry.
+                      </div>
+                    </div>
+                  )
+                })()}
+
+                {/* Vega */}
+                {plan.put_vega != null && (() => {
+                  const vegaRisk = Math.round(plan.put_vega * plan.lot_size * localLots)
+                  const isHighIV = (plan.atm_iv || 0) > 45
+                  return (
+                    <div className="bg-slate-800 rounded-lg p-3">
+                      <div className="flex items-start justify-between gap-3 mb-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-white w-20">ν Vega</span>
+                          <span className="text-xs font-semibold text-score-red">-₹{vegaRisk.toLocaleString('en-IN')} if IV rises 1%</span>
+                        </div>
+                        <span className={`text-[10px] font-bold shrink-0 ${isHighIV ? 'text-score-red' : 'text-score-amber'}`}>
+                          {isHighIV ? '⚠ High IV risk' : 'Manageable'}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-blue-400 leading-relaxed">
+                        If IV rises 1%, PUT price rises ₹{plan.put_vega.toFixed(3)}/share — paper loss of ₹{vegaRisk.toLocaleString('en-IN')}.
+                        Quarterly results cause sudden IV spikes — avoid selling puts before results announcements.
+                      </div>
+                    </div>
+                  )
+                })()}
+
+                {/* IV Level */}
+                {plan.atm_iv != null && (() => {
+                  const iv = plan.atm_iv
+                  const quality = iv > 38 ? { label: 'Rich — excellent time to sell', color: 'text-score-green' }
+                               : iv >= 25 ? { label: 'Normal — acceptable premium', color: 'text-score-amber' }
+                               : { label: 'Low — thin premium, consider waiting', color: 'text-score-red' }
+                  return (
+                    <div className="bg-slate-800 rounded-lg p-3">
+                      <div className="flex items-start justify-between gap-3 mb-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-white w-20">IV Level</span>
+                          <span className={`text-xs font-semibold ${quality.color}`}>{iv}% — {quality.label}</span>
+                        </div>
+                        <span className={`text-[10px] font-bold shrink-0 ${quality.color}`}>{iv > 38 ? 'Sell now ✓' : iv >= 25 ? 'OK' : 'Wait ⚠'}</span>
+                      </div>
+                      <div className="text-[11px] text-blue-400 leading-relaxed">
+                        Higher IV = richer put premium = more income. Current IV {iv}% means the market is pricing in
+                        {iv > 38 ? ' significant uncertainty — sell puts while premium is rich.'
+                         : iv >= 25 ? ' moderate uncertainty — premium is acceptable for the wheel.'
+                         : ' low uncertainty — premium may not justify the risk. Wait for IV to expand.'}
+                      </div>
+                    </div>
+                  )
+                })()}
+
+                {/* OI */}
+                {plan.put_oi != null && (
+                  <div className="bg-slate-800 rounded-lg p-3">
+                    <div className="flex items-start justify-between gap-3 mb-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-bold text-white w-20">Open Interest</span>
+                        <span className={`text-xs font-semibold ${plan.put_oi >= 10 ? 'text-score-green' : plan.put_oi >= 3 ? 'text-score-amber' : 'text-score-red'}`}>
+                          {plan.put_oi} contracts {plan.put_oi >= 10 ? '— good liquidity' : plan.put_oi >= 3 ? '— moderate' : '— low liquidity ⚠'}
+                        </span>
+                      </div>
+                      <span className={`text-[10px] font-bold shrink-0 ${plan.put_oi >= 10 ? 'text-score-green' : plan.put_oi >= 3 ? 'text-score-amber' : 'text-score-red'}`}>
+                        {plan.put_oi >= 10 ? 'Liquid ✓' : plan.put_oi >= 3 ? 'Thin' : 'Avoid ⚠'}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-blue-400 leading-relaxed">
+                      Low OI means wide bid-ask spread — you may not get your target premium. Consider the next strike with better liquidity.
+                    </div>
+                  </div>
+                )}
+              </div>
+              <div className="mt-3 text-[10px] text-blue-400 italic">
+                Delta shown as absolute value (Sensibull convention). Our BS model: TATASTEEL 182.5 PE delta ≈ 0.28 (27.5% assignment probability). All greeks per-share; income figures scaled to {plan.lot_size * localLots} shares.
+              </div>
+            </div>
+          )}
           <div className="mt-2 text-[10px] text-blue-400">
             ✅ Only real NSE-listed strikes shown. Strike ₹{selectedStrike} verified to exist with actual traded volume.
           </div>
@@ -347,6 +460,14 @@ function PutPlanPanel({ plan, onClose, onPaperTrade, onRefetch }: {
             </div>
           </div>
         </div>
+
+        {/* Volatility analysis */}
+        <VolatilityPanel
+          symbol={plan.symbol}
+          currentStrike={selectedStrike}
+          currentOtmPct={Math.round((selectedStrike / plan.cmp - 1) * 100 * 10) / 10}
+          optionType="PE"
+        />
 
         {/* 4 Scenarios */}
         <div className="bg-card border border-border rounded-xl p-4">
@@ -710,8 +831,10 @@ export default function Wheel() {
               const r = await client.post('/covered-calls/assess', { symbols: syms, min_iv: parseFloat(criteria.min_iv) || 22 })
               const all = (r.data.results || []).map((s: WheelScanResult) => ({
                 ...s,
-                put_strike_otm5: Math.round((s.cmp || 0) * 0.95 / 5) * 5,
-                put_strike_otm8: Math.round((s.cmp || 0) * 0.92 / 5) * 5,
+                put_strike_otm5:    Math.round((s.cmp || 0) * 0.95 / 5) * 5,
+                put_strike_otm8:    Math.round((s.cmp || 0) * 0.92 / 5) * 5,
+                effective_buy_otm5: Math.round(((s.cmp || 0) * 0.95 - (s.cmp || 0) * 0.025) * 100) / 100,
+                effective_buy_otm8: Math.round(((s.cmp || 0) * 0.92 - (s.cmp || 0) * 0.020) * 100) / 100,
               }))
               setAssessResults(all)
             } catch { /* ignore */ }

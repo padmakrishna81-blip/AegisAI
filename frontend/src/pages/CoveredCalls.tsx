@@ -3,6 +3,7 @@ import client from '../api/client'
 import { usePortfolio } from '../hooks/usePortfolio'
 import { shortSymbol, normalizeSymbol, scoreToColor } from '../utils/formatters'
 import NseStockSearch from '../components/NseStockSearch'
+import VolatilityPanel from '../components/VolatilityPanel'
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -135,7 +136,12 @@ interface TradePlan {
   }
   price_range: {
     low_1sd: number; high_1sd: number; low_2sd: number; high_2sd: number
-    iv_used: number; days_to_expiry: number; note: string
+    low_1sd_blended: number; high_1sd_blended: number
+    low_2sd_blended: number; high_2sd_blended: number
+    iv_used: number; has_historical: boolean
+    days_to_expiry: number; note: string
+    hist_max_cycle_up: number | null; hist_max_cycle_down: number | null
+    hist_expiry_p90_up: number | null; hist_expiry_p90_down: number | null
   }
   adjacent_strikes: AdjacentStrike[]
   greeks: Record<string, { value: number; label: string; meaning: string; verdict: string }>
@@ -514,22 +520,45 @@ function TradePlanPanel({ plan, onClose, onPaperTrade, onRefetch }: {
           </div>
         )}
 
+        {/* Volatility analysis */}
+        <VolatilityPanel
+          symbol={plan.symbol}
+          currentStrike={ts.strike_recommended}
+          currentOtmPct={Math.round((ts.strike_recommended / plan.cmp - 1) * 100 * 10) / 10}
+          optionType="CE"
+        />
+
         {/* Price range */}
         {plan.price_range && (
           <div className="bg-card border border-border rounded-xl p-4">
             <div className="text-xs font-semibold text-white mb-3 uppercase tracking-wide">
               Expected Range by Expiry ({plan.price_range.days_to_expiry}d · IV {plan.price_range.iv_used}%)
             </div>
-            <div className="grid grid-cols-2 gap-3 mb-3">
+            <div className="grid grid-cols-2 gap-3 mb-2">
               <div className="bg-slate-800 rounded-lg p-3 text-center">
-                <div className="text-[10px] text-slate-400 mb-1">68% Range</div>
+                <div className="text-[10px] text-slate-400 mb-0.5">IV Model — 68%</div>
                 <div className="text-sm font-bold text-white">₹{plan.price_range.low_1sd.toLocaleString('en-IN')} – ₹{plan.price_range.high_1sd.toLocaleString('en-IN')}</div>
               </div>
               <div className="bg-slate-800 rounded-lg p-3 text-center">
-                <div className="text-[10px] text-slate-400 mb-1">95% Range</div>
+                <div className="text-[10px] text-slate-400 mb-0.5">IV Model — 95%</div>
                 <div className="text-sm font-bold text-slate-300">₹{plan.price_range.low_2sd.toLocaleString('en-IN')} – ₹{plan.price_range.high_2sd.toLocaleString('en-IN')}</div>
               </div>
             </div>
+            {plan.price_range.has_historical && (
+              <div className="grid grid-cols-2 gap-3 mb-2">
+                <div className="bg-amber-950/30 border border-amber-800/40 rounded-lg p-3 text-center">
+                  <div className="text-[10px] text-score-amber mb-0.5">Blended 68% (wider)</div>
+                  <div className="text-sm font-bold text-score-amber">₹{plan.price_range.low_1sd_blended.toLocaleString('en-IN')} – ₹{plan.price_range.high_1sd_blended.toLocaleString('en-IN')}</div>
+                </div>
+                <div className="bg-amber-950/30 border border-amber-800/40 rounded-lg p-3 text-center">
+                  <div className="text-[10px] text-score-amber mb-0.5">Worst historical cycle</div>
+                  <div className="text-sm font-bold text-score-amber">
+                    {plan.price_range.hist_max_cycle_up ? `+${plan.price_range.hist_max_cycle_up}%` : '—'}
+                    {' / '}{plan.price_range.hist_max_cycle_down ? `${plan.price_range.hist_max_cycle_down}%` : '—'}
+                  </div>
+                </div>
+              </div>
+            )}
             <div className="text-[10px] text-blue-400 italic">{plan.price_range.note}</div>
           </div>
         )}

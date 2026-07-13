@@ -83,15 +83,56 @@ def _prob_above(spot, level, iv_pct, days) -> float:
 def _prob_below(spot, level, iv_pct, days) -> float:
     return round((1 - _ncdf(_d2(spot, level, iv_pct, days))) * 100, 1)
 
-def _price_range(spot: float, iv_pct: float, days: int) -> dict:
+def _price_range(spot: float, iv_pct: float, days: int,
+                 hist_max_up: float | None = None,
+                 hist_max_down: float | None = None,
+                 hist_expiry_p90_up: float | None = None,
+                 hist_expiry_p90_down: float | None = None) -> dict:
+    """
+    Blended price range: IV-based Black-Scholes + historical expiry-cycle actuals.
+    The 'blended' range uses the wider of (IV model, historical) at each percentile.
+    """
     T = days / 365
-    move = spot * (iv_pct / 100) * math.sqrt(T)
+    iv_move = spot * (iv_pct / 100) * math.sqrt(T)
+
+    low_1sd_iv  = round(spot - iv_move, 0)
+    high_1sd_iv = round(spot + iv_move, 0)
+    low_2sd_iv  = round(spot - 2 * iv_move, 0)
+    high_2sd_iv = round(spot + 2 * iv_move, 0)
+
+    # Blend with historical: use whichever gives the wider range
+    if hist_expiry_p90_up is not None and hist_expiry_p90_down is not None:
+        hist_up_move   = spot * hist_expiry_p90_up / 100
+        hist_down_move = spot * abs(hist_expiry_p90_down) / 100
+        high_1sd_blended = round(max(high_1sd_iv, spot + hist_up_move), 0)
+        low_1sd_blended  = round(min(low_1sd_iv,  spot - hist_down_move), 0)
+    else:
+        high_1sd_blended = high_1sd_iv
+        low_1sd_blended  = low_1sd_iv
+
+    if hist_max_up is not None and hist_max_down is not None:
+        hist_max_up_move   = spot * hist_max_up / 100
+        hist_max_down_move = spot * abs(hist_max_down) / 100
+        high_2sd_blended = round(max(high_2sd_iv, spot + hist_max_up_move), 0)
+        low_2sd_blended  = round(min(low_2sd_iv,  spot - hist_max_down_move), 0)
+    else:
+        high_2sd_blended = high_2sd_iv
+        low_2sd_blended  = low_2sd_iv
+
+    has_hist = hist_max_up is not None
     return {
-        "low_1sd":  round(spot - move, 0),
-        "high_1sd": round(spot + move, 0),
-        "low_2sd":  round(spot - 2 * move, 0),
-        "high_2sd": round(spot + 2 * move, 0),
-        "iv_used":  round(iv_pct, 1),
+        # IV-only (pure Black-Scholes)
+        "low_1sd":         low_1sd_iv,
+        "high_1sd":        high_1sd_iv,
+        "low_2sd":         low_2sd_iv,
+        "high_2sd":        high_2sd_iv,
+        # Blended (wider of IV model vs historical actuals)
+        "low_1sd_blended":  low_1sd_blended,
+        "high_1sd_blended": high_1sd_blended,
+        "low_2sd_blended":  low_2sd_blended,
+        "high_2sd_blended": high_2sd_blended,
+        "iv_used":          round(iv_pct, 1),
+        "has_historical":   has_hist,
     }
 
 def _iv_spike_risk(bare: str, expiry: str, current_iv: float) -> dict:
@@ -345,37 +386,50 @@ def _scan_one(symbol: str) -> dict | None:
         return None
 
 
-def _get_atm_iv(bare: str) -> float | None:
-    """Fetch ATM IV for a stock using a fresh NSE instance (avoids cache issues)."""
-    try:
-        from jugaad_data.nse import NSELive
-        from api.routes.covered_calls import _pick_best_expiry
-        nse   = NSELive()   # fresh instance
-        data  = nse.equities_option_chain(bare)
-        rec   = data.get("records", {})
-        spot  = float(rec.get("underlyingValue") or 0)
-        if spot <= 0:
-            return None
-        expiry_dates = rec.get("expiryDates", [])
-        best_expiry  = _pick_best_expiry(expiry_dates)
-        rows = rec.get("data", [])
-        # Find ATM IV (strike closest to spot)
-        best_iv, best_diff = None, 999.0
-        for r in rows:
-            ce  = r.get("CE", {})
-            exp = ce.get("expiryDate", "")
-            # Only use rows from best expiry
-            if best_expiry and exp and best_expiry[:3].lower() not in exp.lower():
-                continue
-            strike = float(r.get("strikePrice") or ce.get("strikePrice") or 0)
-            iv     = float(ce.get("impliedVolatility") or 0)
-            if iv <= 0 or strike <= 0:
-                continue
+def _find_atm_iv(rows: list, spot: float) -> tuple:
+    """Scan option chain rows and return (best_iv, best_diff) for strike closest to spot."""
+    best_iv, best_diff = None, 999.0
+    for r in rows:
+        ce     = r.get("CE", {})
+        strike = float(r.get("strikePrice") or ce.get("strikePrice") or 0)
+        iv     = float(ce.get("impliedVolatility") or 0)
+        if iv <= 0:
+            pe = r.get("PE", {})
+            iv = float(pe.get("impliedVolatility") or 0)
+        if iv > 0 and strike > 0:
             diff = abs(strike - spot)
             if diff < best_diff:
                 best_diff = diff
-                best_iv   = iv
-        return round(best_iv, 1) if best_iv else None
+                best_iv   = round(iv, 1)
+    return best_iv, best_diff
+
+
+def _get_atm_iv(bare: str) -> float | None:
+    """Fetch ATM IV — tries default chain first, falls back to best-expiry call only if needed."""
+    try:
+        import time as _time
+        from jugaad_data.nse import NSELive
+        from api.routes.covered_calls import _pick_best_expiry
+        nse  = NSELive()
+        data = nse.equities_option_chain(bare)
+        rec  = data.get("records", {})
+        spot = float(rec.get("underlyingValue") or 0)
+        if spot <= 0:
+            return None
+        rows = (data.get("filtered", {}).get("data", [])
+                or rec.get("data", []))
+        best_iv, _ = _find_atm_iv(rows, spot)
+        # If default chain had no IV (nearest expiry < 24 days), try best upcoming expiry
+        if best_iv is None:
+            exp_dates  = rec.get("expiryDates", [])
+            best_expiry = _pick_best_expiry(exp_dates)
+            if best_expiry:
+                _time.sleep(0.08)
+                data2 = nse.equities_option_chain(bare, expiry=best_expiry)
+                rows2 = (data2.get("filtered", {}).get("data", [])
+                         or data2.get("records", {}).get("data", []))
+                best_iv, _ = _find_atm_iv(rows2, spot)
+        return best_iv
     except Exception:
         return None
 
@@ -472,35 +526,42 @@ async def scan_cc_strategy(
     candidates = [s for s in candidates if s.replace(".NS", "") in LOT_SIZES]
 
     # ── Pre-fetch all IVs sequentially using shared NSE instance ────────────
-    # Parallel NSE calls fail due to rate limiting; shared instance with small
-    # delays is reliable and completes in ~6s for 60 stocks
+    # One call per stock — use the default chain first (fastest).
+    # Only fall back to expiry-specific call when the default chain yields no ATM IV
+    # (happens when nearest expiry < 24 days — e.g. week before monthly expiry).
     iv_map: dict[str, float | None] = {}
     if min_iv > 0:
         try:
             import time as _time
             from jugaad_data.nse import NSELive
+            from api.routes.covered_calls import _pick_best_expiry as _pbe
             nse_shared = NSELive()
             for sym in candidates:
                 bare = sym.replace(".NS", "")
                 try:
                     data = nse_shared.equities_option_chain(bare)
+                    _time.sleep(0.08)
                     spot = float(data.get("records", {}).get("underlyingValue") or 0)
                     if spot <= 0:
                         iv_map[bare] = None
                         continue
-                    rows = data.get("records", {}).get("data", [])
-                    best_iv, best_diff = None, 999.0
-                    for r in rows:
-                        ce = r.get("CE", {})
-                        strike = float(r.get("strikePrice") or 0)
-                        iv = float(ce.get("impliedVolatility") or 0)
-                        if iv > 0 and strike > 0:
-                            diff = abs(strike - spot)
-                            if diff < best_diff:
-                                best_diff = diff
-                                best_iv = round(iv, 1)
+                    rows = (data.get("filtered", {}).get("data", [])
+                            or data.get("records", {}).get("data", []))
+                    best_iv, best_diff = _find_atm_iv(rows, spot)
+                    # If no IV found in default chain, try the best upcoming expiry
+                    if best_iv is None:
+                        exp_dates = data.get("records", {}).get("expiryDates", [])
+                        best_exp  = _pbe(exp_dates)
+                        if best_exp:
+                            try:
+                                data2 = nse_shared.equities_option_chain(bare, expiry=best_exp)
+                                _time.sleep(0.08)
+                                rows2 = (data2.get("filtered", {}).get("data", [])
+                                         or data2.get("records", {}).get("data", []))
+                                best_iv, _ = _find_atm_iv(rows2, spot)
+                            except Exception:
+                                pass
                     iv_map[bare] = best_iv
-                    _time.sleep(0.08)  # 80ms between calls avoids rate limiting
                 except Exception:
                     iv_map[bare] = None
         except Exception:
@@ -588,11 +649,16 @@ async def assess_stocks(body: dict):
             hist1y = t.history(period="1y")
             above_200dma = False
             sma50_val    = None
+            score_adj    = 50
             if not hist1y.empty and len(hist1y) >= 50:
                 close = hist1y["Close"]
                 sma50_val    = float(close.rolling(50).mean().iloc[-1])
                 sma200       = float(close.rolling(200).mean().iloc[-1]) if len(hist1y) >= 200 else None
                 above_200dma = bool(sma200 and cmp > sma200)
+                score_adj = 60
+                if above_200dma:      score_adj += 15
+                if cmp > sma50_val:   score_adj += 10
+                if change_5d >= -1:   score_adj += 5
 
             atm_iv   = _get_atm_iv(bare)
             lot_size = _get_lot_size(sym)
@@ -633,6 +699,7 @@ async def assess_stocks(body: dict):
                 "above_200dma":        above_200dma,
                 "atm_iv":              atm_iv,
                 "lot_size":            lot_size,
+                "score":               min(100, score_adj),
                 "phase1_cost":         int(phase1_cost),
                 "total_funds_required":total_funds,
                 "warnings":            warnings,
@@ -1000,6 +1067,69 @@ async def get_cc_plan(
 
     price_range = _price_range(spot, atm_iv, days_to_expiry or 44)
 
+    # ── Fetch historical expiry-cycle data to enhance price range ─────────────
+    hist_expiry_p90_up   = None
+    hist_expiry_p90_down = None
+    hist_max_cycle_up    = None
+    hist_max_cycle_down  = None
+    try:
+        import yfinance as _yf
+        import pandas as _pd
+        from datetime import date as _date, timedelta as _td, datetime as _dt
+        import calendar as _cal
+
+        def _last_thu(yr, mn):
+            last = _cal.monthrange(yr, mn)[1]
+            d = _date(yr, mn, last)
+            while d.weekday() != 3: d -= _td(days=1)
+            return d
+
+        _full = _yf.Ticker(sym).history(period="1y")
+        if not _full.empty:
+            _full.index = _pd.to_datetime(_full.index.date)
+            _fc = _full["Close"]
+            _today = _date.today()
+            _expiries = []
+            for _off in range(14, -1, -1):
+                _yr, _mn = _today.year, _today.month - _off
+                while _mn <= 0: _mn += 12; _yr -= 1
+                _expiries.append(_last_thu(_yr, _mn))
+
+            _cycle_ups, _cycle_downs = [], []
+            for _i in range(len(_expiries) - 1):
+                _sp = _fc[_fc.index >= _pd.Timestamp(_expiries[_i])]
+                _ep = _fc[_fc.index >= _pd.Timestamp(_expiries[_i + 1])]
+                if _sp.empty or _ep.empty: continue
+                _s = float(_sp.iloc[0])
+                _ws = _full[(_full.index >= _pd.Timestamp(_expiries[_i])) &
+                            (_full.index <= _pd.Timestamp(_expiries[_i + 1]))]
+                if _ws.empty: continue
+                _wh = float(_ws["High"].max())
+                _wl = float(_ws["Low"].min())
+                _up   = round((_wh / _s - 1) * 100, 1)
+                _down = round((_wl / _s - 1) * 100, 1)
+                _cycle_ups.append(_up)
+                _cycle_downs.append(_down)
+
+            if _cycle_ups:
+                _cycle_ups.sort(reverse=True)
+                _cycle_downs.sort()
+                p90_idx = max(0, int(len(_cycle_ups) * 0.1))
+                hist_expiry_p90_up   = _cycle_ups[p90_idx]
+                hist_expiry_p90_down = _cycle_downs[p90_idx]
+                hist_max_cycle_up    = _cycle_ups[0]
+                hist_max_cycle_down  = _cycle_downs[0]
+    except Exception:
+        pass
+
+    price_range = _price_range(
+        spot, atm_iv, days_to_expiry or 44,
+        hist_max_up=hist_max_cycle_up,
+        hist_max_down=hist_max_cycle_down,
+        hist_expiry_p90_up=hist_expiry_p90_up,
+        hist_expiry_p90_down=hist_expiry_p90_down,
+    )
+
     # ── Scenario P&L ──────────────────────────────────────────────────────────
 
     # Case 1: Stock rises to strike
@@ -1122,7 +1252,17 @@ async def get_cc_plan(
         "price_range": {
             **price_range,
             "days_to_expiry": days_to_expiry or 44,
-            "note": f"Based on {round(atm_iv,1)}% IV — statistical range, not a prediction. 68% probability stock closes between ₹{price_range['low_1sd']:,.0f}–₹{price_range['high_1sd']:,.0f}.",
+            "hist_max_cycle_up":    hist_max_cycle_up,
+            "hist_max_cycle_down":  hist_max_cycle_down,
+            "hist_expiry_p90_up":   hist_expiry_p90_up,
+            "hist_expiry_p90_down": hist_expiry_p90_down,
+            "note": (
+                f"IV model ({round(atm_iv,1)}%): 68% range ₹{price_range['low_1sd']:,.0f}–₹{price_range['high_1sd']:,.0f}. "
+                + (f"Historical blended (wider of IV vs actual expiry cycles): ₹{price_range['low_1sd_blended']:,.0f}–₹{price_range['high_1sd_blended']:,.0f}. "
+                   f"Worst historical cycle: +{hist_max_cycle_up:.1f}% / {hist_max_cycle_down:.1f}%."
+                   if price_range.get("has_historical")
+                   else "No historical expiry data available — using IV model only.")
+            ),
         },
 
         "greeks": greeks_summary,

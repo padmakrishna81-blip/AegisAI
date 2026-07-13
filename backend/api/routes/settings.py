@@ -26,16 +26,28 @@ async def get_settings():
 
 @router.post("/settings")
 async def save_settings(settings: SettingsInput):
-    # Only pass keys to update_settings if the user actually typed something.
-    # Blank = "keep existing" (not "clear"). Use a special "CLEAR" token to clear.
-    anthropic = settings.anthropic_api_key if settings.anthropic_api_key else None
-    openai_k  = settings.openai_api_key    if settings.openai_api_key    else None
+    # Handle __CLEAR__ sentinel — explicitly wipe the key
+    anthropic_val = settings.anthropic_api_key
+    openai_val    = settings.openai_api_key
+
+    if anthropic_val == "__CLEAR__":
+        os.environ["ANTHROPIC_API_KEY"] = ""
+        anthropic_val = ""
+    if openai_val == "__CLEAR__":
+        os.environ["OPENAI_API_KEY"] = ""
+        openai_val = ""
+
+    # Blank = "keep existing" unless we explicitly cleared above
+    anthropic = anthropic_val if anthropic_val else None
+    openai_k  = openai_val    if openai_val    else None
 
     update_settings(
         provider=settings.llm_provider,
         anthropic_key=anthropic or "",
         openai_key=openai_k or "",
-        overwrite_keys=bool(anthropic is not None or openai_k is not None),
+        overwrite_keys=bool(anthropic is not None or openai_k is not None
+                            or settings.anthropic_api_key == "__CLEAR__"
+                            or settings.openai_api_key == "__CLEAR__"),
     )
     if settings.llm_provider:
         os.environ["LLM_PROVIDER"] = settings.llm_provider

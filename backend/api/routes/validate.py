@@ -13,45 +13,62 @@ def _quote_for_symbol(symbol: str) -> dict:
     """
     Fetch CMP, prev close, 30-day high/low for a single symbol.
     Uses fast_info for CMP (fresh) + history for 30-day range.
+    Retries once on failure to handle yfinance rate-limiting.
     """
+    import time as _t
     sym = normalize_symbol(symbol)
     result = {"symbol": sym, "error": None}
-    try:
-        ticker = yf.Ticker(sym)
 
-        # Fresh CMP via fast_info
-        fast = ticker.fast_info
-        cmp = getattr(fast, "last_price", None) or getattr(fast, "regular_market_price", None)
-        cmp = float(cmp) if cmp else None
+    for attempt in range(2):   # retry once on failure
+        try:
+            ticker = yf.Ticker(sym)
 
-        # Prev close from info (cached is fine — it changes once a day)
-        info = get_info(sym)
-        prev_close = safe_get(info, "previousClose") or safe_get(info, "regularMarketPreviousClose")
-        prev_close = float(prev_close) if prev_close else None
+            # Fresh CMP via fast_info
+            fast = ticker.fast_info
+            cmp = getattr(fast, "last_price", None) or getattr(fast, "regular_market_price", None)
+            cmp = float(cmp) if cmp else None
 
-        # 30-day OHLC for high/low
-        hist = ticker.history(period="1mo")
-        high_30d = float(hist["High"].max()) if not hist.empty else None
-        low_30d  = float(hist["Low"].min())  if not hist.empty else None
+            if cmp is None and attempt == 0:
+                _t.sleep(0.5)
+                continue   # retry
 
-        # Derived values
-        change_inr = round(cmp - prev_close, 2) if cmp and prev_close else None
-        change_pct = round((cmp - prev_close) / prev_close * 100, 2) if cmp and prev_close and prev_close > 0 else None
-        drop_from_30h = round((cmp - high_30d) / high_30d * 100, 2) if cmp and high_30d and high_30d > 0 else None  # negative = fell from high
-        lift_from_30l = round((cmp - low_30d) / low_30d * 100, 2) if cmp and low_30d and low_30d > 0 else None      # positive = risen from low
+            # Prev close from info (cached is fine — it changes once a day)
+            info = get_info(sym)
+            prev_close = safe_get(info, "previousClose") or safe_get(info, "regularMarketPreviousClose")
+            prev_close = float(prev_close) if prev_close else None
 
-        result.update({
-            "cmp": round(cmp, 2) if cmp else None,
-            "prev_close": round(prev_close, 2) if prev_close else None,
-            "change_inr": change_inr,
-            "change_pct": change_pct,
-            "high_30d": round(high_30d, 2) if high_30d else None,
-            "low_30d": round(low_30d, 2) if low_30d else None,
-            "drop_from_30d_high_pct": drop_from_30h,   # e.g. -4.2 means 4.2% below 30d high
-            "lift_from_30d_low_pct": lift_from_30l,    # e.g. +6.1 means 6.1% above 30d low
-        })
-    except Exception as e:
-        result["error"] = str(e)[:100]
+            # 30-day OHLC for high/low
+            hist = ticker.history(period="1mo")
+            if hist.empty and attempt == 0:
+                _t.sleep(0.5)
+                continue   # retry
+
+            high_30d = float(hist["High"].max()) if not hist.empty else None
+            low_30d  = float(hist["Low"].min())  if not hist.empty else None
+
+            # Derived values
+            change_inr    = round(cmp - prev_close, 2) if cmp and prev_close else None
+            change_pct    = round((cmp - prev_close) / prev_close * 100, 2) if cmp and prev_close and prev_close > 0 else None
+            drop_from_30h = round((cmp - high_30d) / high_30d * 100, 2) if cmp and high_30d and high_30d > 0 else None
+            lift_from_30l = round((cmp - low_30d) / low_30d * 100, 2) if cmp and low_30d and low_30d > 0 else None
+
+            result.update({
+                "cmp":                  round(cmp, 2) if cmp else None,
+                "prev_close":           round(prev_close, 2) if prev_close else None,
+                "change_inr":           change_inr,
+                "change_pct":           change_pct,
+                "high_30d":             round(high_30d, 2) if high_30d else None,
+                "low_30d":              round(low_30d, 2) if low_30d else None,
+                "drop_from_30d_high_pct": drop_from_30h,
+                "lift_from_30d_low_pct":  lift_from_30l,
+            })
+            return result   # success
+        except Exception as e:
+            if attempt == 0:
+                _t.sleep(0.5)
+                continue
+            result["error"] = str(e)[:100]
+
     return result
 
 
@@ -63,7 +80,8 @@ async def watchlist_quotes(symbols: str = Query(..., description="Comma-separate
     """
     sym_list = [s.strip() for s in symbols.split(",") if s.strip()][:30]
     results = {}
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    # Use 5 workers (not 10) to avoid yfinance rate-limiting on parallel calls
+    with ThreadPoolExecutor(max_workers=5) as executor:
         futures = {executor.submit(_quote_for_symbol, s): s for s in sym_list}
         for future in as_completed(futures):
             data = future.result()

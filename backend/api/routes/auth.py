@@ -71,7 +71,7 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     # admin gets all permissions implicitly
     perms = user.get("permissions", [])
     if user["role"] == "admin":
-        perms = ["covered_calls", "wheel", "market", "ai_insights"]
+        perms = ["covered_calls", "wheel", "paper_trade", "market", "ai_insights"]
     return {
         "access_token": token,
         "token_type": "bearer",
@@ -86,7 +86,7 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
 async def me(current_user: dict = Depends(get_current_user)):
     """Return current user info."""
     if current_user.get("role") == "admin":
-        current_user = {**current_user, "permissions": ["covered_calls", "wheel", "market", "ai_insights"]}
+        current_user = {**current_user, "permissions": ["covered_calls", "wheel", "paper_trade", "market", "ai_insights"]}
     return current_user
 
 

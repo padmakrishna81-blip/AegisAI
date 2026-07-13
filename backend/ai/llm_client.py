@@ -55,7 +55,13 @@ def call_llm(prompt: str, system: str = "", max_tokens: int = 1024) -> str:
         else:
             result = f"[LLM not configured: unknown provider '{provider}']"
     except Exception as e:
-        result = f"[LLM error: {str(e)[:200]}]"
+        err = str(e)
+        if "429" in err or "quota" in err.lower() or "billing" in err.lower():
+            result = f"[LLM quota exceeded: Your {provider.upper()} account has run out of credits. Add billing at platform.openai.com or switch to Claude in Settings.]"
+        elif "401" in err or "invalid" in err.lower() or "authentication" in err.lower():
+            result = f"[LLM auth failed: API key is invalid or expired. Re-enter your {provider.upper()} key in Settings.]"
+        else:
+            result = f"[LLM error: {str(e)[:200]}]"
 
     _set_cached_response(key, result)
     return result

@@ -231,6 +231,7 @@ function StockResult({ data }: { data: Record<string, unknown> }) {
   const chgInr  = data.change_inr   as number | null
   const chgPct  = data.change_pct   as number | null
   const aiPowered = (verdict as Record<string, unknown> | undefined)?.ai_powered as boolean | undefined
+  const aiError   = data.ai_error as string | null
 
   if (!verdict) return <div className="text-muted text-sm">No analysis data</div>
   const action = (verdict.action as string) || 'HOLD'
@@ -270,6 +271,8 @@ function StockResult({ data }: { data: Record<string, unknown> }) {
           <div className="ml-auto flex items-center gap-2">
             {aiPowered ? (
               <span className="px-2 py-1 bg-blue-950 border border-blue-800 text-score-blue rounded-lg text-[10px] font-bold">◆ AI Powered</span>
+            ) : aiError ? (
+              <span className="px-2 py-1 bg-red-950 border border-red-800 text-score-red rounded-lg text-[10px] font-medium" title={aiError}>⚠ AI Error — Rule-based fallback</span>
             ) : (
               <span className="px-2 py-1 bg-slate-700 text-muted rounded-lg text-[10px]">Rule-based</span>
             )}

@@ -22,16 +22,30 @@ async def explain_stock(symbol: str):
     change_inr = round(float(cmp) - float(prev_close), 2) if cmp and prev_close else None
     change_pct = round((float(cmp) / float(prev_close) - 1) * 100, 2) if cmp and prev_close and float(prev_close) > 0 else None
 
+    # Check if AI produced an error message (quota exceeded etc.)
+    verdict = result.get("verdict", {})
+    ai_error = None
+    if verdict and not verdict.get("ai_powered", False):
+        from ai.llm_client import is_configured, get_provider
+        if is_configured():
+            # AI is configured but verdict is rule-based — means LLM call failed
+            # Run a quick check to surface the error
+            from ai.llm_client import call_llm
+            test = call_llm("ping", max_tokens=3)
+            if test.startswith("[LLM"):
+                ai_error = test  # e.g. "[LLM quota exceeded: ...]"
+
     return {
         "symbol":       sym,
         "company_name": result.get("company_name", sym),
-        "verdict":      result.get("verdict", {}),
+        "verdict":      verdict,
         "overall_score":result.get("overall_score", 0),
         "scores":       result.get("scores", {}),
         "current_price":round(float(cmp), 2) if cmp else 0,
         "prev_close":   round(float(prev_close), 2) if prev_close else None,
         "change_inr":   change_inr,
         "change_pct":   change_pct,
+        "ai_error":     ai_error,
     }
 
 

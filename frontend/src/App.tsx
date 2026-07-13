@@ -36,7 +36,9 @@ function ProtectedLayout() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/discover" element={<Discover />} />
             <Route path="/portfolio" element={<Portfolio />} />
-            <Route path="/trade" element={<Trade />} />
+            <Route path="/trade" element={
+              hasPermission(user, 'paper_trade') ? <Trade /> : <AccessDenied />
+            } />
             <Route path="/covered-calls" element={
               hasPermission(user, 'covered_calls') ? <CoveredCalls /> : <AccessDenied />
             } />

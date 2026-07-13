@@ -340,15 +340,36 @@ function WatchlistTab({
     if (items.length === 0) return
     setLoading(true)
     try {
-      const symbols = items.map(i => i.symbol).join(',')
+      // Normalize all symbols to .NS format before sending
+      const symbols = items.map(i =>
+        i.symbol.includes('.') || i.symbol.startsWith('^') ? i.symbol : i.symbol + '.NS'
+      ).join(',')
       const res = await client.get(`/watchlist/quotes?symbols=${encodeURIComponent(symbols)}`)
-      setQuotes(res.data)
+      // Merge back using both bare and .NS keyed versions for compatibility
+      const merged: Record<string, QuoteData> = {}
+      for (const [k, v] of Object.entries(res.data as Record<string, QuoteData>)) {
+        merged[k] = v                          // store with .NS key
+        merged[k.replace('.NS', '')] = v       // also store bare key
+      }
+      setQuotes(merged)
       setLastRefresh(new Date())
     } catch { /* ignore */ }
     finally { setLoading(false) }
   }, [items])
 
   useEffect(() => { fetchQuotes() }, [fetchQuotes])
+
+  // Auto-retry once after 4s if any stock has blank CMP (rate-limit recovery)
+  useEffect(() => {
+    if (items.length === 0 || loading) return
+    const hasBlank = items.some(i => {
+      const sym = i.symbol.includes('.') ? i.symbol : i.symbol + '.NS'
+      return !quotes[sym]?.cmp && !quotes[i.symbol]?.cmp
+    })
+    if (!hasBlank) return
+    const tid = setTimeout(fetchQuotes, 4000)
+    return () => clearTimeout(tid)
+  }, [quotes, items, loading, fetchQuotes])
 
   if (items.length === 0) {
     return (
@@ -401,7 +422,10 @@ function WatchlistTab({
             </thead>
             <tbody>
               {items.map((item: WatchlistItem) => {
-                const q = quotes[item.symbol] || {}
+                const symKey = quotes[item.symbol] ? item.symbol
+                              : quotes[item.symbol + '.NS'] ? item.symbol + '.NS'
+                              : item.symbol
+                const q = quotes[symKey] || {}
                 const chgPos = (q.change_inr ?? 0) >= 0
                 const dropFromHigh = q.drop_from_30d_high_pct  // negative number
                 const liftFromLow = q.lift_from_30d_low_pct    // positive number

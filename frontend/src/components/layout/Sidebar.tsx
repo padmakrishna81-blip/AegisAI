@@ -6,12 +6,12 @@ const BASE_NAV = [
   { path: '/',          label: 'Dashboard',     icon: '⬡' },
   { path: '/discover',  label: 'Discover',       icon: '⬢' },
   { path: '/portfolio', label: 'Portfolio',      icon: '⬣' },
-  { path: '/trade',     label: 'Paper Trade',    icon: '◈' },
   { path: '/settings',  label: 'Settings',       icon: '⚙' },
 ]
 
 const GATED_NAV = [
-  { path: '/covered-calls', label: 'Covered Calls', icon: '◉', perm: 'covered_calls' },
+  { path: '/trade',         label: 'Paper Trade',    icon: '◈', perm: 'paper_trade' },
+  { path: '/covered-calls', label: 'Covered Calls',  icon: '◉', perm: 'covered_calls' },
   { path: '/wheel',         label: 'Wheel Strategy', icon: '🎡', perm: 'wheel' },
   { path: '/market',        label: 'Market',         icon: '◊', perm: 'market' },
   { path: '/ai-insights',   label: 'AI Insights',    icon: '◇', perm: 'ai_insights' },

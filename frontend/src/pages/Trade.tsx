@@ -47,7 +47,8 @@ interface Position {
   symbol: string
   company_name: string
   status: string
-  trade_type?: string           // "EQUITY" | "COVERED_CALL"
+  trade_type?: string           // "EQUITY" | "COVERED_CALL" | "WHEEL"
+  wheel_phase?: string          // "PUT" | "COVERED_CALL" (for WHEEL trades)
   has_any_fill: boolean
   total_allocation: number
   invested: number
@@ -66,6 +67,9 @@ interface CcPosition {
   symbol: string
   company_name: string
   trade_status: string
+  trade_type: string         // "COVERED_CALL" | "WHEEL"
+  position_type: 'CE' | 'PE' // CE = short call, PE = short put
+  wheel_phase?: string
   option_symbol: string
   strike: number
   expiry: string
@@ -73,7 +77,7 @@ interface CcPosition {
   premium_income: number
   lots: number
   lot_size: number
-  option_status: 'OPEN' | 'CLOSED' | 'EXPIRED'
+  option_status: 'OPEN' | 'CLOSED' | 'EXPIRED' | 'CANCELLED'
   option_pnl: number | null
   close_premium: number | null
   opened_at: string
@@ -94,6 +98,7 @@ interface Summary {
   virtual_cash: number
   total_invested: number
   unrealised_pnl: number
+  option_mtm_total: number
   realised_pnl: number
   total_pnl: number
   portfolio_value: number
@@ -107,11 +112,11 @@ interface ChunkDetail {
   trade_id: string
   chunk_no: number
   buy_price: number
-  exit_price: number
+  exit_price: number | null
   quantity: number
-  profit_pct: number
+  profit_pct: number | null
   cost: number
-  target_value: number
+  target_value: number | null
   current_value: number
   unrealised_pnl: number
   buy_time: string | null
@@ -133,6 +138,7 @@ interface HoldingAgg {
   mtm_target_pct: number | null
   mtm_target_inr: number | null
   chunk_details: ChunkDetail[]
+  trade_type?: string   // "EQUITY" | "COVERED_CALL" | "WHEEL"
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -565,6 +571,11 @@ function TradeCard({ pos, onAction }: { pos: Position; onAction: () => void }) {
           {pos.trade_type === 'COVERED_CALL' && (
             <span className="px-2 py-0.5 bg-amber-950 border border-amber-700 text-score-amber rounded text-[10px] font-bold">CC</span>
           )}
+          {pos.trade_type === 'WHEEL' && (
+            <span className="px-2 py-0.5 bg-purple-950 border border-purple-700 text-purple-400 rounded text-[10px] font-bold">
+              🎡 {pos.wheel_phase === 'PUT' ? 'PUT' : 'CC'}
+            </span>
+          )}
           <span className={`px-2 py-0.5 rounded text-xs font-bold ${STATUS_STYLES[pos.status] || 'text-muted'}`}>
             {pos.status}
           </span>
@@ -663,8 +674,16 @@ function TradeCard({ pos, onAction }: { pos: Position; onAction: () => void }) {
                         </div>
                       ) : <span className="text-muted">—</span>}
                     </td>
-                    <td className="py-2 text-right text-score-green">₹{chunk.exit_price.toFixed(2)}</td>
-                    <td className="py-2 text-right text-score-amber">{chunk.profit_pct}%</td>
+                    <td className="py-2 text-right text-score-green">
+                      {pos.trade_type === 'COVERED_CALL' || pos.trade_type === 'WHEEL'
+                        ? <span className="text-[10px] text-amber-500 italic">Manual exit</span>
+                        : `₹${chunk.exit_price.toFixed(2)}`}
+                    </td>
+                    <td className="py-2 text-right text-score-amber">
+                      {pos.trade_type === 'COVERED_CALL' || pos.trade_type === 'WHEEL'
+                        ? <span className="text-[10px] text-muted">—</span>
+                        : `${chunk.profit_pct}%`}
+                    </td>
                     <td className="py-2 text-right text-slate-300">{chunk.quantity.toLocaleString()}</td>
                     <td className="py-2 text-right text-slate-300">{chunk.allocation_pct}%</td>
                     <td className="py-2 text-center">
@@ -1029,7 +1048,15 @@ function HoldingsTab({ holdings, loading, onRefresh }: {
                     <div className="flex items-center gap-2">
                       <span className="text-muted text-xs">{isExpanded ? '▼' : '▶'}</span>
                       <div>
-                        <div className="font-bold text-white">{shortSymbol(h.symbol)}</div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-bold text-white">{shortSymbol(h.symbol)}</span>
+                          {h.trade_type === 'COVERED_CALL' && (
+                            <span className="px-1.5 py-0.5 bg-amber-950 border border-amber-700 text-score-amber rounded text-[9px] font-bold">CC</span>
+                          )}
+                          {h.trade_type === 'WHEEL' && (
+                            <span className="px-1.5 py-0.5 bg-purple-950 border border-purple-700 text-purple-400 rounded text-[9px] font-bold">🎡</span>
+                          )}
+                        </div>
                         <div className="text-xs text-muted truncate max-w-[140px]">{h.company_name}</div>
                       </div>
                     </div>
@@ -1101,7 +1128,9 @@ function HoldingsTab({ holdings, loading, onRefresh }: {
 
                                 {/* Editable exit price */}
                                 <td className="py-2 text-right">
-                                  {isEditingThis ? (
+                                  {c.exit_price == null ? (
+                                    <span className="text-muted text-[11px]">Manual</span>
+                                  ) : isEditingThis ? (
                                     <div className="flex items-center gap-1 justify-end">
                                       <input
                                         type="number" value={exitVal} step={0.5}
@@ -1121,7 +1150,7 @@ function HoldingsTab({ holdings, loading, onRefresh }: {
                                     </div>
                                   ) : (
                                     <button
-                                      onClick={() => { setEditingExit({ trade_id: c.trade_id, chunk_no: c.chunk_no }); setExitVal(c.exit_price.toFixed(2)) }}
+                                      onClick={() => { setEditingExit({ trade_id: c.trade_id, chunk_no: c.chunk_no }); setExitVal(c.exit_price != null ? c.exit_price.toFixed(2) : '') }}
                                       className="text-score-green hover:text-green-400 font-medium group flex items-center gap-1 ml-auto"
                                       title="Click to edit exit price"
                                     >
@@ -1131,7 +1160,7 @@ function HoldingsTab({ holdings, loading, onRefresh }: {
                                   )}
                                 </td>
 
-                                <td className="py-2 text-right text-score-blue">{formatINR(c.target_value)}</td>
+                                <td className="py-2 text-right text-score-blue">{c.target_value != null ? formatINR(c.target_value) : <span className="text-muted">—</span>}</td>
                                 <td className="py-2 text-right text-white">{formatINR(c.current_value)}</td>
                                 <td className={`py-2 text-right font-medium ${c.unrealised_pnl >= 0 ? 'text-score-green' : 'text-score-red'}`}>
                                   {c.unrealised_pnl >= 0 ? '+' : ''}{formatINR(c.unrealised_pnl)}
@@ -1230,9 +1259,9 @@ function OrdersLog() {
 // ─── CC Options Positions Tab ─────────────────────────────────────────────────
 
 function CcPositionsTab({ positions, onRefresh }: { positions: CcPosition[]; onRefresh: () => void }) {
-  const [closing, setClosing]       = useState<string | null>(null)
+  const [closing, setClosing]           = useState<string | null>(null)
   const [closePremium, setClosePremium] = useState<Record<string, string>>({})
-  const [acting, setActing]         = useState(false)
+  const [acting, setActing]             = useState(false)
 
   const doClose = async (tid: string) => {
     const p = parseFloat(closePremium[tid] || '0')
@@ -1245,8 +1274,9 @@ function CcPositionsTab({ positions, onRefresh }: { positions: CcPosition[]; onR
     } finally { setActing(false) }
   }
 
-  const doExpire = async (tid: string) => {
-    if (!window.confirm('Mark this CE as expired worthless? You keep the full premium.')) return
+  const doExpire = async (tid: string, positionType: 'CE' | 'PE') => {
+    const label = positionType === 'PE' ? 'PE (put)' : 'CE (call)'
+    if (!window.confirm(`Mark this short ${label} as expired worthless? You keep the full premium.`)) return
     setActing(true)
     try {
       await client.post(`/paper/cc-option/${tid}/expire`)
@@ -1254,10 +1284,35 @@ function CcPositionsTab({ positions, onRefresh }: { positions: CcPosition[]; onR
     } finally { setActing(false) }
   }
 
+  const doCancel = async (tid: string, sym: string) => {
+    if (!window.confirm(`Cancel the Wheel PUT for ${sym}? This will refund your blocked margin cash.`)) return
+    setActing(true)
+    try {
+      await client.post(`/paper/wheel/${tid}/cancel-put`)
+      onRefresh()
+    } catch (e: unknown) {
+      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail || 'Cancel failed'
+      alert(msg)
+    } finally { setActing(false) }
+  }
+
+  const doDelete = async (tid: string) => {
+    if (!window.confirm('Permanently delete this cancelled trade? This cannot be undone.')) return
+    setActing(true)
+    try {
+      await client.delete(`/paper/wheel/${tid}`)
+      onRefresh()
+    } catch (e: unknown) {
+      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail || 'Delete failed'
+      alert(msg)
+    } finally { setActing(false) }
+  }
+
   const statusBadge = (s: string) => {
-    if (s === 'OPEN')    return 'bg-blue-950 border-blue-800 text-score-blue'
-    if (s === 'CLOSED')  return 'bg-slate-700 border-slate-600 text-muted'
-    if (s === 'EXPIRED') return 'bg-green-950 border-green-800 text-score-green'
+    if (s === 'OPEN')        return 'bg-blue-950 border-blue-800 text-score-blue'
+    if (s === 'CLOSED')      return 'bg-slate-700 border-slate-600 text-muted'
+    if (s === 'EXPIRED')     return 'bg-green-950 border-green-800 text-score-green'
+    if (s === 'CANCELLED')   return 'bg-red-950 border-red-800 text-score-red'
     return ''
   }
 
@@ -1272,7 +1327,7 @@ function CcPositionsTab({ positions, onRefresh }: { positions: CcPosition[]; onR
   return (
     <div className="space-y-3">
       <div className="text-xs text-blue-400 px-1">
-        Short CE positions from Covered Call plans. Close by buying back at a lower premium, or mark as Expired if the option expires worthless.
+        Short options positions — Covered Calls (short CE) and Wheel strategy (short PE). Close by buying back at a lower premium, or mark as Expired if the option expires worthless.
       </div>
       <div className="bg-card border border-border rounded-xl overflow-hidden">
         <table className="w-full text-sm">
@@ -1297,7 +1352,12 @@ function CcPositionsTab({ positions, onRefresh }: { positions: CcPosition[]; onR
               <>
                 <tr key={p.trade_id} className="border-b border-border/40 hover:bg-slate-800/20">
                   <td className="px-5 py-3">
-                    <div className="font-bold text-white">{p.option_symbol}</div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-white">{p.option_symbol}</span>
+                      <span className={`text-[9px] px-1.5 py-0.5 rounded border font-bold ${p.position_type === 'PE' ? 'bg-purple-950 border-purple-700 text-purple-400' : 'bg-amber-950 border-amber-700 text-score-amber'}`}>
+                        Short {p.position_type}
+                      </span>
+                    </div>
                     <div className="text-[10px] text-muted">{p.company_name} · Strike ₹{p.strike} · {p.lots}L × {p.lot_size.toLocaleString('en-IN')}</div>
                   </td>
                   <td className="px-3 py-3 text-xs text-slate-300">{p.expiry}</td>
@@ -1342,6 +1402,9 @@ function CcPositionsTab({ positions, onRefresh }: { positions: CcPosition[]; onR
                       : '—'}
                   </td>
                   <td className="px-3 py-3 text-center">
+                    {p.wheel_phase === 'PUT' ? (
+                      <span className="text-[10px] text-muted italic">–</span>
+                    ) : (
                     <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${
                       p.phase1_status === 'BOUGHT' ? 'bg-blue-950 border border-blue-800 text-score-blue' :
                       p.phase1_status === 'SOLD' ? 'bg-green-950 border border-green-800 text-score-green' :
@@ -1349,8 +1412,12 @@ function CcPositionsTab({ positions, onRefresh }: { positions: CcPosition[]; onR
                       {p.phase1_status}
                       {p.phase1_buy_price ? ` @₹${p.phase1_buy_price}` : ''}
                     </span>
+                    )}
                   </td>
                   <td className="px-3 py-3 text-center">
+                    {p.wheel_phase === 'PUT' ? (
+                      <span className="text-[10px] text-muted italic">–</span>
+                    ) : (
                     <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${
                       p.phase2_status === 'BOUGHT' ? 'bg-blue-950 border border-blue-800 text-score-blue' :
                       p.phase2_status === 'SOLD' ? 'bg-green-950 border border-green-800 text-score-green' :
@@ -1358,6 +1425,7 @@ function CcPositionsTab({ positions, onRefresh }: { positions: CcPosition[]; onR
                       {p.phase2_status}
                       {p.phase2_buy_price ? ` @₹${p.phase2_buy_price}` : ''}
                     </span>
+                    )}
                   </td>
                   <td className="px-3 py-3 text-center">
                     <span className={`text-[10px] px-2 py-0.5 rounded border font-bold ${statusBadge(p.option_status)}`}>
@@ -1375,16 +1443,30 @@ function CcPositionsTab({ positions, onRefresh }: { positions: CcPosition[]; onR
                   </td>
                   <td className="px-3 py-3">
                     {p.option_status === 'OPEN' && (
-                      <div className="flex gap-1">
-                        <button onClick={() => setClosing(closing === p.trade_id ? null : p.trade_id)}
-                          className="px-2 py-1 bg-card border border-border text-muted hover:text-white rounded text-xs">
-                          Close
-                        </button>
-                        <button onClick={() => doExpire(p.trade_id)} disabled={acting}
-                          className="px-2 py-1 bg-green-950 border border-green-800 text-score-green hover:bg-green-900 rounded text-xs">
-                          Expired
-                        </button>
+                      <div className="flex flex-col gap-1">
+                        <div className="flex gap-1">
+                          <button onClick={() => setClosing(closing === p.trade_id ? null : p.trade_id)}
+                            className="px-2 py-1 bg-card border border-border text-muted hover:text-white rounded text-xs">
+                            Close
+                          </button>
+                          <button onClick={() => doExpire(p.trade_id, p.position_type)} disabled={acting}
+                            className="px-2 py-1 bg-green-950 border border-green-800 text-score-green hover:bg-green-900 rounded text-xs">
+                            Expired
+                          </button>
+                        </div>
+                        {p.trade_type === 'WHEEL' && p.wheel_phase === 'PUT' && (
+                          <button onClick={() => doCancel(p.trade_id, p.symbol)} disabled={acting}
+                            className="px-2 py-1 bg-red-950 border border-red-800 text-score-red hover:bg-red-900 rounded text-xs font-medium">
+                            Cancel PUT
+                          </button>
+                        )}
                       </div>
+                    )}
+                    {p.option_status === 'CANCELLED' && (
+                      <button onClick={() => doDelete(p.trade_id)} disabled={acting}
+                        className="px-2 py-1 bg-slate-800 border border-red-900 text-score-red hover:bg-red-950 rounded text-xs font-medium">
+                        🗑 Delete
+                      </button>
                     )}
                   </td>
                 </tr>
@@ -1474,7 +1556,7 @@ export default function Trade() {
         {[
           { label: 'Virtual Cash', val: summary ? formatINR(summary.virtual_cash) : '—', color: 'text-white' },
           { label: 'Invested', val: summary ? formatINR(summary.total_invested) : '—', color: 'text-slate-300' },
-          { label: 'Unrealised P&L', val: summary ? `${(summary.unrealised_pnl >= 0 ? '+' : '') + formatINR(summary.unrealised_pnl)}` : '—', color: summary && summary.unrealised_pnl >= 0 ? 'text-score-green' : 'text-score-red' },
+          { label: 'Unrealised P&L', val: summary ? `${(summary.total_pnl >= 0 ? '+' : '') + formatINR(summary.total_pnl)}` : '—', color: summary && summary.total_pnl >= 0 ? 'text-score-green' : 'text-score-red' },
           { label: 'Realised P&L', val: summary ? `${(summary.realised_pnl >= 0 ? '+' : '') + formatINR(summary.realised_pnl)}` : '—', color: summary && summary.realised_pnl >= 0 ? 'text-score-green' : 'text-score-red' },
           { label: 'Active Trades', val: summary ? String(summary.active_trade_count) : '—', color: 'text-score-blue' },
         ].map(({ label, val, color }) => (
@@ -1549,7 +1631,7 @@ export default function Trade() {
             </div>
           )}
 
-          {!loading && (!summary || summary.positions.length === 0) && (
+          {!loading && (!summary || summary.positions.length === 0) && !(summary?.cc_positions || []).some(p => p.wheel_phase === 'PUT' && p.option_status === 'OPEN') && (
             <div className="bg-card border border-border rounded-xl p-10 text-center">
               <div className="text-3xl mb-3">📈</div>
               <div className="text-white font-semibold mb-1">No paper trades yet</div>
@@ -1560,6 +1642,95 @@ export default function Trade() {
               </button>
             </div>
           )}
+
+          {/* ── Wheel PUT phase — pending stock purchase ── */}
+          {(() => {
+            const wheelPuts = (summary?.cc_positions || []).filter(
+              p => p.trade_type === 'WHEEL' && p.wheel_phase === 'PUT' && p.option_status === 'OPEN'
+            )
+            if (!wheelPuts.length) return null
+            return (
+              <div className="space-y-1">
+                <div className="text-xs text-muted px-1">Wheel — Short PUT Active (awaiting assignment or expiry)</div>
+                <div className="space-y-2">
+                  {wheelPuts.map(p => (
+                    <div key={p.trade_id} className="bg-card border border-purple-900 rounded-xl px-5 py-4">
+                      <div className="flex items-center justify-between gap-4 flex-wrap">
+                        {/* Left: identity */}
+                        <div className="flex items-center gap-3">
+                          <span className="px-2 py-0.5 bg-purple-950 border border-purple-700 text-purple-400 rounded text-[10px] font-bold">🎡 PUT</span>
+                          <div>
+                            <div className="font-semibold text-white">{p.symbol.replace('.NS', '')}</div>
+                            <div className="text-[10px] text-muted">{p.company_name}</div>
+                          </div>
+                        </div>
+
+                        {/* Center: option details */}
+                        <div className="flex items-center gap-5 text-xs">
+                          <div className="text-center">
+                            <div className="text-[10px] text-muted">Put Strike</div>
+                            <div className="font-bold text-purple-300">₹{p.strike}</div>
+                          </div>
+                          <div className="text-center">
+                            <div className="text-[10px] text-muted">Expiry</div>
+                            <div className="text-slate-300">{p.expiry}</div>
+                          </div>
+                          <div className="text-center">
+                            <div className="text-[10px] text-muted">Premium Sold</div>
+                            <div className="font-semibold text-score-green">₹{p.sell_premium} / share</div>
+                          </div>
+                          <div className="text-center">
+                            <div className="text-[10px] text-muted">Total Income</div>
+                            <div className="font-bold text-score-green">+₹{p.premium_income.toLocaleString('en-IN')}</div>
+                          </div>
+                          <div className="text-center">
+                            <div className="text-[10px] text-muted">Lots × Size</div>
+                            <div className="text-slate-300">{p.lots} × {p.lot_size.toLocaleString('en-IN')}</div>
+                          </div>
+                          {p.current_ltp != null && (
+                            <div className="text-center">
+                              <div className="text-[10px] text-muted">Current LTP</div>
+                              <div className={`font-semibold ${p.current_ltp < p.sell_premium ? 'text-score-green' : 'text-score-red'}`}>
+                                ₹{p.current_ltp.toFixed(2)}
+                              </div>
+                            </div>
+                          )}
+                          {p.option_mtm_inr != null && (
+                            <div className="text-center">
+                              <div className="text-[10px] text-muted">MTM P&L</div>
+                              <div className={`font-bold ${p.option_mtm_inr >= 0 ? 'text-score-green' : 'text-score-red'}`}>
+                                {p.option_mtm_inr >= 0 ? '+' : ''}₹{Math.abs(p.option_mtm_inr).toLocaleString('en-IN')}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Right: status + next step */}
+                        <div className="flex flex-col items-end gap-1 text-right">
+                          <span className="text-[10px] px-2 py-0.5 bg-purple-950 border border-purple-800 text-purple-400 rounded font-bold">
+                            ⏳ AWAITING ASSIGNMENT
+                          </span>
+                          <div className="text-[10px] text-slate-400 max-w-[220px] leading-relaxed">
+                            If stock falls to ₹{p.strike}, you'll be assigned {(p.lots * p.lot_size).toLocaleString('en-IN')} shares. Go to Options tab to take action.
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Bottom info bar */}
+                      <div className="mt-3 pt-3 border-t border-purple-900/50 flex items-center gap-2 text-[11px] text-slate-400">
+                        <span className="text-purple-400 font-medium">Next steps:</span>
+                        <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-300">1. Put expires → keep premium → spin again</span>
+                        <span className="text-muted">or</span>
+                        <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-300">2. Assigned → sell covered call on the stock</span>
+                        <span className="text-muted">or</span>
+                        <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-300">3. Close early → buy back put in Options tab</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+          })()}
 
           {/* ── Trades with at least one fill — "Active Positions" ── */}
           {(() => {
