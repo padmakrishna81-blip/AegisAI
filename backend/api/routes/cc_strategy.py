@@ -681,12 +681,14 @@ async def assess_stocks(body: dict):
             if cmp <= 0:
                 return {"symbol": bare, "eligible": False, "warnings": [{"level":"high","category":"Data","message":"Could not fetch price data."}]}
 
-            high52 = float(getattr(fi, "year_high", None) or cmp)
-            low52  = float(getattr(fi, "year_low",  None) or cmp)
+            high52 = float(getattr(fi, "year_high", None) or 0)
+            low52  = float(getattr(fi, "year_low",  None) or 0)
 
             # .info only for name/sector (these aren't in fast_info)
             info   = t.info
             name   = safe_get(info, "longName") or safe_get(info, "shortName") or bare
+            if not high52: high52 = float(safe_get(info, "fiftyTwoWeekHigh") or 0)
+            if not low52:  low52  = float(safe_get(info, "fiftyTwoWeekLow")  or 0)
             sector = safe_get(info, "sector") or ""
 
             # 5-day history only (much faster than 1y)
