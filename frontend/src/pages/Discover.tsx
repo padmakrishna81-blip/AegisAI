@@ -340,16 +340,14 @@ function WatchlistTab({
     if (items.length === 0) return
     setLoading(true)
     try {
-      // Normalize all symbols to .NS format before sending
       const symbols = items.map(i =>
         i.symbol.includes('.') || i.symbol.startsWith('^') ? i.symbol : i.symbol + '.NS'
       ).join(',')
       const res = await client.get(`/watchlist/quotes?symbols=${encodeURIComponent(symbols)}`)
-      // Merge back using both bare and .NS keyed versions for compatibility
       const merged: Record<string, QuoteData> = {}
       for (const [k, v] of Object.entries(res.data as Record<string, QuoteData>)) {
-        merged[k] = v                          // store with .NS key
-        merged[k.replace('.NS', '')] = v       // also store bare key
+        merged[k] = v
+        merged[k.replace('.NS', '')] = v
       }
       setQuotes(merged)
       setLastRefresh(new Date())
@@ -416,7 +414,7 @@ function WatchlistTab({
                 <th className="text-right px-3 py-3 whitespace-nowrap">30D Low</th>
                 <th className="text-right px-3 py-3 whitespace-nowrap">↑ From 30L</th>
                 <th className="text-right px-3 py-3 whitespace-nowrap">Score</th>
-                <th className="text-center px-3 py-3 whitespace-nowrap">Rec</th>
+                <th className="text-center px-3 py-3 whitespace-nowrap">Signal</th>
                 <th className="px-3 py-3"></th>
               </tr>
             </thead>

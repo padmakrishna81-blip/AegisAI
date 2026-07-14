@@ -1,5 +1,7 @@
 """AI advisor endpoints."""
 
+import time
+import threading
 from fastapi import APIRouter
 from ai.explainer import generate_verdict, generate_score_explanation, generate_morning_briefing
 from engines.recommendation import calculate_full
@@ -7,6 +9,12 @@ from api.routes.portfolio import _portfolio
 from data.market_data import get_info, safe_get, normalize_symbol
 
 router = APIRouter()
+
+# ── Briefing cache — recomputed at most once every 30 minutes ─────────────────
+_briefing_cache: dict = {}
+_briefing_ts: float = 0.0
+_briefing_lock = threading.Lock()
+_BRIEFING_TTL = 1800  # 30 minutes
 
 
 @router.get("/ai/explain/{symbol}")
@@ -28,12 +36,10 @@ async def explain_stock(symbol: str):
     if verdict and not verdict.get("ai_powered", False):
         from ai.llm_client import is_configured, get_provider
         if is_configured():
-            # AI is configured but verdict is rule-based — means LLM call failed
-            # Run a quick check to surface the error
             from ai.llm_client import call_llm
             test = call_llm("ping", max_tokens=3)
             if test.startswith("[LLM"):
-                ai_error = test  # e.g. "[LLM quota exceeded: ...]"
+                ai_error = test
 
     return {
         "symbol":       sym,
@@ -51,43 +57,27 @@ async def explain_stock(symbol: str):
 
 @router.get("/ai/briefing")
 async def morning_briefing():
-    """Generate AI morning briefing."""
+    """Generate AI morning briefing — cached for 30 min to avoid blocking the home page."""
+    global _briefing_cache, _briefing_ts
+
+    # Return cached result if still fresh
+    with _briefing_lock:
+        if _briefing_cache and (time.time() - _briefing_ts) < _BRIEFING_TTL:
+            return _briefing_cache
+
+    # Build fresh briefing — macro only (no full stock analysis on every load)
     from engines.macro_environment import calculate as calc_macro
     macro_result = calc_macro()
     market_mode = macro_result.get("market_mode", "NEUTRAL")
 
-    # Get portfolio
     holdings = []
     for h_id, h in _portfolio.get("holdings", {}).items():
         holdings.append({"symbol": h["symbol"], "quantity": h["quantity"]})
 
-    # Get top opportunities (quick analysis of first 5 Nifty50 stocks)
-    from data.indices import NIFTY50
-    from engines.recommendation import calculate_full
-    import asyncio
-    from concurrent.futures import ThreadPoolExecutor
+    result = generate_morning_briefing(holdings, [], market_mode)
 
-    loop = asyncio.get_event_loop()
-    executor = ThreadPoolExecutor(max_workers=5)
+    with _briefing_lock:
+        _briefing_cache = result
+        _briefing_ts = time.time()
 
-    async def quick_analyze(sym):
-        return await loop.run_in_executor(executor, calculate_full, sym)
-
-    try:
-        top_symbols = NIFTY50[:5]
-        tasks = [quick_analyze(sym) for sym in top_symbols]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        top_opps = []
-        for r in results:
-            if isinstance(r, dict) and r.get("overall_score", 0) >= 70:
-                top_opps.append({
-                    "symbol": r.get("symbol", ""),
-                    "overall_score": r.get("overall_score", 0),
-                    "recommendation": r.get("recommendation", "HOLD"),
-                    "reason": r.get("reason", ""),
-                })
-        top_opps.sort(key=lambda x: x["overall_score"], reverse=True)
-    except Exception:
-        top_opps = []
-
-    return generate_morning_briefing(holdings, top_opps, market_mode)
+    return result

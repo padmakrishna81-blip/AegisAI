@@ -5,6 +5,7 @@ import ScoreBreakdownPanel from '../components/scores/ScoreBreakdown'
 import { RadarChart, PolarGrid, PolarAngleAxis, Radar, ResponsiveContainer, Tooltip } from 'recharts'
 import client from '../api/client'
 import { useWatchlistStore } from '../store/watchlistStore'
+import GlobalStockDetailModal from '../components/GlobalStockDetailModal'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -344,6 +345,7 @@ function GlobalStocksTab() {
   const [suggestions, setSuggestions] = useState<SearchResult[]>([])
   const [searching, setSearching] = useState(false)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
+  const [detailStock, setDetailStock] = useState<{ symbol: string; name: string } | null>(null)
 
   const loadStocks = async (showRefresh = false) => {
     if (showRefresh) setRefreshing(true)
@@ -432,6 +434,15 @@ function GlobalStocksTab() {
         </div>
       </div>
 
+      {/* Detail Modal */}
+      {detailStock && (
+        <GlobalStockDetailModal
+          symbol={detailStock.symbol}
+          name={detailStock.name}
+          onClose={() => setDetailStock(null)}
+        />
+      )}
+
       {/* Stocks table */}
       <div className="bg-card border border-border rounded-xl overflow-hidden">
         <div className="px-5 py-3 border-b border-border flex items-center justify-between">
@@ -513,8 +524,12 @@ function GlobalStocksTab() {
                       ) : '—'}
                     </td>
                     <td className="px-3 py-3">
-                      <button onClick={() => removeStock(s.symbol)}
-                        className="text-xs text-muted hover:text-score-red transition-colors">Remove</button>
+                      <div className="flex items-center gap-2">
+                        <button onClick={() => setDetailStock({ symbol: s.symbol, name: s.name })}
+                          className="text-xs text-score-blue hover:text-blue-300 transition-colors font-medium">Detail</button>
+                        <button onClick={() => removeStock(s.symbol)}
+                          className="text-xs text-muted hover:text-score-red transition-colors">Remove</button>
+                      </div>
                     </td>
                   </tr>
                 )

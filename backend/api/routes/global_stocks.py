@@ -2,6 +2,7 @@
 
 import json
 import os
+from datetime import datetime, timezone
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from api.utils import clean_for_json
@@ -151,3 +152,166 @@ async def remove_global_stock(symbol: str):
 async def refresh_global_stocks():
     """Refresh prices for all stored global stocks."""
     return await list_global_stocks()
+
+
+@router.get("/global-stocks/{symbol}/detail")
+async def global_stock_detail(symbol: str):
+    """Get detailed info for a global stock: news, analyst expectations, earnings date, 3-year targets."""
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    import yfinance as yf
+
+    loop = asyncio.get_event_loop()
+    executor = ThreadPoolExecutor(max_workers=4)
+
+    def fetch_detail():
+        t = yf.Ticker(symbol)
+        result = {
+            "symbol": symbol,
+            "name": "",
+            "news": [],
+            "analyst": None,
+            "earnings_date": None,
+            "year_end_targets": None,
+        }
+
+        # --- Info & Analyst data ---
+        try:
+            info = t.info or {}
+            result["name"] = info.get("shortName") or info.get("longName") or symbol
+            current_price = info.get("currentPrice") or info.get("regularMarketPrice")
+            target_mean = info.get("targetMeanPrice")
+            target_high = info.get("targetHighPrice")
+            target_low = info.get("targetLowPrice")
+            recommendation = info.get("recommendationKey", "")
+            num_analysts = info.get("numberOfAnalystOpinions", 0)
+            sector = info.get("sector", "")
+            industry = info.get("industry", "")
+
+            if target_mean or recommendation:
+                result["analyst"] = {
+                    "recommendation": recommendation,
+                    "target_mean": round(float(target_mean), 2) if target_mean else None,
+                    "target_high": round(float(target_high), 2) if target_high else None,
+                    "target_low": round(float(target_low), 2) if target_low else None,
+                    "num_analysts": num_analysts,
+                    "current_price": round(float(current_price), 2) if current_price else None,
+                }
+        except Exception:
+            info = {}
+            current_price = None
+            target_mean = None
+            target_high = None
+            target_low = None
+            sector = ""
+            industry = ""
+
+        # --- News ---
+        try:
+            raw_news = t.news or []
+            cutoff = datetime.now(timezone.utc).timestamp() - 30 * 86400
+            news_items = []
+            for item in raw_news[:15]:
+                try:
+                    content = item.get("content", item)
+                    title = content.get("title", "") or item.get("title", "")
+                    summary = content.get("summary", "") or item.get("summary", "")
+                    pub_date = content.get("pubDate", "") or item.get("providerPublishTime", "")
+
+                    ts = None
+                    if isinstance(pub_date, (int, float)):
+                        ts = float(pub_date)
+                    elif isinstance(pub_date, str) and pub_date:
+                        try:
+                            dt = datetime.fromisoformat(pub_date.replace("Z", "+00:00"))
+                            ts = dt.timestamp()
+                        except ValueError:
+                            pass
+
+                    if ts and ts < cutoff:
+                        continue
+
+                    url = ""
+                    if isinstance(content.get("canonicalUrl"), dict):
+                        url = content["canonicalUrl"].get("url", "")
+                    elif isinstance(item.get("link"), str):
+                        url = item["link"]
+
+                    source = "Unknown"
+                    if isinstance(content.get("provider"), dict):
+                        source = content["provider"].get("displayName", "Unknown")
+
+                    if title:
+                        news_items.append({
+                            "title": title,
+                            "summary": summary[:200] if summary else "",
+                            "url": url,
+                            "published_at": ts,
+                            "source": source,
+                        })
+                except Exception:
+                    continue
+            result["news"] = news_items[:10]
+        except Exception:
+            pass
+
+        # --- Earnings Date ---
+        try:
+            cal = t.calendar
+            if cal is not None:
+                if isinstance(cal, dict):
+                    earnings = cal.get("Earnings Date") or cal.get("earnings_date")
+                    if earnings:
+                        if isinstance(earnings, list) and len(earnings) > 0:
+                            result["earnings_date"] = str(earnings[0])[:10]
+                        elif isinstance(earnings, str):
+                            result["earnings_date"] = earnings[:10]
+                else:
+                    # DataFrame format
+                    import pandas as pd
+                    if isinstance(cal, pd.DataFrame) and not cal.empty:
+                        for col in cal.columns:
+                            if "earning" in str(col).lower():
+                                val = cal[col].iloc[0] if len(cal[col]) > 0 else None
+                                if val is not None:
+                                    result["earnings_date"] = str(val)[:10]
+                                break
+        except Exception:
+            pass
+
+        # --- Year-end targets via LLM ---
+        try:
+            from ai.llm_client import call_llm, is_configured
+            if is_configured() and current_price:
+                now_year = datetime.now().year
+                prompt = f"""You are a financial analyst. Given the following data about {symbol} ({result['name']}):
+- Current Price: {current_price}
+- Sector: {sector}, Industry: {industry}
+- Analyst Target Mean: {target_mean}, High: {target_high}, Low: {target_low}
+- Number of Analysts: {info.get('numberOfAnalystOpinions', 'N/A')}
+- Revenue Growth: {info.get('revenueGrowth', 'N/A')}
+- Earnings Growth: {info.get('earningsGrowth', 'N/A')}
+- Profit Margins: {info.get('profitMargins', 'N/A')}
+- Forward PE: {info.get('forwardPE', 'N/A')}
+- Trailing PE: {info.get('trailingPE', 'N/A')}
+
+Provide year-end price targets for the next 3 years ({now_year}, {now_year+1}, {now_year+2}).
+For each year, provide LOW (bear case), BASE (most likely), and HIGH (bull case) estimates.
+
+Reply ONLY in this exact JSON format, no other text:
+{{"methodology": "brief 1-line explanation", "targets": [{{"year": {now_year}, "low": X, "base": Y, "high": Z}}, {{"year": {now_year+1}, "low": X, "base": Y, "high": Z}}, {{"year": {now_year+2}, "low": X, "base": Y, "high": Z}}]}}"""
+
+                response = call_llm(prompt, system="You are a concise financial analyst. Reply only with valid JSON.", max_tokens=300)
+                # Try to parse JSON from response
+                import re
+                json_match = re.search(r'\{.*\}', response, re.DOTALL)
+                if json_match:
+                    targets_data = json.loads(json_match.group())
+                    result["year_end_targets"] = targets_data
+        except Exception:
+            pass
+
+        return result
+
+    detail = await loop.run_in_executor(executor, fetch_detail)
+    return JSONResponse(content=clean_for_json(detail))
