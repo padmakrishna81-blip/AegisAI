@@ -143,6 +143,82 @@ async def get_global_indices():
     return JSONResponse(content=clean_for_json({"indices": list(results)}))
 
 
+@router.get("/market/gift-nifty")
+async def get_gift_nifty():
+    """Live GIFT Nifty data scraped from equitypandit (real GIFT Nifty futures price)."""
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    def fetch():
+        import requests
+        import re
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,*/*',
+                'Accept-Language': 'en-US,en;q=0.9',
+            }
+            r = requests.get('https://www.equitypandit.com/giftnifty/', headers=headers, timeout=12)
+            text = r.text
+
+            def parse_num(s):
+                if not s:
+                    return None
+                try:
+                    return float(s.strip().replace(',', ''))
+                except Exception:
+                    return None
+
+            price_m   = re.search(r'gift_Nifty_Live_Price[^>]*>([\d,. ]+)', text)
+            change_m  = re.search(r'gift_Nifty_Live_Change[^>]+>([^<]+)', text)
+            time_m    = re.search(r'gift_Nifty_Update_Time[^>]+>.*?<time[^>]+>([^<]+)</time>', text, re.DOTALL)
+            high_m    = re.search(r"Today's High</small><br\s*/><span[^>]*>([\d,.]+)", text)
+            low_m     = re.search(r"Today's Low</small><br\s*/><span[^>]*>([\d,.]+)", text)
+            open_m    = re.search(r"Today's Open</small><br\s*/><span[^>]*>([\d,.]+)", text)
+            prev_m    = re.search(r"Previous Close</small><br\s*/><span[^>]*>([\d,.]+)", text)
+
+            price      = parse_num(price_m.group(1)) if price_m else None
+            prev_close = parse_num(prev_m.group(1))  if prev_m  else None
+            day_high   = parse_num(high_m.group(1))  if high_m  else None
+            day_low    = parse_num(low_m.group(1))   if low_m   else None
+            day_open   = parse_num(open_m.group(1))  if open_m  else None
+
+            # Parse change string like "+37.50 (+0.16%)" or "-156.55 (-0.65%)"
+            change = None
+            change_pct = None
+            if change_m:
+                chg_str = change_m.group(1).strip()
+                cm = re.search(r'([+-]?[\d,.]+)\s*\(([+-]?[\d,.]+)%\)', chg_str)
+                if cm:
+                    change     = parse_num(cm.group(1))
+                    change_pct = parse_num(cm.group(2))
+
+            last_updated = time_m.group(1).strip() if time_m else None
+
+            gap_pts    = change
+            gap_signal = "positive" if (change or 0) > 0 else "negative" if (change or 0) < 0 else "flat"
+
+            return {
+                "price":        price,
+                "prev_close":   prev_close,
+                "day_high":     day_high,
+                "day_low":      day_low,
+                "day_open":     day_open,
+                "change":       change,
+                "change_pct":   change_pct,
+                "gap_pts":      gap_pts,
+                "gap_signal":   gap_signal,
+                "last_updated": last_updated,
+                "source":       "equitypandit.com / NSE IX",
+            }
+        except Exception as e:
+            return {"error": str(e)[:120]}
+
+    loop = asyncio.get_event_loop()
+    data = await loop.run_in_executor(ThreadPoolExecutor(max_workers=1), fetch)
+    return JSONResponse(content=clean_for_json(data))
+
+
 # ─── News Room ─────────────────────────────────────────────────────────────────
 
 # Only fresh feeds — all return articles dated within hours, not weeks

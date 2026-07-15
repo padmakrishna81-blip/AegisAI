@@ -7,6 +7,29 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from api.utils import clean_for_json
 
+def _news_sentiment(text: str) -> str:
+    """Rule-based sentiment: positive / negative / neutral."""
+    t = text.lower()
+    pos = ["beat", "beats", "record", "growth", "profit", "surge", "rally", "upgrade",
+           "strong", "raise", "raised", "exceed", "exceeds", "outperform", "buy",
+           "bullish", "wins", "gain", "gains", "breakthrough", "partnership", "deal",
+           "dividend", "buyback", "expansion", "revenue growth", "earnings beat",
+           "all-time high", "new high", "positive", "recovery", "momentum"]
+    neg = ["miss", "misses", "loss", "losses", "drop", "drops", "fell", "fall",
+           "decline", "declines", "cut", "cuts", "downgrade", "downgraded", "sell",
+           "bearish", "warn", "warning", "weak", "layoff", "layoffs", "sue", "sues",
+           "fraud", "investigation", "recall", "disappoints", "below expectations",
+           "profit warning", "revenue miss", "debt", "bankruptcy", "concern", "risk",
+           "negative", "slump", "crash", "halt", "suspend", "fine", "penalty"]
+    pos_score = sum(1 for w in pos if w in t)
+    neg_score = sum(1 for w in neg if w in t)
+    if pos_score > neg_score:
+        return "positive"
+    if neg_score > pos_score:
+        return "negative"
+    return "neutral"
+
+
 router = APIRouter()
 
 _STORE_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "global_stocks.json")
@@ -187,6 +210,7 @@ async def global_stock_detail(symbol: str):
             num_analysts = info.get("numberOfAnalystOpinions", 0)
             sector = info.get("sector", "")
             industry = info.get("industry", "")
+            currency = info.get("currency") or info.get("financialCurrency") or "USD"
 
             if target_mean or recommendation:
                 result["analyst"] = {
@@ -196,7 +220,9 @@ async def global_stock_detail(symbol: str):
                     "target_low": round(float(target_low), 2) if target_low else None,
                     "num_analysts": num_analysts,
                     "current_price": round(float(current_price), 2) if current_price else None,
+                    "currency": currency,
                 }
+            result["currency"] = currency
         except Exception:
             info = {}
             current_price = None
@@ -205,6 +231,8 @@ async def global_stock_detail(symbol: str):
             target_low = None
             sector = ""
             industry = ""
+            currency = "USD"
+            result["currency"] = currency
 
         # --- News ---
         try:
@@ -242,12 +270,14 @@ async def global_stock_detail(symbol: str):
                         source = content["provider"].get("displayName", "Unknown")
 
                     if title:
+                        sentiment = _news_sentiment(title + " " + (summary or ""))
                         news_items.append({
                             "title": title,
                             "summary": summary[:200] if summary else "",
                             "url": url,
                             "published_at": ts,
                             "source": source,
+                            "sentiment": sentiment,
                         })
                 except Exception:
                     continue

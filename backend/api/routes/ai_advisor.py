@@ -3,10 +3,12 @@
 import time
 import threading
 from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 from ai.explainer import generate_verdict, generate_score_explanation, generate_morning_briefing
 from engines.recommendation import calculate_full
 from api.routes.portfolio import _portfolio
 from data.market_data import get_info, safe_get, normalize_symbol
+from api.utils import clean_for_json
 
 router = APIRouter()
 
@@ -41,18 +43,23 @@ async def explain_stock(symbol: str):
             if test.startswith("[LLM"):
                 ai_error = test
 
-    return {
-        "symbol":       sym,
-        "company_name": result.get("company_name", sym),
-        "verdict":      verdict,
-        "overall_score":result.get("overall_score", 0),
-        "scores":       result.get("scores", {}),
-        "current_price":round(float(cmp), 2) if cmp else 0,
-        "prev_close":   round(float(prev_close), 2) if prev_close else None,
-        "change_inr":   change_inr,
-        "change_pct":   change_pct,
-        "ai_error":     ai_error,
-    }
+    return JSONResponse(content=clean_for_json({
+        "symbol":          sym,
+        "company_name":    result.get("company_name", sym),
+        "verdict":         verdict,
+        "overall_score":   result.get("overall_score", 0),
+        "recommendation":  result.get("recommendation"),
+        "scores":          result.get("scores", {}),
+        "breakdowns":      result.get("breakdowns", {}),
+        "technical_indicators": result.get("technical_indicators", {}),
+        "high_52w":        result.get("high_52w"),
+        "low_52w":         result.get("low_52w"),
+        "current_price":   round(float(cmp), 2) if cmp else 0,
+        "prev_close":      round(float(prev_close), 2) if prev_close else None,
+        "change_inr":      change_inr,
+        "change_pct":      change_pct,
+        "ai_error":        ai_error,
+    }))
 
 
 @router.get("/ai/briefing")

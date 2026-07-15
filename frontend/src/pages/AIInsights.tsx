@@ -2,6 +2,7 @@ import { useState } from 'react'
 import client from '../api/client'
 import { scoreToColor } from '../utils/formatters'
 import NseStockSearch from '../components/NseStockSearch'
+import NextSessionPredictCard from '../components/NextSessionPredictCard'
 
 // ─── Predefined questions ─────────────────────────────────────────────────────
 
@@ -224,14 +225,24 @@ function SectorResult({ data }: { data: Record<string, unknown> }) {
 // ─── Stock Analysis Result ────────────────────────────────────────────────────
 
 function StockResult({ data }: { data: Record<string, unknown> }) {
-  const verdict = data.verdict as Record<string, unknown> | undefined
-  const score   = (data.overall_score as number) || 0
-  const cmp     = data.current_price as number | null
-  const prev    = data.prev_close   as number | null
-  const chgInr  = data.change_inr   as number | null
-  const chgPct  = data.change_pct   as number | null
+  const verdict  = data.verdict as Record<string, unknown> | undefined
+  const score    = (data.overall_score as number) || 0
+  const cmp      = data.current_price as number | null
+  const prev     = data.prev_close   as number | null
+  const chgInr   = data.change_inr   as number | null
+  const chgPct   = data.change_pct   as number | null
+  const scores   = (data.scores as Record<string, number>) || {}
   const aiPowered = (verdict as Record<string, unknown> | undefined)?.ai_powered as boolean | undefined
   const aiError   = data.ai_error as string | null
+
+  const SCORE_LABELS: Record<string, string> = {
+    company_health:    'Health',
+    growth_trend:      'Growth',
+    technical_strength:'Technical',
+    sector_strength:   'Sector',
+    business_events:   'Events',
+    macro_environment: 'Macro',
+  }
 
   if (!verdict) return <div className="text-muted text-sm">No analysis data</div>
   const action = (verdict.action as string) || 'HOLD'
@@ -300,6 +311,18 @@ function StockResult({ data }: { data: Record<string, unknown> }) {
           </div>
         ) : null}
       </div>
+
+      {/* 6 sub-scores */}
+      {Object.keys(scores).length > 0 && (
+        <div className="grid grid-cols-6 gap-2">
+          {Object.entries(scores).map(([key, val]) => (
+            <div key={key} className="bg-slate-800/60 rounded-lg p-2 text-center">
+              <div className="text-[9px] text-muted mb-0.5">{SCORE_LABELS[key] || key}</div>
+              <div className="text-sm font-bold" style={{ color: scoreToColor(val) }}>{val}</div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Summary */}
       {typeof verdict.summary === 'string' && verdict.summary ? (
@@ -373,6 +396,9 @@ function StockResult({ data }: { data: Record<string, unknown> }) {
 function PredictResult({ data }: { data: Record<string, unknown> }) {
   const name    = data.name as string
   const curr    = data.current as number
+  const prev    = data.prev_close as number | null
+  const chgInr  = data.change_inr as number | null
+  const chgPct  = data.change_pct as number | null
   const trend   = data.trend as string
   const signal  = data.signal as string
   const score   = data.score as number
@@ -384,15 +410,40 @@ function PredictResult({ data }: { data: Record<string, unknown> }) {
 
   const signalColor = signal === 'BUY' ? 'text-score-green' : signal === 'AVOID' ? 'text-score-red' : 'text-score-blue'
   const trendColor  = trend?.includes('Up') ? 'text-score-green' : trend === 'Downtrend' ? 'text-score-red' : 'text-score-amber'
+  const chgColor    = (chgPct ?? 0) >= 0 ? 'text-score-green' : 'text-score-red'
 
   return (
     <div className="space-y-4">
-      {/* Header */}
-      <div className="grid grid-cols-4 gap-3">
-        <div className="bg-card border border-border rounded-xl p-3 text-center">
-          <div className="text-[10px] text-muted mb-1">Current</div>
-          <div className="text-lg font-bold text-white">{curr?.toLocaleString('en-IN')}</div>
+      {/* CMP + day change strip */}
+      {curr != null && (
+        <div className="bg-card border border-border rounded-xl px-4 py-3 flex items-center gap-4">
+          <div>
+            <div className="text-[10px] text-muted mb-0.5">CMP</div>
+            <div className="text-2xl font-bold text-white">{curr?.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</div>
+          </div>
+          {prev != null && (
+            <div>
+              <div className="text-[10px] text-muted mb-0.5">Prev Close</div>
+              <div className="text-sm text-slate-400">{prev.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</div>
+            </div>
+          )}
+          {chgPct != null && (
+            <div className={`ml-2 px-3 py-1.5 rounded-xl border ${(chgPct) >= 0 ? 'bg-green-950 border-green-800' : 'bg-red-950 border-red-800'}`}>
+              <div className={`text-lg font-bold ${chgColor}`}>
+                {chgPct >= 0 ? '▲' : '▼'} {Math.abs(chgPct).toFixed(2)}%
+              </div>
+              {chgInr != null && (
+                <div className={`text-xs ${chgColor}`}>
+                  {chgInr >= 0 ? '+' : ''}{chgInr.toFixed(2)}
+                </div>
+              )}
+            </div>
+          )}
         </div>
+      )}
+
+      {/* Header */}
+      <div className="grid grid-cols-3 gap-3">
         <div className="bg-card border border-border rounded-xl p-3 text-center">
           <div className="text-[10px] text-muted mb-1">Score</div>
           <div className="text-lg font-bold" style={{ color: scoreToColor(score) }}>{score}</div>
@@ -413,10 +464,31 @@ function PredictResult({ data }: { data: Record<string, unknown> }) {
         <div className="grid grid-cols-3 gap-3">
           {outlooks.map((o, i) => {
             const bp = o.bull_pct as number
+            const low = o.low as number
+            const high = o.high as number
             const bearColor = bp < 50 ? 'text-score-red' : bp > 55 ? 'text-score-green' : 'text-score-amber'
+
+            // CMP tracker — only meaningful for 1-day; for others it's indicative
+            const rangeSpan = high - low
+            const cmPct = curr && rangeSpan > 0 ? Math.max(2, Math.min(98, ((curr - low) / rangeSpan) * 100)) : null
+            const insideRange = curr != null && curr >= low && curr <= high
+            const aboveRange  = curr != null && curr > high
+            const belowRange  = curr != null && curr < low
+
             return (
               <div key={i} className="bg-card border border-border rounded-xl p-3">
-                <div className="text-xs font-semibold text-slate-300 mb-2">{o.period as string}</div>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-semibold text-slate-300">{o.period as string}</span>
+                  {i === 0 && curr != null && (
+                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${
+                      insideRange ? 'bg-green-950 border-green-800 text-green-400' :
+                      aboveRange  ? 'bg-blue-950 border-blue-800 text-blue-400' :
+                      'bg-red-950 border-red-800 text-red-400'
+                    }`}>
+                      {insideRange ? '✓ In Range' : aboveRange ? '▲ Above' : '▼ Below'}
+                    </span>
+                  )}
+                </div>
                 <div className="flex justify-between text-xs mb-2">
                   <span className="text-score-green font-bold">▲ {bp}%</span>
                   <span className="text-score-red font-bold">▼ {o.bear_pct as number}%</span>
@@ -428,8 +500,29 @@ function PredictResult({ data }: { data: Record<string, unknown> }) {
                 <div className={`text-[11px] font-bold text-center ${bearColor}`}>
                   {bp > 55 ? 'Leaning Bullish' : bp < 45 ? 'Leaning Bearish' : 'Neutral'}
                 </div>
-                <div className="text-[10px] text-muted text-center mt-1">
-                  Range: {(o.low as number).toLocaleString('en-IN')} – {(o.high as number).toLocaleString('en-IN')}
+
+                {/* Range with CMP marker */}
+                <div className="mt-2 pt-2 border-t border-border/40">
+                  <div className="flex justify-between text-[10px] text-muted mb-1">
+                    <span>{low.toLocaleString('en-IN')}</span>
+                    <span>{high.toLocaleString('en-IN')}</span>
+                  </div>
+                  <div className="relative h-3 bg-slate-700 rounded-full overflow-visible">
+                    <div className={`absolute inset-0 rounded-full opacity-40 ${
+                      insideRange ? 'bg-green-500' : 'bg-slate-600'
+                    }`} />
+                    {cmPct != null && (
+                      <>
+                        <div className="absolute top-0 bottom-0 w-1 bg-blue-400 rounded"
+                             style={{ left: `${cmPct}%`, transform: 'translateX(-50%)' }} />
+                      </>
+                    )}
+                  </div>
+                  {curr != null && (
+                    <div className="text-[9px] text-center mt-0.5 text-blue-400">
+                      CMP {curr.toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+                    </div>
+                  )}
                 </div>
               </div>
             )
@@ -518,22 +611,11 @@ export default function AIInsights() {
     setActiveQuestion(`${displayName}: ${name}`)
     setResultData(null)
 
-    const isIndex = symbol.startsWith('^')
-    const isEtf   = symbol.endsWith('.NS') && !symbol.match(/^[A-Z]{1,6}\.NS$/)?.index  // ETFs tend to have longer names like NIFTYBEES.NS
-
-    // Use predict endpoint for indices and ETFs; stock analysis for equities
-    const isIndexOrEtf = isIndex || ['NIFTYBEES','BANKBEES','GOLDBEES','MOM100','ITBEES','PHARMABEES','JUNIORBEES','AUTOBEES','SHARIABEES','MAFANG'].some(e => symbol.includes(e))
-
     try {
-      if (isIndexOrEtf) {
-        const res = await client.get(`/etf/predict/${encodeURIComponent(symbol)}`)
-        setResultData(res.data)
-        setResultType('predict')
-      } else {
-        const res = await client.get(`/ai/explain/${symbol}`)
-        setResultData(res.data)
-        setResultType('stock')
-      }
+      // /ai/explain works for stocks, indices (^NSEI, ^NSEBANK) and ETFs alike
+      const res = await client.get(`/ai/explain/${encodeURIComponent(symbol)}`)
+      setResultData(res.data)
+      setResultType('stock')
     } catch {
       setError('Analysis failed. Check connection or try again.')
     } finally { setLoading(false) }
@@ -615,6 +697,11 @@ export default function AIInsights() {
           {resultType === 'stock'   && <StockResult data={resultData} />}
           {resultType === 'predict' && <PredictResult data={resultData} />}
         </div>
+      )}
+
+      {/* Next Session Prediction — shown when a stock is selected after analysis */}
+      {selectedSymbol && !loading && resultType === 'stock' && (
+        <NextSessionPredictCard symbol={selectedSymbol} name={selectedName} />
       )}
     </div>
   )

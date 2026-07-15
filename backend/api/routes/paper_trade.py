@@ -996,22 +996,29 @@ async def get_wheel_plan(
         p_put_expires  = round((1 - abs(best_put.get("delta", 0.30))) * 100, 1)
         p_assigned_full = round(abs(best_put.get("delta", 0.30)) * 100, 1)
 
-        # 52W range — fast_info is more reliable than .info for this
+        # 52W range + prev_close — fast_info is more reliable than .info for this
         import yfinance as _yf
         try:
             _fi = _yf.Ticker(sym).fast_info
-            high_52w = float(getattr(_fi, "year_high", None) or 0)
-            low_52w  = float(getattr(_fi, "year_low",  None) or 0)
+            high_52w   = float(getattr(_fi, "year_high",      None) or 0)
+            low_52w    = float(getattr(_fi, "year_low",       None) or 0)
+            prev_close = float(getattr(_fi, "previous_close", None) or 0) or None
         except Exception:
             high_52w = low_52w = 0.0
+            prev_close = None
         if not high_52w:
             high_52w = float(safe_get(get_info(sym), "fiftyTwoWeekHigh") or 0)
         if not low_52w:
             low_52w  = float(safe_get(get_info(sym), "fiftyTwoWeekLow")  or 0)
+        if not prev_close:
+            prev_close = float(safe_get(get_info(sym), "previousClose") or 0) or None
 
         return clean_for_json({
             "symbol": bare, "name": company_name,
             "cmp": round(spot, 2), "lot_size": lot_size, "lots": lots,
+            "prev_close":  round(prev_close, 2) if prev_close else None,
+            "change_inr":  round(spot - prev_close, 2) if prev_close else None,
+            "change_pct":  round((spot / prev_close - 1) * 100, 2) if prev_close else None,
             "high_52w": round(high_52w, 2) if high_52w else None,
             "low_52w":  round(low_52w,  2) if low_52w  else None,
             "atm_iv": round(atm_iv, 1),

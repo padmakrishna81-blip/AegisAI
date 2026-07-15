@@ -1,0 +1,349 @@
+{
+  "predictions": {
+    "HCLTECH.NS::2026-07-15": {
+      "symbol": "HCLTECH.NS",
+      "company_name": "HCL Technologies Limited",
+      "session_date": "2026-07-15",
+      "predicted_at": "2026-07-14T23:29:27.980491+05:30",
+      "range": {
+        "low": 1146.06,
+        "base": 1167.78,
+        "high": 1189.5,
+        "current_price": 1166.7,
+        "bias_pct": 0.093,
+        "direction": "bullish",
+        "confidence": 70,
+        "iv_used": 19.7,
+        "one_sd_pts": 21.72,
+        "factors": {
+          "overall_score": 58,
+          "rsi": 57.0,
+          "macd_direction": "bullish",
+          "global_bias": "neutral",
+          "gift_nifty_gap": 25.5,
+          "sp500_chg_pct": 0.45,
+          "vix": 16.479999542236328,
+          "crude_chg_pct": -1.21
+        }
+      },
+      "commentary": null,
+      "actual_close": null,
+      "accuracy": null,
+      "market_hours": false
+    },
+    "INFY.NS::2026-07-15": {
+      "symbol": "INFY.NS",
+      "company_name": "Infosys Limited",
+      "session_date": "2026-07-15",
+      "predicted_at": "2026-07-14T23:41:35.603873+05:30",
+      "range": {
+        "low": 1065.56,
+        "base": 1093.03,
+        "high": 1120.5,
+        "current_price": 1092.9,
+        "bias_pct": 0.012,
+        "direction": "neutral",
+        "confidence": 50,
+        "iv_used": 26.6,
+        "one_sd_pts": 27.47,
+        "factors": {
+          "overall_score": 62,
+          "rsi": 57.3,
+          "macd_direction": "bearish",
+          "global_bias": "neutral",
+          "gift_nifty_gap": 23.0,
+          "sp500_chg_pct": 0.47,
+          "vix": 16.479999542236328,
+          "crude_chg_pct": -0.82
+        }
+      },
+      "commentary": null,
+      "actual_close": null,
+      "accuracy": null,
+      "market_hours": false
+    },
+    "ICICIBANK.NS::2026-07-15": {
+      "symbol": "ICICIBANK.NS",
+      "company_name": "ICICI Bank Limited",
+      "session_date": "2026-07-15",
+      "predicted_at": "2026-07-14T23:57:17.818682+05:30",
+      "range": {
+        "low": 1388.39,
+        "base": 1410.83,
+        "high": 1433.27,
+        "current_price": 1407.7,
+        "bias_pct": 0.222,
+        "direction": "bullish",
+        "confidence": 70,
+        "iv_used": 22.2,
+        "one_sd_pts": 22.44,
+        "plain_english": "All signals lean strongly bullish. CMP \u20b91,407.7 is \u20b93 below the predicted base. Upside target \u20b91,433, downside support \u20b91,388. MACD momentum is positive. The range spans 3.2% \u2014 moderate volatility expected.",
+        "news_alerts": [],
+        "factors": {
+          "overall_score": 74,
+          "rsi": 61.0,
+          "macd_direction": "bullish",
+          "global_bias": "neutral",
+          "gift_nifty_gap": 20.5,
+          "sp500_chg_pct": 0.48,
+          "vix": 16.399999618530273,
+          "crude_chg_pct": -0.69
+        }
+      },
+      "commentary": null,
+      "actual_close": null,
+      "accuracy": null,
+      "market_hours": false
+    },
+    "HDFCBANK.NS::2026-07-15": {
+      "symbol": "HDFCBANK.NS",
+      "company_name": "HDFC Bank Limited",
+      "session_date": "2026-07-15",
+      "predicted_at": "2026-07-14T23:58:46.273161+05:30",
+      "range": {
+        "low": 797.56,
+        "base": 810.43,
+        "high": 823.3,
+        "current_price": 809.4,
+        "bias_pct": 0.127,
+        "direction": "bullish",
+        "confidence": 80,
+        "iv_used": 22.4,
+        "one_sd_pts": 12.87,
+        "plain_english": "All signals lean strongly bullish. CMP \u20b9809.4 is already at the predicted base. Upside target \u20b9823, downside support \u20b9798. MACD momentum is positive. The range spans 3.2% \u2014 moderate volatility expected.",
+        "news_alerts": [],
+        "factors": {
+          "overall_score": 65,
+          "rsi": 58.8,
+          "macd_direction": "bullish",
+          "global_bias": "neutral",
+          "gift_nifty_gap": 20.5,
+          "sp500_chg_pct": 0.49,
+          "vix": 16.389999389648438,
+          "crude_chg_pct": -0.69
+        }
+      },
+      "commentary": null,
+      "actual_close": null,
+      "accuracy": null,
+      "market_hours": false
+    },
+    "VEDL.NS::2026-07-15": {
+      "symbol": "VEDL.NS",
+      "company_name": "Vedanta Limited",
+      "session_date": "2026-07-15",
+      "predicted_at": "2026-07-15T00:00:47.903341+05:30",
+      "range": {
+        "low": 254.23,
+        "base": 267.59,
+        "high": 280.95,
+        "current_price": 267.7,
+        "bias_pct": -0.043,
+        "direction": "neutral",
+        "confidence": 50,
+        "iv_used": 39.6,
+        "one_sd_pts": 13.36,
+        "plain_english": "Signals are mixed \u2014 no strong directional call. CMP \u20b9267.7 is already at the predicted base. Upside target \u20b9281, downside support \u20b9254. MACD momentum is negative. The range is wide (10.0%), reflecting elevated volatility expectations.",
+        "news_alerts": [],
+        "factors": {
+          "overall_score": 61,
+          "rsi": 38.2,
+          "macd_direction": "bearish",
+          "global_bias": "neutral",
+          "gift_nifty_gap": 22.5,
+          "sp500_chg_pct": 0.47,
+          "vix": 16.350000381469727,
+          "crude_chg_pct": -0.59
+        }
+      },
+      "commentary": null,
+      "actual_close": null,
+      "accuracy": null,
+      "market_hours": false
+    },
+    "^NSEI::2026-07-15": {
+      "symbol": "^NSEI",
+      "company_name": "NIFTY 50",
+      "session_date": "2026-07-15",
+      "predicted_at": "2026-07-15T06:46:21.190290+05:30",
+      "range": {
+        "low": 23675.64,
+        "base": 24065.03,
+        "high": 24454.42,
+        "current_price": 24052.05,
+        "bias_pct": 0.054,
+        "direction": "bullish",
+        "confidence": 70,
+        "iv_used": 30.0,
+        "one_sd_pts": 389.39,
+        "plain_english": "All signals lean strongly bullish. CMP \u20b924,052.0 is already at the predicted base. Upside target \u20b924,454, downside support \u20b923,676. MACD momentum is positive. The range spans 3.2% \u2014 moderate volatility expected. \u26a0 High-impact news: \"India's Trent heads for biggest one-day loss in a year on quarterly revenue miss\" \u2014 this may cause sharp downside volatility.",
+        "news_alerts": [
+          {
+            "keyword": "revenue miss",
+            "headline": "India's Trent heads for biggest one-day loss in a year on quarterly revenue miss"
+          },
+          {
+            "keyword": "revenue beat",
+            "headline": "Indian shares set to open higher; TCS in focus after revenue beat"
+          }
+        ],
+        "factors": {
+          "overall_score": 57,
+          "rsi": 52.5,
+          "macd_direction": "bullish",
+          "global_bias": "neutral",
+          "gift_nifty_gap": -10.5,
+          "sp500_chg_pct": 0.38,
+          "vix": 16.5,
+          "crude_chg_pct": 0.34
+        }
+      },
+      "commentary": null,
+      "actual_close": null,
+      "accuracy": null,
+      "market_hours": false
+    },
+    "^NSEBANK::2026-07-15": {
+      "symbol": "^NSEBANK",
+      "company_name": "NIFTY BANK",
+      "session_date": "2026-07-15",
+      "predicted_at": "2026-07-15T06:46:29.442346+05:30",
+      "range": {
+        "low": 56554.92,
+        "base": 57510.54,
+        "high": 58466.16,
+        "current_price": 57462.3,
+        "bias_pct": 0.084,
+        "direction": "bullish",
+        "confidence": 70,
+        "iv_used": 30.0,
+        "one_sd_pts": 955.62,
+        "plain_english": "All signals lean strongly bullish. CMP \u20b957,462.3 is already at the predicted base. Upside target \u20b958,466, downside support \u20b956,555. MACD momentum is positive. The range spans 3.3% \u2014 moderate volatility expected.",
+        "news_alerts": [],
+        "factors": {
+          "overall_score": 57,
+          "rsi": 51.6,
+          "macd_direction": "bullish",
+          "global_bias": "neutral",
+          "gift_nifty_gap": -10.5,
+          "sp500_chg_pct": 0.38,
+          "vix": 16.5,
+          "crude_chg_pct": 0.38
+        }
+      },
+      "commentary": null,
+      "actual_close": null,
+      "accuracy": null,
+      "market_hours": false
+    },
+    "^BSESN::2026-07-15": {
+      "symbol": "^BSESN",
+      "company_name": "S&P BSE SENSEX",
+      "session_date": "2026-07-15",
+      "predicted_at": "2026-07-15T06:46:42.006053+05:30",
+      "range": {
+        "low": 76000.9,
+        "base": 77165.86,
+        "high": 78330.82,
+        "current_price": 77054.94,
+        "bias_pct": 0.144,
+        "direction": "bullish",
+        "confidence": 85,
+        "iv_used": 30.0,
+        "one_sd_pts": 1164.96,
+        "plain_english": "All signals lean strongly bullish. CMP \u20b977,054.9 is already at the predicted base. Upside target \u20b978,331, downside support \u20b976,001. MACD momentum is positive. The range spans 3.0% \u2014 moderate volatility expected. \u2726 Positive news: \"Indian shares set to open higher; TCS in focus after revenue beat\" \u2014 could provide upside catalyst.",
+        "news_alerts": [
+          {
+            "keyword": "revenue beat",
+            "headline": "Indian shares set to open higher; TCS in focus after revenue beat"
+          }
+        ],
+        "factors": {
+          "overall_score": 57,
+          "rsi": 53.7,
+          "macd_direction": "bullish",
+          "global_bias": "neutral",
+          "gift_nifty_gap": -10.5,
+          "sp500_chg_pct": 0.38,
+          "vix": 16.5,
+          "crude_chg_pct": 0.38
+        }
+      },
+      "commentary": null,
+      "actual_close": null,
+      "accuracy": null,
+      "market_hours": false
+    },
+    "^NSEI::2026-07-16": {
+      "symbol": "^NSEI",
+      "company_name": "NIFTY 50",
+      "session_date": "2026-07-16",
+      "predicted_at": "2026-07-15T20:16:26.453528+05:30",
+      "range": {
+        "low": 23766.73,
+        "base": 24130.76,
+        "high": 24494.79,
+        "current_price": 24078.5,
+        "bias_pct": 0.217,
+        "direction": "bullish",
+        "confidence": 85,
+        "iv_used": 30.0,
+        "one_sd_pts": 364.03,
+        "plain_english": "All signals lean strongly bullish. CMP \u20b924,078.5 is \u20b952 below the predicted base. Upside target \u20b924,495, downside support \u20b923,767. MACD momentum is positive. The range spans 3.0% \u2014 moderate volatility expected. \u2726 Positive news: \"Indian shares set to open higher; TCS in focus after revenue beat\" \u2014 could provide upside catalyst.",
+        "news_alerts": [
+          {
+            "keyword": "revenue beat",
+            "headline": "Indian shares set to open higher; TCS in focus after revenue beat"
+          }
+        ],
+        "factors": {
+          "overall_score": 54,
+          "rsi": 56.4,
+          "macd_direction": "bullish",
+          "global_bias": "neutral",
+          "gift_nifty_gap": 70.5,
+          "sp500_chg_pct": 0.17,
+          "vix": 16.059999465942383,
+          "crude_chg_pct": -0.93
+        }
+      },
+      "commentary": null,
+      "actual_close": null,
+      "accuracy": null,
+      "market_hours": false
+    },
+    "VEDL.NS::2026-07-16": {
+      "symbol": "VEDL.NS",
+      "company_name": "Vedanta Limited",
+      "session_date": "2026-07-16",
+      "predicted_at": "2026-07-15T20:43:17.881400+05:30",
+      "range": {
+        "low": 249.07,
+        "base": 260.67,
+        "high": 272.27,
+        "current_price": 260.55,
+        "bias_pct": 0.045,
+        "direction": "neutral",
+        "confidence": 50,
+        "iv_used": 42.4,
+        "one_sd_pts": 11.6,
+        "plain_english": "Signals are mixed \u2014 no strong directional call. CMP \u20b9260.6 is already at the predicted base. Upside target \u20b9272, downside support \u20b9249. MACD momentum is negative. The range is wide (8.9%), reflecting elevated volatility expectations.",
+        "news_alerts": [],
+        "factors": {
+          "overall_score": 61,
+          "rsi": 37.2,
+          "macd_direction": "bearish",
+          "global_bias": "neutral",
+          "gift_nifty_gap": 101.5,
+          "sp500_chg_pct": 0.24,
+          "vix": 16.190000534057617,
+          "crude_chg_pct": -1.4
+        }
+      },
+      "commentary": null,
+      "actual_close": null,
+      "accuracy": null,
+      "market_hours": false
+    }
+  }
+}

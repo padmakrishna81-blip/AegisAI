@@ -46,7 +46,7 @@ INDICES_CATALOG = [
 ]
 
 
-def _compute_technicals(hist: pd.DataFrame) -> dict:
+def _compute_technicals(hist: pd.DataFrame, symbol: str = "", use_live_prev_close: bool = False) -> dict:
     if hist.empty or len(hist) < 20:
         return {}
     close = hist["Close"]
@@ -54,7 +54,21 @@ def _compute_technicals(hist: pd.DataFrame) -> dict:
     sma50 = float(close.rolling(50).mean().iloc[-1]) if len(close) >= 50 else None
     sma200 = float(close.rolling(200).mean().iloc[-1]) if len(close) >= 200 else None
     curr = float(close.iloc[-1])
-    prev_close = float(close.iloc[-2]) if len(close) >= 2 else None
+
+    # Only fetch live prev_close for single-symbol predict endpoint, not bulk list
+    prev_close = None
+    if use_live_prev_close and symbol:
+        try:
+            import yfinance as yf
+            fi = yf.Ticker(symbol).fast_info
+            pc = getattr(fi, "previous_close", None)
+            if pc and float(pc) > 0:
+                prev_close = float(pc)
+        except Exception:
+            pass
+    if prev_close is None:
+        prev_close = float(close.iloc[-2]) if len(close) >= 2 else None
+
     change_inr = round(curr - prev_close, 2) if prev_close else None
     change_pct = round((curr / prev_close - 1) * 100, 2) if prev_close else None
 
@@ -206,7 +220,7 @@ async def etf_overview():
         sym = item["symbol"]
         try:
             hist = get_index_history(sym, period="1y")
-            tech = _compute_technicals(hist)
+            tech = _compute_technicals(hist, sym)
             score = _score_from_tech(tech)
             curr = tech.get("current", 0)
             ret_1m = (tech.get("returns") or {}).get("1m")
@@ -264,7 +278,7 @@ async def analyze_etf(symbol: str):
     if hist.empty:
         raise HTTPException(status_code=404, detail=f"No data found for {symbol}")
 
-    tech = _compute_technicals(hist)
+    tech = _compute_technicals(hist, symbol)
     score = _score_from_tech(tech)
     signal = _signal_from_score_and_tech(score, tech)
     name = entry.get("name", symbol)
@@ -325,11 +339,7 @@ async def predict_index(symbol: str):
         if hist.empty:
             return {"error": f"No data for {symbol}"}
 
-        tech = _compute_technicals(hist)
-        score = _score_from_tech(tech)
-        signal = _signal_from_score_and_tech(score, tech)
-        close = hist["Close"]
-        curr = tech.get("current", float(close.iloc[-1]))
+        tech = _compute_technicals(hist, symbol, use_live_prev_close=True)
 
         # Volatility: 20-day ATR as % of price
         high = hist["High"]
@@ -390,8 +400,9 @@ async def predict_index(symbol: str):
             factors.append({"factor": "Above 200 DMA", "impact": "bullish", "detail": f"Price {round((curr/tech['sma200']-1)*100,1) if tech.get('sma200') else ''}% above long-term average"})
         else:
             factors.append({"factor": "Below 200 DMA", "impact": "bearish", "detail": "Medium-term downtrend in place"})
-        if sp_ret != 0:
-            factors.append({"factor": "S&P 500", "impact": "bullish" if sp_ret > 0 else "bearish", "detail": f"US market {'rose' if sp_ret > 0 else 'fell'} {abs(sp_ret):.2f}% last session"})
+        if sp_ret and abs(sp_ret) > 0.01:
+            factors.append({"factor": "S&P 500", "impact": "bullish" if sp_ret > 0 else "bearish",
+                            "detail": f"US market {'rose' if sp_ret > 0 else 'fell'} {abs(sp_ret):.2f}% last session"})
         if rsi > 65:
             factors.append({"factor": f"RSI {rsi:.0f}", "impact": "bearish", "detail": "Overbought — pullback risk"})
         elif rsi < 35:
@@ -410,6 +421,9 @@ async def predict_index(symbol: str):
             "symbol": symbol,
             "name": entry.get("name", symbol),
             "current": curr,
+            "prev_close": tech.get("prev_close"),
+            "change_inr": tech.get("change_inr"),
+            "change_pct": tech.get("change_pct"),
             "trend": trend,
             "signal": signal,
             "score": score,

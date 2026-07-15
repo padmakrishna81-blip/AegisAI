@@ -6,6 +6,7 @@ import ScoreGauge from '../scores/ScoreGauge'
 import ScoreBreakdownPanel from '../scores/ScoreBreakdown'
 import { scoreToColor, shortSymbol } from '../../utils/formatters'
 import type { StockAnalysis } from '../../types'
+import NextSessionPredictCard from '../NextSessionPredictCard'
 
 interface StockDetailModalProps {
   symbol: string
@@ -143,21 +144,27 @@ export default function StockDetailModal({ symbol, onClose }: StockDetailModalPr
                     <div className="text-2xl font-bold text-white">
                       ₹{(quote?.cmp ?? data.current_price).toLocaleString('en-IN', { maximumFractionDigits: 2 })}
                     </div>
-                    {quote?.change_inr != null && (
-                      <div className={`flex items-center gap-2 mt-0.5`}>
-                        <span className={`text-sm font-semibold ${quote.change_inr >= 0 ? 'text-score-green' : 'text-score-red'}`}>
-                          {quote.change_inr >= 0 ? '+' : ''}₹{Math.abs(quote.change_inr).toFixed(2)}
-                        </span>
-                        <span className={`text-xs font-semibold px-1.5 py-0.5 rounded ${
-                          quote.change_inr >= 0 ? 'bg-green-950 text-score-green' : 'bg-red-950 text-score-red'
-                        }`}>
-                          {quote.change_pct != null ? `${quote.change_pct >= 0 ? '+' : ''}${quote.change_pct.toFixed(2)}%` : ''}
-                        </span>
-                        {quote.prev_close != null && (
-                          <span className="text-xs text-muted">prev ₹{quote.prev_close.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</span>
-                        )}
-                      </div>
-                    )}
+                    {/* Use quote change if available, fall back to data (from /analyze) */}
+                    {(quote?.change_inr ?? data.change_inr) != null && (() => {
+                      const chgInr = (quote?.change_inr ?? data.change_inr) as number
+                      const chgPct = (quote?.change_pct ?? data.change_pct) as number | null
+                      const prevCl = (quote?.prev_close ?? data.prev_close) as number | null
+                      return (
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <span className={`text-sm font-semibold ${chgInr >= 0 ? 'text-score-green' : 'text-score-red'}`}>
+                            {chgInr >= 0 ? '+' : ''}₹{Math.abs(chgInr).toFixed(2)}
+                          </span>
+                          <span className={`text-xs font-semibold px-1.5 py-0.5 rounded ${
+                            chgInr >= 0 ? 'bg-green-950 text-score-green' : 'bg-red-950 text-score-red'
+                          }`}>
+                            {chgPct != null ? `${chgPct >= 0 ? '+' : ''}${chgPct.toFixed(2)}%` : ''}
+                          </span>
+                          {prevCl != null && (
+                            <span className="text-xs text-muted">prev ₹{prevCl.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</span>
+                          )}
+                        </div>
+                      )
+                    })()}
                   </div>
                   <div className="flex items-center gap-4">
                     <div className="text-center">
@@ -318,6 +325,9 @@ export default function StockDetailModal({ symbol, onClose }: StockDetailModalPr
                   </ul>
                 </div>
               )}
+
+              {/* Next Session Prediction */}
+              <NextSessionPredictCard symbol={symbol} name={data.company_name} />
             </>
           )}
         </div>

@@ -43,6 +43,9 @@ interface PutPlan {
   symbol: string
   name: string
   cmp: number
+  prev_close?: number | null
+  change_inr?: number | null
+  change_pct?: number | null
   lot_size: number
   lots: number
   high_52w: number
@@ -132,8 +135,17 @@ function PutPlanPanel({ plan, onClose, onPaperTrade, onRefetch }: {
 
         {/* Stats */}
         <div className="grid grid-cols-5 gap-2">
+          {/* CMP tile — custom to show change below */}
+          <div className="bg-card border border-border rounded-lg p-2.5 text-center">
+            <div className="text-[10px] text-slate-400 mb-0.5">CMP</div>
+            <div className="text-sm font-bold text-white">₹{plan.cmp}</div>
+            {plan.change_inr != null && (
+              <div className={`text-[10px] font-semibold mt-0.5 ${plan.change_inr >= 0 ? 'text-score-green' : 'text-score-red'}`}>
+                {plan.change_inr >= 0 ? '+' : ''}₹{Math.abs(plan.change_inr).toFixed(2)} ({plan.change_pct != null ? `${plan.change_pct >= 0 ? '+' : ''}${plan.change_pct.toFixed(2)}%` : ''})
+              </div>
+            )}
+          </div>
           {[
-            { label: 'CMP',        val: `₹${plan.cmp}`,       color: 'text-white' },
             { label: 'Lot Size',   val: fmt(plan.lot_size),    color: 'text-white' },
             { label: 'ATM IV',     val: plan.atm_iv ? `${plan.atm_iv}%` : '—', color: plan.atm_iv && plan.atm_iv >= 20 ? 'text-score-green' : 'text-score-amber' },
             { label: '52W High',   val: plan.high_52w ? `₹${plan.high_52w.toLocaleString('en-IN', { maximumFractionDigits: 2 })}` : '—',  color: 'text-slate-300' },
@@ -621,6 +633,9 @@ export default function Wheel() {
         symbol:               d.symbol,
         name:                 d.name,
         cmp:                  d.cmp,
+        prev_close:           d.prev_close ?? null,
+        change_inr:           d.change_inr ?? null,
+        change_pct:           d.change_pct ?? null,
         lot_size:             d.lot_size,
         lots:                 d.lots,
         high_52w:             d.high_52w,

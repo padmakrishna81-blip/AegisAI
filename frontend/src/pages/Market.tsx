@@ -6,6 +6,7 @@ import { RadarChart, PolarGrid, PolarAngleAxis, Radar, ResponsiveContainer, Tool
 import client from '../api/client'
 import { useWatchlistStore } from '../store/watchlistStore'
 import GlobalStockDetailModal from '../components/GlobalStockDetailModal'
+import NextSessionPredictCard from '../components/NextSessionPredictCard'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -15,6 +16,7 @@ interface GlobalIndex {
   region: string
   country: string
   currency: string
+  note?: string
   price: number | null
   prev_close: number | null
   change: number | null
@@ -50,6 +52,136 @@ interface ResultsEvent {
   date_iso: string
   when: string
   days_from_today: number
+}
+
+// ─── GIFT Nifty Live Card ─────────────────────────────────────────────────────
+
+interface GiftNiftyData {
+  price: number | null
+  prev_close: number | null
+  day_high: number | null
+  day_low: number | null
+  day_open: number | null
+  change: number | null
+  change_pct: number | null
+  gap_pts: number | null
+  gap_signal: 'positive' | 'negative' | 'flat'
+  last_updated: string | null
+  source?: string
+  error?: string
+}
+
+function GiftNiftyCard() {
+  const [data, setData] = useState<GiftNiftyData | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [lastFetch, setLastFetch] = useState<Date | null>(null)
+
+  const refresh = () => {
+    setLoading(true)
+    client.get('/market/gift-nifty')
+      .then(r => { setData(r.data); setLastFetch(new Date()) })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }
+
+  useEffect(() => {
+    refresh()
+    const t = setInterval(refresh, 60000) // auto-refresh every 60s
+    return () => clearInterval(t)
+  }, [])
+
+  const up   = (data?.change ?? 0) > 0
+  const down = (data?.change ?? 0) < 0
+  const chgColor = up ? 'text-score-green' : down ? 'text-score-red' : 'text-slate-400'
+  const bgPulse  = up ? 'border-green-800/60' : down ? 'border-red-800/60' : 'border-border'
+
+  const fmt = (v: number | null) =>
+    v != null ? v.toLocaleString('en-IN', { maximumFractionDigits: 2 }) : '—'
+
+  return (
+    <div className={`bg-card border ${bgPulse} rounded-xl p-5`}>
+      {/* Header */}
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <span className="text-base font-bold text-white">GIFT NIFTY</span>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold border ${
+            up ? 'bg-green-950 text-green-400 border-green-800' :
+            down ? 'bg-red-950 text-red-400 border-red-800' :
+            'bg-slate-800 text-slate-400 border-slate-700'
+          }`}>LIVE</span>
+        </div>
+        <button onClick={refresh} disabled={loading}
+          className="text-muted hover:text-white text-xs px-2 py-1 rounded border border-border hover:border-slate-500 transition-colors disabled:opacity-40">
+          {loading ? '⟳' : '⟳ Refresh'}
+        </button>
+      </div>
+
+      {loading && !data && (
+        <div className="h-16 flex items-center text-muted text-sm animate-pulse">Fetching live data…</div>
+      )}
+
+      {data && !data.error && (
+        <>
+          {/* Price row */}
+          <div className="flex items-end gap-4 mb-4">
+            <div className="text-3xl font-bold text-white">{fmt(data.price)}</div>
+            <div className="pb-0.5">
+              <span className={`text-base font-semibold ${chgColor}`}>
+                {up ? '+' : ''}{fmt(data.change)} ({up ? '+' : ''}{data.change_pct?.toFixed(2)}%)
+              </span>
+            </div>
+          </div>
+
+          {/* Gap signal banner */}
+          {data.gap_pts != null && (
+            <div className={`rounded-lg px-4 py-2.5 mb-4 text-sm font-semibold ${
+              data.gap_signal === 'positive' ? 'bg-green-950/60 border border-green-800/50 text-green-300' :
+              data.gap_signal === 'negative' ? 'bg-red-950/60 border border-red-800/50 text-red-300' :
+              'bg-slate-800 border border-border text-slate-400'
+            }`}>
+              {data.gap_signal === 'positive'
+                ? `▲ Nifty likely to open ~${Math.abs(data.gap_pts).toFixed(0)} pts positive in next session`
+                : data.gap_signal === 'negative'
+                ? `▼ Nifty likely to open ~${Math.abs(data.gap_pts).toFixed(0)} pts negative in next session`
+                : 'Nifty likely to open flat in next session'}
+            </div>
+          )}
+
+          {/* Performance grid */}
+          <div className="grid grid-cols-4 gap-3">
+            {[
+              { label: "Today's High", val: fmt(data.day_high), color: 'text-score-green' },
+              { label: "Today's Low",  val: fmt(data.day_low),  color: 'text-score-red'   },
+              { label: "Today's Open", val: fmt(data.day_open), color: 'text-white'        },
+              { label: 'Prev Close',   val: fmt(data.prev_close), color: 'text-slate-300'  },
+            ].map(({ label, val, color }) => (
+              <div key={label} className="bg-slate-800/60 rounded-lg p-2.5">
+                <div className="text-[10px] text-muted mb-0.5">{label}</div>
+                <div className={`text-sm font-bold ${color}`}>{val}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Footer */}
+          <div className="mt-3 flex items-center justify-between">
+            {lastFetch && (
+              <div className="text-[10px] text-muted">
+                Updated {lastFetch.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                <span className="ml-1 text-slate-600">· auto-refreshes every 60s</span>
+              </div>
+            )}
+            {data.source && (
+              <div className="text-[10px] text-slate-600 italic text-right max-w-xs">Source: {data.source}</div>
+            )}
+          </div>
+        </>
+      )}
+
+      {data?.error && (
+        <div className="text-score-red text-sm">Failed to fetch: {data.error}</div>
+      )}
+    </div>
+  )
 }
 
 // ─── Global Indices Tab ───────────────────────────────────────────────────────
@@ -130,6 +262,7 @@ function GlobalIndicesTab() {
                     <td className="px-5 py-3">
                       <div className="font-semibold text-white">{idx.name}</div>
                       <div className="text-[10px] text-muted">{idx.symbol}</div>
+                      {idx.note && <div className="text-[10px] text-amber-500/70 italic mt-0.5">{idx.note}</div>}
                     </td>
                     <td className="px-3 py-3 text-xs text-muted">{idx.country}</td>
                     <td className="px-3 py-3 text-xs text-slate-400">{idx.currency}</td>
@@ -835,7 +968,23 @@ export default function Market() {
       )}
 
       {/* ── Global Indices Tab ── */}
-      {tab === 'global' && <GlobalIndicesTab />}
+      {tab === 'global' && (
+        <div className="space-y-4">
+          <GiftNiftyCard />
+          {/* Benchmark Predictions */}
+          <div className="bg-card border border-border rounded-xl p-4">
+            <div className="text-sm font-semibold text-white mb-4 flex items-center gap-2">
+              <span>🔮</span> Next Session Predictions — Benchmark Indices
+            </div>
+            <div className="grid grid-cols-3 gap-4">
+              <NextSessionPredictCard symbol="^NSEI"    name="NIFTY 50"  compact />
+              <NextSessionPredictCard symbol="^NSEBANK" name="Bank Nifty" compact />
+              <NextSessionPredictCard symbol="^BSESN"   name="Sensex"    compact />
+            </div>
+          </div>
+          <GlobalIndicesTab />
+        </div>
+      )}
 
       {/* ── Global Stocks Tab ── */}
       {tab === 'global_stocks' && <GlobalStocksTab />}

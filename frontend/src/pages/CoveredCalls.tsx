@@ -89,6 +89,9 @@ interface TradePlan {
   symbol: string
   name: string
   cmp: number
+  prev_close?: number | null
+  change_inr?: number | null
+  change_pct?: number | null
   high_52w: number
   low_52w: number
   change_5d: number
@@ -240,8 +243,17 @@ function TradePlanPanel({ plan, onClose, onPaperTrade, onRefetch }: {
 
         {/* Key stats */}
         <div className="grid grid-cols-5 gap-2">
+          {/* CMP tile — custom to show change below */}
+          <div className="bg-card border border-border rounded-lg p-2.5 text-center">
+            <div className="text-[10px] text-muted mb-0.5">CMP (Live)</div>
+            <div className="text-sm font-bold text-white">₹{plan.cmp}</div>
+            {plan.change_inr != null && (
+              <div className={`text-[10px] font-semibold mt-0.5 ${plan.change_inr >= 0 ? 'text-score-green' : 'text-score-red'}`}>
+                {plan.change_inr >= 0 ? '+' : ''}₹{Math.abs(plan.change_inr).toFixed(2)} ({plan.change_pct != null ? `${plan.change_pct >= 0 ? '+' : ''}${plan.change_pct.toFixed(2)}%` : ''})
+              </div>
+            )}
+          </div>
           {[
-            { label: 'CMP (Live)',  val: `₹${plan.cmp}`,      color: 'text-white' },
             { label: 'Lot Size',   val: fmt(plan.lot_size),   color: 'text-white' },
             { label: 'Avg Trigger',val: `₹${plan.averaging.phase2_trigger}`, color: 'text-score-amber' },
             { label: '52W High',   val: `₹${plan.high_52w}`,  color: 'text-slate-300' },

@@ -525,49 +525,48 @@ async def scan_cc_strategy(
     candidates = list(set(NIFTY50 + NIFTY_BANK + NIFTY_IT + NIFTY_MIDCAP_SELECTION))
     candidates = [s for s in candidates if s.replace(".NS", "") in LOT_SIZES]
 
-    # ── Pre-fetch all IVs sequentially using shared NSE instance ────────────
-    # One call per stock — use the default chain first (fastest).
-    # Only fall back to expiry-specific call when the default chain yields no ATM IV
-    # (happens when nearest expiry < 24 days — e.g. week before monthly expiry).
+    # ── Pre-fetch all IVs in parallel ─────────────────────────────────────────
+    # Each stock gets its own NSELive() instance — thread-safe, ~3s for 61 stocks
     iv_map: dict[str, float | None] = {}
-    spot_map: dict[str, float] = {}  # bare -> live spot (captured during IV pre-fetch)
+    spot_map: dict[str, float] = {}
     if min_iv > 0:
-        try:
-            import time as _time
-            from jugaad_data.nse import NSELive
-            from api.routes.covered_calls import _pick_best_expiry as _pbe
-            nse_shared = NSELive()
-            for sym in candidates:
-                bare = sym.replace(".NS", "")
-                try:
-                    data = nse_shared.equities_option_chain(bare)
-                    _time.sleep(0.06)
-                    spot = float(data.get("records", {}).get("underlyingValue") or 0)
-                    if spot <= 0:
-                        iv_map[bare] = None
-                        continue
+        import time as _time
+        from concurrent.futures import ThreadPoolExecutor as _TPool
+        from api.routes.covered_calls import _pick_best_expiry as _pbe
+
+        def _fetch_iv_one(sym: str) -> tuple:
+            bare = sym.replace(".NS", "")
+            try:
+                from jugaad_data.nse import NSELive
+                nse = NSELive()
+                data = nse.equities_option_chain(bare)
+                spot = float(data.get("records", {}).get("underlyingValue") or 0)
+                if spot <= 0:
+                    return bare, None, None
+                rows = (data.get("filtered", {}).get("data", [])
+                        or data.get("records", {}).get("data", []))
+                best_iv, _ = _find_atm_iv(rows, spot)
+                if best_iv is None:
+                    exp_dates = data.get("records", {}).get("expiryDates", [])
+                    best_exp  = _pbe(exp_dates)
+                    if best_exp:
+                        try:
+                            _time.sleep(0.05)
+                            data2 = nse.equities_option_chain(bare, expiry=best_exp)
+                            rows2 = (data2.get("filtered", {}).get("data", [])
+                                     or data2.get("records", {}).get("data", []))
+                            best_iv, _ = _find_atm_iv(rows2, spot)
+                        except Exception:
+                            pass
+                return bare, best_iv, spot
+            except Exception:
+                return bare, None, None
+
+        with _TPool(max_workers=8) as ex:
+            for bare, iv, spot in ex.map(_fetch_iv_one, candidates):
+                iv_map[bare] = iv
+                if spot:
                     spot_map[bare] = spot
-                    rows = (data.get("filtered", {}).get("data", [])
-                            or data.get("records", {}).get("data", []))
-                    best_iv, best_diff = _find_atm_iv(rows, spot)
-                    # If no IV found in default chain, try the best upcoming expiry
-                    if best_iv is None:
-                        exp_dates = data.get("records", {}).get("expiryDates", [])
-                        best_exp  = _pbe(exp_dates)
-                        if best_exp:
-                            try:
-                                data2 = nse_shared.equities_option_chain(bare, expiry=best_exp)
-                                _time.sleep(0.06)
-                                rows2 = (data2.get("filtered", {}).get("data", [])
-                                         or data2.get("records", {}).get("data", []))
-                                best_iv, _ = _find_atm_iv(rows2, spot)
-                            except Exception:
-                                pass
-                    iv_map[bare] = best_iv
-                except Exception:
-                    iv_map[bare] = None
-        except Exception:
-            pass
 
     criteria = {
         "flat_pct":        flat_pct,
@@ -627,38 +626,41 @@ async def assess_stocks(body: dict):
         if s:
             normalized.append(s + ".NS")
 
-    # ── Batch-fetch spot + IV via single shared NSE session (fast) ────────────
+    # ── Batch-fetch spot + IV in parallel (reuse same helper) ────────────────
     import time as _time
-    nse_data: dict[str, dict] = {}  # bare -> {spot, iv, expiry_dates}
-    try:
-        from jugaad_data.nse import NSELive
-        from api.routes.covered_calls import _pick_best_expiry as _pbe
-        nse_shared = NSELive()
-        for sym in normalized:
-            bare = sym.replace(".NS", "")
-            try:
-                data = nse_shared.equities_option_chain(bare)
-                _time.sleep(0.05)
-                rec  = data.get("records", {})
-                spot = float(rec.get("underlyingValue") or 0)
-                rows = data.get("filtered", {}).get("data", []) or rec.get("data", [])
-                iv, _ = _find_atm_iv(rows, spot)
-                if iv is None:
-                    exp_dates = rec.get("expiryDates", [])
-                    best_exp  = _pbe(exp_dates)
-                    if best_exp:
-                        try:
-                            d2   = nse_shared.equities_option_chain(bare, expiry=best_exp)
-                            _time.sleep(0.05)
-                            r2   = d2.get("filtered", {}).get("data", []) or d2.get("records", {}).get("data", [])
-                            iv, _ = _find_atm_iv(r2, spot)
-                        except Exception:
-                            pass
-                nse_data[bare] = {"spot": spot if spot > 0 else None, "iv": iv}
-            except Exception:
-                nse_data[bare] = {"spot": None, "iv": None}
-    except Exception:
-        pass
+    nse_data: dict[str, dict] = {}
+    from api.routes.covered_calls import _pick_best_expiry as _pbe
+
+    def _fetch_iv_assess(sym: str) -> tuple:
+        bare = sym.replace(".NS", "")
+        try:
+            from jugaad_data.nse import NSELive
+            nse = NSELive()
+            data = nse.equities_option_chain(bare)
+            rec  = data.get("records", {})
+            spot = float(rec.get("underlyingValue") or 0)
+            rows = data.get("filtered", {}).get("data", []) or rec.get("data", [])
+            iv, _ = _find_atm_iv(rows, spot)
+            if iv is None:
+                exp_dates = rec.get("expiryDates", [])
+                best_exp  = _pbe(exp_dates)
+                if best_exp:
+                    try:
+                        _time.sleep(0.05)
+                        d2 = nse.equities_option_chain(bare, expiry=best_exp)
+                        r2 = d2.get("filtered", {}).get("data", []) or d2.get("records", {}).get("data", [])
+                        iv, _ = _find_atm_iv(r2, spot)
+                    except Exception:
+                        pass
+            return bare, {"spot": spot if spot > 0 else None, "iv": iv}
+        except Exception:
+            return bare, {"spot": None, "iv": None}
+
+    # Run all in parallel for assess (small list, safe to do all at once)
+    from concurrent.futures import ThreadPoolExecutor as _TPool
+    with _TPool(max_workers=min(len(normalized), 5)) as ex:
+        for bare, val in ex.map(_fetch_iv_assess, normalized):
+            nse_data[bare] = val
 
     loop     = asyncio.get_event_loop()
     executor = ThreadPoolExecutor(max_workers=8)
@@ -900,24 +902,23 @@ async def get_cc_plan(
     def _fetch():
         t      = yf.Ticker(sym)
         fi     = t.fast_info
-        # Use fast_info for 52W range (avoids slow full .info call)
         high52 = float(getattr(fi, "year_high", None) or 0)
         low52  = float(getattr(fi, "year_low",  None) or 0)
-        # Still need .info for name — but only fetch it once
+        prev_close = float(getattr(fi, "previous_close", None) or 0) or None
         info   = t.info
         name   = safe_get(info, "longName") or safe_get(info, "shortName") or bare
         if not high52: high52 = float(safe_get(info, "fiftyTwoWeekHigh") or 0)
         if not low52:  low52  = float(safe_get(info, "fiftyTwoWeekLow")  or 0)
+        if not prev_close: prev_close = float(safe_get(info, "previousClose") or 0) or None
         hist5  = t.history(period="5d")
         chg5   = round((float(hist5["Close"].iloc[-1]) / float(hist5["Close"].iloc[0]) - 1) * 100, 2) if not hist5.empty and len(hist5) >= 2 else 0.0
-        # Also get spot from fast_info as fallback
         fallback_spot = float(getattr(fi, "last_price", None) or getattr(fi, "regular_market_price", None) or safe_get(info, "currentPrice") or safe_get(info, "regularMarketPrice") or 0)
-        return name, high52, low52, chg5, fallback_spot
+        return name, high52, low52, chg5, fallback_spot, prev_close
 
     # Run NSE spot fetch and yfinance fetch in parallel
     spot_future  = loop.run_in_executor(executor, _get_live_spot, bare)
     yf_future    = loop.run_in_executor(executor, _fetch)
-    spot_raw, (name, high52, low52, change_5d, fallback_spot) = await asyncio.gather(spot_future, yf_future)
+    spot_raw, (name, high52, low52, change_5d, fallback_spot, prev_close) = await asyncio.gather(spot_future, yf_future)
 
     spot = spot_raw or fallback_spot
     if not spot:
@@ -1208,6 +1209,9 @@ async def get_cc_plan(
         "symbol":       bare,
         "name":         name,
         "cmp":          round(spot, 2),
+        "prev_close":   round(prev_close, 2) if prev_close else None,
+        "change_inr":   round(spot - prev_close, 2) if prev_close else None,
+        "change_pct":   round((spot / prev_close - 1) * 100, 2) if prev_close else None,
         "high_52w":     round(high52, 2),
         "low_52w":      round(low52, 2),
         "change_5d":    change_5d,

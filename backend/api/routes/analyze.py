@@ -16,6 +16,14 @@ async def analyze_stock(symbol: str):
     sym = normalize_symbol(symbol)
     try:
         result = calculate_full(sym)
+        # Enrich with prev_close + day change for consistency with /ai/explain
+        info       = get_info(sym)
+        cmp        = result.get("current_price") or 0
+        prev_close = safe_get(info, "previousClose") or safe_get(info, "regularMarketPreviousClose")
+        if cmp and prev_close:
+            result["prev_close"]  = round(float(prev_close), 2)
+            result["change_inr"]  = round(float(cmp) - float(prev_close), 2)
+            result["change_pct"]  = round((float(cmp) / float(prev_close) - 1) * 100, 2)
         return JSONResponse(content=clean_for_json(result))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

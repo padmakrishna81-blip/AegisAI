@@ -40,5 +40,11 @@
     "name": "Rocket Lab Corporation",
     "exchange": "NASDAQ",
     "sector": "Industrials"
+  },
+  {
+    "symbol": "IBM",
+    "name": "International Business Machines",
+    "exchange": "NYSE",
+    "sector": "Technology"
   }
 ]

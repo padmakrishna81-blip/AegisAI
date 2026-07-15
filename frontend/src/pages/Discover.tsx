@@ -81,7 +81,7 @@ function WatchlistBtn({ symbol, companyName, score, rec }: {
 export default function Discover() {
   const [tab, setTab] = useState<Tab>('individual')
   const [detailSymbol, setDetailSymbol] = useState<string | null>(null)
-  const { items: watchlistItems, remove: removeFromWatchlist } = useWatchlistStore()
+  const { items: watchlistItems, remove: removeFromWatchlist, update: updateWatchlistItem } = useWatchlistStore()
 
   return (
     <div className="p-6 space-y-5">
@@ -119,6 +119,7 @@ export default function Discover() {
           items={watchlistItems}
           onRemove={removeFromWatchlist}
           onViewDetails={setDetailSymbol}
+          onUpdateItem={updateWatchlistItem}
         />
       )}
       {tab === 'etf' && (
@@ -318,8 +319,10 @@ interface QuoteData {
   change_pct: number | null
   high_30d: number | null
   low_30d: number | null
-  drop_from_30d_high_pct: number | null   // negative = how far below 30d high
-  lift_from_30d_low_pct: number | null    // positive = how far above 30d low
+  drop_from_30d_high_pct: number | null
+  lift_from_30d_low_pct: number | null
+  high_52w: number | null
+  low_52w: number | null
   error?: string | null
 }
 
@@ -327,10 +330,12 @@ function WatchlistTab({
   items,
   onRemove,
   onViewDetails,
+  onUpdateItem,
 }: {
   items: WatchlistItem[]
   onRemove: (s: string) => void
   onViewDetails: (s: string) => void
+  onUpdateItem: (symbol: string, patch: Partial<WatchlistItem>) => void
 }) {
   const [quotes, setQuotes] = useState<Record<string, QuoteData>>({})
   const [loading, setLoading] = useState(false)
@@ -353,7 +358,23 @@ function WatchlistTab({
       setLastRefresh(new Date())
     } catch { /* ignore */ }
     finally { setLoading(false) }
-  }, [items])
+
+    // Backfill score+signal for items missing them — use quick endpoint (2 engines, fast)
+    const missing = items.filter(i => i.last_score == null)
+    if (missing.length === 0) return
+    for (const item of missing) {
+      try {
+        const r = await client.get(`/analyze/${encodeURIComponent(item.symbol)}/quick`)
+        const d = r.data
+        if (d?.overall_score != null) {
+          onUpdateItem(item.symbol, {
+            last_score: d.overall_score,
+            last_recommendation: d.recommendation ?? undefined,
+          })
+        }
+      } catch { /* keep blank on error */ }
+    }
+  }, [items, onUpdateItem])
 
   useEffect(() => { fetchQuotes() }, [fetchQuotes])
 
@@ -409,10 +430,10 @@ function WatchlistTab({
                 <th className="text-right px-3 py-3 whitespace-nowrap">CMP (LTP)</th>
                 <th className="text-right px-3 py-3 whitespace-nowrap">Chg ₹</th>
                 <th className="text-right px-3 py-3 whitespace-nowrap">Chg %</th>
+                <th className="text-right px-3 py-3 whitespace-nowrap">52W High</th>
+                <th className="text-right px-3 py-3 whitespace-nowrap">52W Low</th>
                 <th className="text-right px-3 py-3 whitespace-nowrap">30D High</th>
-                <th className="text-right px-3 py-3 whitespace-nowrap">↓ From 30H</th>
                 <th className="text-right px-3 py-3 whitespace-nowrap">30D Low</th>
-                <th className="text-right px-3 py-3 whitespace-nowrap">↑ From 30L</th>
                 <th className="text-right px-3 py-3 whitespace-nowrap">Score</th>
                 <th className="text-center px-3 py-3 whitespace-nowrap">Signal</th>
                 <th className="px-3 py-3"></th>
@@ -425,8 +446,6 @@ function WatchlistTab({
                               : item.symbol
                 const q = quotes[symKey] || {}
                 const chgPos = (q.change_inr ?? 0) >= 0
-                const dropFromHigh = q.drop_from_30d_high_pct  // negative number
-                const liftFromLow = q.lift_from_30d_low_pct    // positive number
 
                 return (
                   <tr key={item.symbol} className="border-b border-border/40 hover:bg-slate-800/30">
@@ -465,32 +484,34 @@ function WatchlistTab({
                       ) : <span className="text-muted text-xs">—</span>}
                     </td>
 
+                    {/* 52W High */}
+                    <td className="px-3 py-3 text-right">
+                      {q.high_52w != null ? (
+                        <div>
+                          <div className="text-xs font-medium text-slate-300">₹{q.high_52w.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</div>
+                          {q.cmp && <div className="text-[10px] text-score-red">{((q.cmp / q.high_52w - 1) * 100).toFixed(1)}%</div>}
+                        </div>
+                      ) : <span className="text-muted text-xs">—</span>}
+                    </td>
+
+                    {/* 52W Low */}
+                    <td className="px-3 py-3 text-right">
+                      {q.low_52w != null ? (
+                        <div>
+                          <div className="text-xs font-medium text-slate-300">₹{q.low_52w.toLocaleString('en-IN', { maximumFractionDigits: 2 })}</div>
+                          {q.cmp && <div className="text-[10px] text-score-green">+{((q.cmp / q.low_52w - 1) * 100).toFixed(1)}%</div>}
+                        </div>
+                      ) : <span className="text-muted text-xs">—</span>}
+                    </td>
+
                     {/* 30D High */}
                     <td className="px-3 py-3 text-right text-xs text-slate-400">
                       {q.high_30d != null ? `₹${q.high_30d.toLocaleString('en-IN', { maximumFractionDigits: 2 })}` : '—'}
                     </td>
 
-                    {/* Drop from 30D High */}
-                    <td className="px-3 py-3 text-right">
-                      {dropFromHigh != null ? (
-                        <span className="text-xs font-medium text-score-red">
-                          {dropFromHigh.toFixed(1)}%
-                        </span>
-                      ) : <span className="text-muted text-xs">—</span>}
-                    </td>
-
                     {/* 30D Low */}
                     <td className="px-3 py-3 text-right text-xs text-slate-400">
                       {q.low_30d != null ? `₹${q.low_30d.toLocaleString('en-IN', { maximumFractionDigits: 2 })}` : '—'}
-                    </td>
-
-                    {/* Lift from 30D Low */}
-                    <td className="px-3 py-3 text-right">
-                      {liftFromLow != null ? (
-                        <span className="text-xs font-medium text-score-green">
-                          +{liftFromLow.toFixed(1)}%
-                        </span>
-                      ) : <span className="text-muted text-xs">—</span>}
                     </td>
 
                     {/* Last Score */}
@@ -502,7 +523,7 @@ function WatchlistTab({
                       ) : <span className="text-muted text-xs">—</span>}
                     </td>
 
-                    {/* Last Rec */}
+                    {/* Signal */}
                     <td className="px-3 py-3 text-center">
                       {item.last_recommendation ? (
                         <span className={`px-2 py-0.5 rounded text-xs font-bold ${recommendationColor(item.last_recommendation)}`}>

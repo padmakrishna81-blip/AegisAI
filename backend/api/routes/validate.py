@@ -46,6 +46,15 @@ def _quote_for_symbol(symbol: str) -> dict:
             high_30d = float(hist["High"].max()) if not hist.empty else None
             low_30d  = float(hist["Low"].min())  if not hist.empty else None
 
+            # 52W high/low — from fast_info (most reliable, no extra call)
+            high_52w = float(getattr(fast, "year_high", None) or 0) or None
+            low_52w  = float(getattr(fast, "year_low",  None) or 0) or None
+            # Fallback to cached .info if fast_info returns nothing
+            if not high_52w:
+                high_52w = float(safe_get(get_info(sym), "fiftyTwoWeekHigh") or 0) or None
+            if not low_52w:
+                low_52w  = float(safe_get(get_info(sym), "fiftyTwoWeekLow")  or 0) or None
+
             # Derived values
             change_inr    = round(cmp - prev_close, 2) if cmp and prev_close else None
             change_pct    = round((cmp - prev_close) / prev_close * 100, 2) if cmp and prev_close and prev_close > 0 else None
@@ -61,6 +70,8 @@ def _quote_for_symbol(symbol: str) -> dict:
                 "low_30d":              round(low_30d, 2) if low_30d else None,
                 "drop_from_30d_high_pct": drop_from_30h,
                 "lift_from_30d_low_pct":  lift_from_30l,
+                "high_52w":             round(high_52w, 2) if high_52w else None,
+                "low_52w":              round(low_52w,  2) if low_52w  else None,
             })
             return result   # success
         except Exception as e:
