@@ -37,12 +37,20 @@ def get_ticker(symbol: str) -> yf.Ticker:
     return yf.Ticker(normalize_symbol(symbol))
 
 
+_CRITICAL_INFO_FIELDS = ("previousClose", "fiftyTwoWeekHigh", "fiftyTwoWeekLow", "currentPrice")
+
+
 def get_info(symbol: str) -> dict:
     sym = normalize_symbol(symbol)
     key = f"info:{sym}"
     cached = _get_cached(key)
+    # If cached but missing critical fields, bust the cache and re-fetch
     if cached is not None:
-        return cached
+        if any(cached.get(f) for f in _CRITICAL_INFO_FIELDS):
+            return cached
+        # Critical fields all missing — stale/partial cache, re-fetch
+        with _cache_lock:
+            _cache.pop(key, None)
     try:
         data = yf.Ticker(sym).info or {}
     except Exception:
@@ -55,13 +63,14 @@ def get_history(symbol: str, period: str = "1y") -> pd.DataFrame:
     sym = normalize_symbol(symbol)
     key = f"history:{sym}:{period}"
     cached = _get_cached(key)
-    if cached is not None:
+    if cached is not None and not cached.empty:   # never serve cached empty — same guard as get_index_history
         return cached
     try:
         df = yf.Ticker(sym).history(period=period)
     except Exception:
         df = pd.DataFrame()
-    _set_cached(key, df)
+    if not df.empty:   # never cache empty
+        _set_cached(key, df)
     return df
 
 
@@ -180,6 +189,14 @@ def batch_get_info(symbols: list[str]) -> dict[str, dict]:
             except Exception:
                 result[sym] = {}
     return result
+
+
+def flush_cache() -> int:
+    """Clear all in-memory cache entries. Call after yfinance errors to force re-fetch."""
+    with _cache_lock:
+        count = len(_cache)
+        _cache.clear()
+    return count
 
 
 def safe_get(d: dict, *keys, default=None):

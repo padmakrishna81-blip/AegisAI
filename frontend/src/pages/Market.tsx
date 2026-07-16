@@ -844,13 +844,352 @@ function ResultsCalendarTab() {
   )
 }
 
+// ─── Sector Detail Modal ──────────────────────────────────────────────────────
+
+interface SectorDetailData {
+  sector: string
+  sector_score: number
+  index_symbol: string | null
+  trend_3m_pct: number | null
+  trend_1y_pct: number | null
+  outlook: string
+  outlook_label: 'bullish' | 'bearish' | 'neutral_positive' | 'neutral'
+  top5_stocks: { symbol: string; name: string; score: number; signal: string; cmp: number; change_pct: number | null; nifty50: boolean }[]
+  news: { title: string; source: string; published_at: number | null }[]
+  stock_count: number
+}
+
+function SectorDetailModal({ sector, onClose }: { sector: string; onClose: () => void }) {
+  const [data, setData] = useState<SectorDetailData | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    setLoading(true)
+    client.get(`/market/sector-detail/${encodeURIComponent(sector)}`)
+      .then(r => setData(r.data))
+      .catch(() => setError('Failed to load sector details'))
+      .finally(() => setLoading(false))
+  }, [sector])
+
+  const outlookColors: Record<string, string> = {
+    bullish:         'bg-green-950 border-green-800 text-green-300',
+    neutral_positive:'bg-blue-950 border-blue-800 text-blue-300',
+    neutral:         'bg-slate-800 border-slate-700 text-slate-300',
+    bearish:         'bg-red-950 border-red-800 text-red-300',
+  }
+  const trendColor = (v: number | null) => v == null ? 'text-muted' : v >= 0 ? 'text-score-green' : 'text-score-red'
+  const sigColor   = (s: string) => s === 'BUY' ? 'text-score-green bg-green-950 border-green-800' : s === 'SELL' ? 'text-score-red bg-red-950 border-red-800' : 'text-score-blue bg-blue-950 border-blue-800'
+
+  const fmtDate = (ts: number | null) => ts ? new Date(ts * 1000).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : ''
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-card border border-border rounded-2xl w-full max-w-2xl max-h-[85vh] overflow-y-auto shadow-2xl m-4" onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div className="sticky top-0 bg-card border-b border-border px-6 py-4 flex items-center justify-between z-10">
+          <div>
+            <div className="text-lg font-bold text-white">{sector} Sector</div>
+            <div className="text-xs text-muted">{data ? `${data.stock_count} stocks tracked` : 'Loading…'}</div>
+          </div>
+          <button onClick={onClose} className="text-muted hover:text-white text-xl font-bold px-2">✕</button>
+        </div>
+
+        <div className="p-6 space-y-5">
+          {loading && <div className="text-center py-12 text-muted text-sm animate-pulse">Analysing sector…</div>}
+          {error && <div className="text-score-red text-sm text-center py-8">{error}</div>}
+
+          {data && !loading && (
+            <>
+              {/* Score + Trend strip */}
+              <div className="grid grid-cols-4 gap-3">
+                <div className="bg-slate-800/60 rounded-xl p-3 text-center">
+                  <div className="text-[10px] text-muted mb-0.5">Sector Score</div>
+                  <div className="text-2xl font-bold" style={{ color: scoreToColor(data.sector_score) }}>{data.sector_score}</div>
+                  <div className="text-[10px] text-muted">{scoreToLabel(data.sector_score)}</div>
+                </div>
+                <div className="bg-slate-800/60 rounded-xl p-3 text-center">
+                  <div className="text-[10px] text-muted mb-0.5">3M Return</div>
+                  <div className={`text-lg font-bold ${trendColor(data.trend_3m_pct)}`}>
+                    {data.trend_3m_pct != null ? `${data.trend_3m_pct >= 0 ? '+' : ''}${data.trend_3m_pct}%` : '—'}
+                  </div>
+                </div>
+                <div className="bg-slate-800/60 rounded-xl p-3 text-center">
+                  <div className="text-[10px] text-muted mb-0.5">1Y Return</div>
+                  <div className={`text-lg font-bold ${trendColor(data.trend_1y_pct)}`}>
+                    {data.trend_1y_pct != null ? `${data.trend_1y_pct >= 0 ? '+' : ''}${data.trend_1y_pct}%` : '—'}
+                  </div>
+                </div>
+                <div className="bg-slate-800/60 rounded-xl p-3 text-center">
+                  <div className="text-[10px] text-muted mb-0.5">Stocks</div>
+                  <div className="text-lg font-bold text-white">{data.stock_count}</div>
+                </div>
+              </div>
+
+              {/* 3-month outlook */}
+              <div className={`rounded-xl p-4 border ${outlookColors[data.outlook_label] || outlookColors.neutral}`}>
+                <div className="text-[10px] uppercase tracking-wider font-bold mb-1 opacity-70">3-Month Outlook</div>
+                <div className="text-sm font-medium">{data.outlook}</div>
+              </div>
+
+              {/* Top 5 stocks */}
+              <div className="bg-slate-800/30 rounded-xl overflow-hidden">
+                <div className="px-4 py-2.5 text-xs font-semibold text-white border-b border-border">
+                  All {data.stock_count} Stocks in {sector} — sorted by score
+                </div>
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-[10px] text-muted border-b border-border/40 bg-slate-800/40">
+                      <th className="text-left px-4 py-2">#</th>
+                      <th className="text-left px-3 py-2">Stock</th>
+                      <th className="text-right px-3 py-2">CMP</th>
+                      <th className="text-right px-3 py-2">Day %</th>
+                      <th className="text-right px-3 py-2">Score</th>
+                      <th className="text-center px-3 py-2">Signal</th>
+                      <th className="text-center px-3 py-2">N50</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.top5_stocks.map((s, i) => (
+                      <tr key={s.symbol} className="border-b border-border/20 hover:bg-slate-800/30">
+                        <td className="px-4 py-2.5 text-slate-500">{i + 1}</td>
+                        <td className="px-3 py-2.5">
+                          <div className="font-semibold text-white">{s.symbol}</div>
+                          <div className="text-[10px] text-muted truncate max-w-[130px]">{s.name}</div>
+                        </td>
+                        <td className="px-3 py-2.5 text-right text-white font-medium">
+                          {s.cmp ? `₹${s.cmp.toLocaleString('en-IN', { maximumFractionDigits: 2 })}` : '—'}
+                        </td>
+                        <td className={`px-3 py-2.5 text-right font-medium ${trendColor(s.change_pct)}`}>
+                          {s.change_pct != null ? `${s.change_pct >= 0 ? '+' : ''}${s.change_pct.toFixed(2)}%` : '—'}
+                        </td>
+                        <td className="px-3 py-2.5 text-right">
+                          <span className="font-bold" style={{ color: scoreToColor(s.score) }}>{s.score}</span>
+                        </td>
+                        <td className="px-3 py-2.5 text-center">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${sigColor(s.signal)}`}>{s.signal}</span>
+                        </td>
+                        <td className="px-3 py-2.5 text-center">
+                          {s.nifty50 ? (
+                            <span className="px-1.5 py-0.5 bg-amber-950 border border-amber-700 text-amber-400 rounded text-[10px] font-bold">N50</span>
+                          ) : (
+                            <span className="text-slate-700">—</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Recent news */}
+              {data.news.length > 0 && (
+                <div className="bg-slate-800/30 rounded-xl p-4 space-y-2">
+                  <div className="text-xs font-semibold text-white mb-3">Recent Sector News</div>
+                  {data.news.map((n, i) => (
+                    <div key={i} className="border-b border-border/20 pb-2 last:border-0">
+                      <div className="text-xs text-slate-200 leading-snug">{n.title}</div>
+                      <div className="text-[10px] text-muted mt-0.5 flex gap-2">
+                        <span>{n.source}</span>
+                        {n.published_at && <span>· {fmtDate(n.published_at)}</span>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="text-[10px] text-slate-600 text-center">
+                Scores based on AegisAI 6-engine analysis · Outlook is rule-based, not financial advice
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Index History Tab ───────────────────────────────────────────────────────
+
+interface HistoryRow {
+  date: string
+  prev_close: number
+  open: number
+  gap_pts: number
+  gap_pct: number | null
+  gap_direction: 'up' | 'down' | 'flat'
+  close: number
+  change_pts: number
+  change_pct: number | null
+  direction: 'up' | 'down'
+  volume: number | null
+}
+
+interface HistoryData {
+  symbol: string
+  name: string
+  sessions: number
+  rows: HistoryRow[]
+}
+
+function IndexHistoryTab() {
+  const [index, setIndex]     = useState<'nifty' | 'banknifty' | 'sensex'>('nifty')
+  const [data, setData]       = useState<HistoryData | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [lastSync, setLastSync] = useState<Date | null>(null)
+  const [error, setError]     = useState('')
+
+  const load = (idx = index, force = false) => {
+    if (loading && !force) return
+    setLoading(true)
+    setError('')
+    client.get(`/market/history/${idx}?sessions=30`)
+      .then(r => { setData(r.data); setLastSync(new Date()) })
+      .catch(() => setError('Failed to load history. Click Sync to retry.'))
+      .finally(() => setLoading(false))
+  }
+
+  // Auto-load on tab open and when index changes
+  useEffect(() => { load() }, [index])
+
+  const TABS = [
+    { key: 'nifty',     label: 'NIFTY 50' },
+    { key: 'banknifty', label: 'Bank Nifty' },
+    { key: 'sensex',    label: 'Sensex' },
+  ] as const
+
+  const fmt  = (v: number, dec = 2) => v.toLocaleString('en-IN', { minimumFractionDigits: dec, maximumFractionDigits: dec })
+  const fmtV = (v: number | null) => {
+    if (v == null) return '—'
+    if (v >= 1e7) return `${(v / 1e7).toFixed(2)}Cr`
+    if (v >= 1e5) return `${(v / 1e5).toFixed(1)}L`
+    return v.toLocaleString('en-IN')
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Sub-tabs + sync */}
+      <div className="flex items-center justify-between">
+        <div className="flex gap-2">
+          {TABS.map(t => (
+            <button
+              key={t.key}
+              onClick={() => { setIndex(t.key); }}
+              className={`px-4 py-2 rounded-lg text-xs font-medium transition-colors ${
+                index === t.key
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-card border border-border text-muted hover:text-white'
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-3">
+          {lastSync && (
+            <span className="text-[10px] text-muted">
+              Synced {lastSync.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+            </span>
+          )}
+          <button
+            onClick={() => load(index, true)}
+            disabled={loading}
+            className="px-3 py-1.5 bg-card border border-border hover:border-blue-500 text-xs text-muted hover:text-white rounded-lg disabled:opacity-40 transition-colors flex items-center gap-1.5"
+          >
+            <span className={loading ? 'animate-spin inline-block' : ''}>⟳</span>
+            {loading ? 'Syncing…' : 'Sync'}
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <div className="bg-red-950/40 border border-red-800 rounded-xl px-4 py-3 text-xs text-red-300">
+          {error}
+        </div>
+      )}
+
+      {loading && !data && (
+        <div className="bg-card border border-border rounded-xl p-10 text-center text-muted text-sm animate-pulse">
+          Loading {TABS.find(t => t.key === index)?.label} history…
+        </div>
+      )}
+
+      {data && (
+        <div className="bg-card border border-border rounded-xl overflow-hidden">
+          <div className="flex items-center justify-between px-5 py-3 border-b border-border bg-slate-800/40">
+            <div className="text-sm font-semibold text-white">{data.name} — Last {data.sessions} Sessions</div>
+            <div className="text-[10px] text-muted">Most recent first · Auto-syncs on open</div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-[10px] text-muted border-b border-border bg-slate-800/20">
+                  <th className="text-left px-4 py-2.5 whitespace-nowrap">#</th>
+                  <th className="text-left px-3 py-2.5 whitespace-nowrap">Date</th>
+                  <th className="text-right px-3 py-2.5 whitespace-nowrap">Prev Close</th>
+                  <th className="text-right px-3 py-2.5 whitespace-nowrap">Open</th>
+                  <th className="text-right px-3 py-2.5 whitespace-nowrap">Gap Up/Down</th>
+                  <th className="text-right px-3 py-2.5 whitespace-nowrap">Close</th>
+                  <th className="text-right px-3 py-2.5 whitespace-nowrap">Chg Points</th>
+                  <th className="text-right px-3 py-2.5 whitespace-nowrap">% Change</th>
+                  <th className="text-right px-3 py-2.5 whitespace-nowrap">Volume</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.rows.map((r, i) => {
+                  const up  = r.direction === 'up'
+                  const gUp = r.gap_direction === 'up'
+                  const gFlat = r.gap_direction === 'flat'
+                  return (
+                    <tr key={r.date} className={`border-b border-border/30 hover:bg-slate-800/20 ${i === 0 ? 'bg-blue-950/10' : ''}`}>
+                      <td className="px-4 py-2.5 text-slate-600">{i + 1}</td>
+                      <td className="px-3 py-2.5 font-medium text-white whitespace-nowrap">
+                        {new Date(r.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' })}
+                      </td>
+                      <td className="px-3 py-2.5 text-right text-slate-300">{fmt(r.prev_close, 2)}</td>
+                      <td className="px-3 py-2.5 text-right text-slate-300">{fmt(r.open, 2)}</td>
+                      <td className="px-3 py-2.5 text-right">
+                        <span className={`font-medium ${gFlat ? 'text-muted' : gUp ? 'text-score-green' : 'text-score-red'}`}>
+                          {r.gap_pts >= 0 ? '+' : ''}{fmt(r.gap_pts, 2)}
+                          {r.gap_pct != null && (
+                            <span className="text-[10px] ml-1 opacity-70">
+                              ({r.gap_pct >= 0 ? '+' : ''}{r.gap_pct.toFixed(2)}%)
+                            </span>
+                          )}
+                        </span>
+                      </td>
+                      <td className={`px-3 py-2.5 text-right font-semibold ${up ? 'text-score-green' : 'text-score-red'}`}>
+                        {fmt(r.close, 2)}
+                      </td>
+                      <td className={`px-3 py-2.5 text-right font-medium ${up ? 'text-score-green' : 'text-score-red'}`}>
+                        {r.change_pts >= 0 ? '+' : ''}{fmt(r.change_pts, 2)}
+                      </td>
+                      <td className="px-3 py-2.5 text-right">
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${up ? 'bg-green-950 text-score-green' : 'bg-red-950 text-score-red'}`}>
+                          {r.change_pct != null ? `${r.change_pct >= 0 ? '+' : ''}${r.change_pct.toFixed(2)}%` : '—'}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2.5 text-right text-slate-400">{fmtV(r.volume)}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Main Market Page ─────────────────────────────────────────────────────────
 
-type MarketTab = 'overview' | 'global' | 'global_stocks' | 'news' | 'results'
+type MarketTab = 'overview' | 'global' | 'global_stocks' | 'news' | 'results' | 'history'
 
 export default function Market() {
   const { macro, sectors, loading } = useMarket()
   const [tab, setTab] = useState<MarketTab>('overview')
+  const [selectedSector, setSelectedSector] = useState<string | null>(null)
 
   const radarData = sectors.slice(0, 8).map((s) => ({
     subject: s.sector.length > 8 ? s.sector.substring(0, 8) : s.sector,
@@ -867,6 +1206,7 @@ export default function Market() {
           { key: 'global_stocks', label: '🏢 Global Stocks' },
           { key: 'news',          label: '📰 News Room' },
           { key: 'results',       label: '📋 Quarterly Results' },
+          { key: 'history',       label: '📈 History' },
         ] as { key: MarketTab; label: string }[]).map(({ key, label }) => (
           <button
             key={key}
@@ -926,20 +1266,22 @@ export default function Market() {
           {sectors.length > 0 && (
             <div className="grid grid-cols-2 gap-4">
               <div className="bg-card border border-border rounded-xl p-5">
-                <div className="text-xs text-muted mb-4">Sector Heatmap</div>
+                <div className="text-xs text-muted mb-1">Sector Heatmap</div>
+                <div className="text-[10px] text-slate-600 mb-3">Click a sector for details</div>
                 <div className="grid grid-cols-2 gap-2">
                   {sectors.map((s) => (
-                    <div
+                    <button
                       key={s.sector}
-                      className="rounded-lg p-3 border border-border/50"
+                      onClick={() => setSelectedSector(s.sector)}
+                      className="rounded-lg p-3 border border-border/50 text-left hover:border-blue-500/60 transition-colors group"
                       style={{ backgroundColor: `${scoreToColor(s.score)}15` }}
                     >
-                      <div className="text-xs text-white font-medium truncate">{s.sector}</div>
+                      <div className="text-xs text-white font-medium truncate group-hover:text-blue-300">{s.sector}</div>
                       <div className="text-lg font-bold mt-1" style={{ color: scoreToColor(s.score) }}>
                         {s.score}
                       </div>
                       <div className="text-[10px] text-muted">{scoreToLabel(s.score)}</div>
-                    </div>
+                    </button>
                   ))}
                 </div>
               </div>
@@ -965,6 +1307,11 @@ export default function Market() {
             </div>
           )}
         </div>
+      )}
+
+      {/* ── Sector Detail Modal ── */}
+      {selectedSector && (
+        <SectorDetailModal sector={selectedSector} onClose={() => setSelectedSector(null)} />
       )}
 
       {/* ── Global Indices Tab ── */}
@@ -994,6 +1341,7 @@ export default function Market() {
 
       {/* ── Quarterly Results Tab ── */}
       {tab === 'results' && <ResultsCalendarTab />}
+      {tab === 'history' && <IndexHistoryTab />}
     </div>
   )
 }

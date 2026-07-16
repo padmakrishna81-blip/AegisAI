@@ -49,6 +49,10 @@ INDICES_CATALOG = [
 def _compute_technicals(hist: pd.DataFrame, symbol: str = "", use_live_prev_close: bool = False) -> dict:
     if hist.empty or len(hist) < 20:
         return {}
+    # Drop rows with NaN close (can happen for today's partial data)
+    hist = hist.dropna(subset=["Close"])
+    if len(hist) < 20:
+        return {}
     close = hist["Close"]
     sma20 = float(close.rolling(20).mean().iloc[-1])
     sma50 = float(close.rolling(50).mean().iloc[-1]) if len(close) >= 50 else None

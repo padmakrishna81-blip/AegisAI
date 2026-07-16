@@ -45,9 +45,28 @@ def calculate_full(symbol: str) -> dict:
 
     info = get_info(symbol)
     company_name = safe_get(info, "longName", default=symbol) or symbol
-    current_price = safe_get(info, "currentPrice", default=None) or safe_get(info, "regularMarketPrice", default=0) or 0
-    high_52w = safe_get(info, "fiftyTwoWeekHigh", default=None)
-    low_52w  = safe_get(info, "fiftyTwoWeekLow",  default=None)
+
+    # Use fast_info for price/52W — bypasses the stale 15-min cache
+    import yfinance as _yf
+    try:
+        _fi = _yf.Ticker(symbol).fast_info
+        current_price = float(getattr(_fi, "last_price", None) or getattr(_fi, "regular_market_price", None) or 0)
+        high_52w = float(getattr(_fi, "year_high", None) or 0) or None
+        low_52w  = float(getattr(_fi, "year_low",  None) or 0) or None
+        prev_close_val = float(getattr(_fi, "previous_close", None) or 0) or None
+    except Exception:
+        current_price = 0
+        high_52w = low_52w = prev_close_val = None
+
+    # Fallback to .info for anything fast_info didn't provide
+    if not current_price:
+        current_price = safe_get(info, "currentPrice", default=None) or safe_get(info, "regularMarketPrice", default=0) or 0
+    if not high_52w:
+        high_52w = safe_get(info, "fiftyTwoWeekHigh", default=None)
+    if not low_52w:
+        low_52w  = safe_get(info, "fiftyTwoWeekLow",  default=None)
+    if not prev_close_val:
+        prev_close_val = safe_get(info, "previousClose", default=None) or safe_get(info, "regularMarketPreviousClose", default=None)
 
     scores_for_verdict = {
         "overall": overall,
@@ -76,7 +95,8 @@ def calculate_full(symbol: str) -> dict:
     return {
         "symbol": symbol,
         "company_name": company_name,
-        "current_price": current_price,
+        "current_price": float(current_price) if current_price else 0,
+        "prev_close": float(prev_close_val) if prev_close_val else None,
         "high_52w": float(high_52w) if high_52w is not None else None,
         "low_52w":  float(low_52w)  if low_52w  is not None else None,
         "overall_score": overall,

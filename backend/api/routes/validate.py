@@ -32,10 +32,14 @@ def _quote_for_symbol(symbol: str) -> dict:
                 _t.sleep(0.5)
                 continue   # retry
 
-            # Prev close from info (cached is fine — it changes once a day)
-            info = get_info(sym)
-            prev_close = safe_get(info, "previousClose") or safe_get(info, "regularMarketPreviousClose")
+            # Prev close — fast_info is always fresh, skip the stale .info cache
+            prev_close = getattr(fast, "previous_close", None)
             prev_close = float(prev_close) if prev_close else None
+            # Only fall back to .info if fast_info has nothing
+            if not prev_close:
+                info = get_info(sym)
+                pc = safe_get(info, "previousClose") or safe_get(info, "regularMarketPreviousClose")
+                prev_close = float(pc) if pc else None
 
             # 30-day OHLC for high/low
             hist = ticker.history(period="1mo")

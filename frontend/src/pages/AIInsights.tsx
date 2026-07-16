@@ -1,10 +1,246 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import client from '../api/client'
 import { scoreToColor } from '../utils/formatters'
 import NseStockSearch from '../components/NseStockSearch'
 import NextSessionPredictCard from '../components/NextSessionPredictCard'
 
-// ─── Predefined questions ─────────────────────────────────────────────────────
+// ─── Prediction Accuracy Leaderboard ─────────────────────────────────────────
+
+interface AccuracyRow {
+  symbol: string
+  name: string
+  total: number
+  hits: number
+  nears: number
+  misses: number
+  hit_rate_pct: number | null
+}
+
+interface AccuracySummary {
+  overall_hit_rate_pct: number | null
+  total_predictions: number
+  by_symbol: AccuracyRow[]
+}
+
+function PredictionLeaderboard() {
+  const [data, setData] = useState<AccuracySummary | null>(null)
+  const [history, setHistory] = useState<Record<string, unknown>[]>([])
+  const [loading, setLoading] = useState(false)
+  const [expanded, setExpanded] = useState(false)
+  const [filling, setFilling] = useState(false)
+  const [fillMsg, setFillMsg] = useState('')
+  const [detailSym, setDetailSym] = useState<string | null>(null)
+
+  const load = () => {
+    setLoading(true)
+    client.get('/predict/accuracy/all')
+      .then(r => setData(r.data))
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }
+
+  const loadHistory = (sym: string) => {
+    setDetailSym(sym)
+    client.get(`/predict/history/${encodeURIComponent(sym)}?days=30`)
+      .then(r => setHistory(r.data.predictions || []))
+      .catch(() => setHistory([]))
+  }
+
+  const fillActuals = async () => {
+    setFilling(true)
+    setFillMsg('')
+    try {
+      const r = await client.post('/admin/fill-actuals')
+      setFillMsg(`✓ ${r.data.message}`)
+      load()
+    } catch {
+      setFillMsg('Failed to fill actuals')
+    } finally { setFilling(false) }
+  }
+
+  useEffect(() => { if (expanded) load() }, [expanded])
+
+  const rateColor = (r: number | null) =>
+    r == null ? 'text-muted' : r >= 60 ? 'text-score-green' : r >= 40 ? 'text-amber-400' : 'text-score-red'
+
+  const accBadge = (a: string) =>
+    a === 'HIT' ? 'bg-green-950 text-green-400 border-green-800' :
+    a === 'NEAR' ? 'bg-amber-950 text-amber-400 border-amber-800' :
+    'bg-red-950 text-red-400 border-red-800'
+
+  return (
+    <div className="bg-card border border-border rounded-xl overflow-hidden">
+      {/* Header — always visible */}
+      <button
+        onClick={() => setExpanded(e => !e)}
+        className="w-full flex items-center justify-between px-5 py-4 hover:bg-slate-800/30 transition-colors"
+      >
+        <div className="flex items-center gap-3">
+          <span className="text-base">🎯</span>
+          <div className="text-left">
+            <div className="text-sm font-semibold text-white">Prediction Accuracy Tracker</div>
+            <div className="text-[10px] text-muted">Track how well next-session predictions performed — HIT / NEAR / MISS</div>
+          </div>
+          {data && data.total_predictions > 0 && (
+            <span className={`ml-2 px-2 py-0.5 rounded text-xs font-bold border ${
+              (data.overall_hit_rate_pct ?? 0) >= 60 ? 'bg-green-950 border-green-800 text-green-400' :
+              (data.overall_hit_rate_pct ?? 0) >= 40 ? 'bg-amber-950 border-amber-800 text-amber-400' :
+              'bg-red-950 border-red-800 text-red-400'
+            }`}>
+              {data.overall_hit_rate_pct != null ? `${data.overall_hit_rate_pct}% overall` : 'No data'}
+            </span>
+          )}
+        </div>
+        <span className="text-muted text-sm">{expanded ? '▲' : '▼'}</span>
+      </button>
+
+      {expanded && (
+        <div className="border-t border-border px-5 pb-5 space-y-4 pt-4">
+          {/* Actions row */}
+          <div className="flex items-center gap-3">
+            <button onClick={load} disabled={loading}
+              className="px-3 py-1.5 bg-card border border-border hover:border-blue-500 text-xs text-muted hover:text-white rounded-lg transition-colors disabled:opacity-40">
+              {loading ? '⟳ Loading…' : '⟳ Refresh'}
+            </button>
+            <button onClick={fillActuals} disabled={filling}
+              className="px-3 py-1.5 bg-blue-950 border border-blue-800 hover:bg-blue-900 text-xs text-blue-300 rounded-lg transition-colors disabled:opacity-40">
+              {filling ? '⟳ Filling…' : '⬇ Fill Today\'s Actuals'}
+            </button>
+            {fillMsg && <span className="text-xs text-score-green">{fillMsg}</span>}
+            <span className="ml-auto text-[10px] text-muted">Auto-fills at 3:45 PM IST on weekdays</span>
+          </div>
+
+          {/* No data state */}
+          {!loading && (!data || data.total_predictions === 0) && (
+            <div className="text-center py-8 space-y-2">
+              <div className="text-3xl">📭</div>
+              <div className="text-sm text-white font-medium">No evaluated predictions yet</div>
+              <div className="text-xs text-muted max-w-md mx-auto">
+                Predictions are generated when you click "Load next session prediction" on any stock.
+                After market close (3:30 PM IST), click "Fill Today's Actuals" to evaluate them.
+                The system will auto-fill every weekday at 3:45 PM going forward.
+              </div>
+            </div>
+          )}
+
+          {/* Overall stats */}
+          {data && data.total_predictions > 0 && (
+            <>
+              <div className="grid grid-cols-4 gap-3">
+                <div className="bg-slate-800/60 rounded-xl p-3 text-center">
+                  <div className="text-[10px] text-muted mb-0.5">Total Evaluated</div>
+                  <div className="text-xl font-bold text-white">{data.total_predictions}</div>
+                </div>
+                <div className="bg-green-950/40 border border-green-800/40 rounded-xl p-3 text-center">
+                  <div className="text-[10px] text-muted mb-0.5">Overall Hit Rate</div>
+                  <div className={`text-xl font-bold ${rateColor(data.overall_hit_rate_pct)}`}>
+                    {data.overall_hit_rate_pct != null ? `${data.overall_hit_rate_pct}%` : '—'}
+                  </div>
+                  <div className="text-[9px] text-muted">HIT + NEAR</div>
+                </div>
+                <div className="bg-slate-800/60 rounded-xl p-3 text-center">
+                  <div className="text-[10px] text-muted mb-0.5">Symbols Tracked</div>
+                  <div className="text-xl font-bold text-white">{data.by_symbol.length}</div>
+                </div>
+                <div className="bg-slate-800/60 rounded-xl p-3 text-center">
+                  <div className="text-[10px] text-muted mb-0.5">Scoring</div>
+                  <div className="text-[10px] text-slate-300 mt-1">HIT = in range<br/>NEAR = ±0.5% outside<br/>MISS = beyond</div>
+                </div>
+              </div>
+
+              {/* Leaderboard table */}
+              <div className="bg-slate-800/30 rounded-xl overflow-hidden">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-[10px] text-muted border-b border-border bg-slate-800/60">
+                      <th className="text-left px-4 py-2.5">Symbol</th>
+                      <th className="text-right px-3 py-2.5">Predictions</th>
+                      <th className="text-right px-3 py-2.5 text-score-green">HIT</th>
+                      <th className="text-right px-3 py-2.5 text-amber-400">NEAR</th>
+                      <th className="text-right px-3 py-2.5 text-score-red">MISS</th>
+                      <th className="text-right px-3 py-2.5">Hit Rate</th>
+                      <th className="px-3 py-2.5"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.by_symbol.map(row => (
+                      <tr key={row.symbol}
+                        className="border-b border-border/30 hover:bg-slate-800/30 cursor-pointer"
+                        onClick={() => detailSym === row.symbol ? setDetailSym(null) : loadHistory(row.symbol)}>
+                        <td className="px-4 py-2.5">
+                          <div className="font-semibold text-white">{row.symbol.replace('.NS','').replace('^','')}</div>
+                          <div className="text-[10px] text-muted truncate max-w-[140px]">{row.name}</div>
+                        </td>
+                        <td className="px-3 py-2.5 text-right text-slate-300">{row.total}</td>
+                        <td className="px-3 py-2.5 text-right text-score-green font-semibold">{row.hits}</td>
+                        <td className="px-3 py-2.5 text-right text-amber-400 font-semibold">{row.nears}</td>
+                        <td className="px-3 py-2.5 text-right text-score-red font-semibold">{row.misses}</td>
+                        <td className="px-3 py-2.5 text-right">
+                          <span className={`font-bold text-sm ${rateColor(row.hit_rate_pct)}`}>
+                            {row.hit_rate_pct != null ? `${row.hit_rate_pct}%` : '—'}
+                          </span>
+                          {row.total >= 3 && (
+                            <div className="w-full bg-slate-700 rounded-full h-1 mt-1">
+                              <div className={`h-1 rounded-full ${
+                                (row.hit_rate_pct ?? 0) >= 60 ? 'bg-score-green' :
+                                (row.hit_rate_pct ?? 0) >= 40 ? 'bg-amber-400' : 'bg-score-red'
+                              }`} style={{ width: `${row.hit_rate_pct ?? 0}%` }} />
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-3 py-2.5 text-[10px] text-muted">
+                          {detailSym === row.symbol ? '▲ hide' : '▼ history'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Per-symbol prediction history */}
+              {detailSym && history.length > 0 && (
+                <div className="bg-slate-900/60 rounded-xl p-4 space-y-2">
+                  <div className="text-xs font-semibold text-white mb-3">
+                    {detailSym.replace('.NS','').replace('^','')} — last {history.length} predictions
+                  </div>
+                  <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                    {history.map((p: Record<string,unknown>, i) => {
+                      const range = p.range as Record<string,unknown>
+                      const acc = p.accuracy as string | null
+                      return (
+                        <div key={i} className="flex items-center gap-3 text-xs border-b border-border/20 pb-1.5 last:border-0">
+                          <span className="text-muted w-20 shrink-0">{(p.session_date as string)}</span>
+                          <span className="text-slate-300 w-16 shrink-0">
+                            ₹{(range?.low as number)?.toFixed(0)}–{(range?.high as number)?.toFixed(0)}
+                          </span>
+                          <span className="text-blue-400 shrink-0">
+                            base ₹{(range?.base as number)?.toFixed(0)}
+                          </span>
+                          {p.actual_close != null ? (
+                            <span className="text-white shrink-0">actual ₹{p.actual_close as number}</span>
+                          ) : (
+                            <span className="text-muted shrink-0">pending</span>
+                          )}
+                          {acc ? (
+                            <span className={`ml-auto px-2 py-0.5 rounded text-[10px] font-bold border ${accBadge(acc)}`}>
+                              {acc}
+                            </span>
+                          ) : (
+                            <span className="ml-auto text-[10px] text-muted">not evaluated</span>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
 
 interface QuickQuestion {
   label: string
@@ -631,6 +867,9 @@ export default function AIInsights() {
           Configure your API key in Settings for stock-level AI verdicts.
         </p>
       </div>
+
+      {/* Prediction Accuracy Tracker */}
+      <PredictionLeaderboard />
 
       {/* Quick questions */}
       <div>

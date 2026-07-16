@@ -30,7 +30,7 @@ _SEED_SYMBOLS = [
     # Midcap popular
     "BEL","HAL","BHEL","IRCTC","IRFC","RECLTD","PFC","HUDCO",
     "VEDL","HINDZINC","NMDC","SAIL","MOIL",
-    "ZOMATO","NYKAA","PAYTM","POLICYBZR","DELHIVERY",
+    "ETERNAL","NYKAA","PAYTM","POLICYBZR","DELHIVERY",
     "JUBLFOOD","DEVYANI","WESTLIFE","SAPPHIRE",
     "VOLTAS","HAVELLS","POLYCAB","KEI","FINOLEX",
     "PIDILITIND","ASTRAL","SUPREME","VBL","MCDOWELL-N",
@@ -53,6 +53,8 @@ _SEED_SYMBOLS = [
     "IREDA","SJVN","NHPC","CESC","TATAPOWER","TORNTPOWER","JSPL",
     "ATGL","MGL","IGL","GUJGASLTD",
     "TANLA","ONMOBILE","ROUTE",
+    # Agro / Chemicals / Others
+    "UPL",
 ]
 
 # Fallback names for seeds (avoids one-time yfinance calls on first boot)
@@ -116,9 +118,10 @@ _SEED_NAMES = {
     "HUDCO": ("Housing & Urban Dev Corp", "Financial Services"),
     "VEDL": ("Vedanta Ltd", "Materials"),
     "TATAMOTORS": ("Tata Motors Ltd", "Consumer Discretionary"),
-    "ZOMATO": ("Zomato Ltd", "Consumer Discretionary"),
+    "ETERNAL": ("Eternal Ltd (formerly Zomato)", "Consumer Discretionary"),
     "DLF": ("DLF Ltd", "Real Estate"),
-    "DMART": ("Avenue Supermarts (DMart)", "Consumer Staples"),
+    "DMART":  ("Avenue Supermarts (DMart)", "Consumer Staples"),
+    "UPL":    ("UPL Limited", "Agro Chemicals"),
     "IREDA": ("Indian Renewable Energy Dev Agency", "Financial Services"),
     "TATAPOWER": ("Tata Power Company", "Utilities"),
     "IGL": ("Indraprastha Gas Ltd", "Utilities"),

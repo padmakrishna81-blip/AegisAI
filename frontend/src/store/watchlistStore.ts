@@ -4,10 +4,11 @@ import { persist } from 'zustand/middleware'
 export interface WatchlistItem {
   symbol: string
   company_name: string
-  added_at: string           // ISO date string
+  added_at: string
   last_score?: number
   last_recommendation?: string
   notes?: string
+  prediction_enabled?: boolean  // opt-in to next-session prediction tracking
 }
 
 interface WatchlistState {

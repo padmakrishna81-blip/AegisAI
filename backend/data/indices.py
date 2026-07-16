@@ -1,16 +1,16 @@
 """NSE index constituents mapped to Yahoo Finance .NS symbols."""
 
 NIFTY50 = [
-    "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "HINDUNILVR.NS",
-    "ICICIBANK.NS", "KOTAKBANK.NS", "BHARTIARTL.NS", "ITC.NS", "SBIN.NS",
-    "BAJFINANCE.NS", "AXISBANK.NS", "LT.NS", "ASIANPAINT.NS", "MARUTI.NS",
-    "SUNPHARMA.NS", "TITAN.NS", "NESTLEIND.NS", "WIPRO.NS", "ULTRACEMCO.NS",
-    "POWERGRID.NS", "HCLTECH.NS", "BAJAJFINSV.NS", "NTPC.NS", "ONGC.NS",
-    "TECHM.NS", "DIVISLAB.NS", "ADANIPORTS.NS", "CIPLA.NS", "DRREDDY.NS",
-    "HEROMOTOCO.NS", "TATAMOTORS.NS", "TATASTEEL.NS", "COALINDIA.NS", "JSWSTEEL.NS",
-    "BRITANNIA.NS", "HINDALCO.NS", "BPCL.NS", "EICHERMOT.NS", "GRASIM.NS",
-    "APOLLOHOSP.NS", "ADANIENT.NS", "INDUSINDBK.NS", "M&M.NS", "BAJAJ-AUTO.NS",
-    "TATACONSUM.NS", "SBILIFE.NS", "HDFCLIFE.NS", "UPL.NS", "BEL.NS",
+    "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS",
+    "BHARTIARTL.NS", "KOTAKBANK.NS", "SBIN.NS", "ITC.NS", "LT.NS",
+    "BAJFINANCE.NS", "AXISBANK.NS", "MARUTI.NS", "SUNPHARMA.NS", "TITAN.NS",
+    "HCLTECH.NS", "WIPRO.NS", "ULTRACEMCO.NS", "POWERGRID.NS", "NTPC.NS",
+    "BAJAJFINSV.NS", "ONGC.NS", "TECHM.NS", "DIVISLAB.NS", "ADANIPORTS.NS",
+    "CIPLA.NS", "DRREDDY.NS", "HEROMOTOCO.NS", "TATAMOTORS.NS", "TATASTEEL.NS",
+    "COALINDIA.NS", "JSWSTEEL.NS", "BRITANNIA.NS", "HINDALCO.NS", "BPCL.NS",
+    "EICHERMOT.NS", "GRASIM.NS", "APOLLOHOSP.NS", "ADANIENT.NS", "INDUSINDBK.NS",
+    "M&M.NS", "BAJAJ-AUTO.NS", "TATACONSUM.NS", "SBILIFE.NS", "HDFCLIFE.NS",
+    "NESTLEIND.NS", "ASIANPAINT.NS", "HINDUNILVR.NS", "ETERNAL.NS", "BEL.NS",
 ]
 
 NIFTY_BANK = [
@@ -21,7 +21,7 @@ NIFTY_BANK = [
 
 NIFTY_IT = [
     "TCS.NS", "INFY.NS", "WIPRO.NS", "HCLTECH.NS", "TECHM.NS",
-    "LTIM.NS", "MPHASIS.NS", "COFORGE.NS", "PERSISTENT.NS", "OFSS.NS",
+    "MPHASIS.NS", "COFORGE.NS", "PERSISTENT.NS", "OFSS.NS",
 ]
 
 NIFTY_PHARMA = [
@@ -50,12 +50,13 @@ NIFTY_ENERGY = [
 ]
 
 NIFTY_MIDCAP_SELECTION = [
-    "PERSISTENT.NS", "COFORGE.NS", "MPHASIS.NS", "LTIM.NS", "PIDILITIND.NS",
+    "PERSISTENT.NS", "COFORGE.NS", "MPHASIS.NS", "PIDILITIND.NS",
     "HAVELLS.NS", "VOLTAS.NS", "AMBUJACEM.NS", "ACC.NS", "SHREECEM.NS",
     "INDIGO.NS", "SPICEJET.NS", "BANDHANBNK.NS", "AUBANK.NS", "IDFCFIRSTB.NS",
-    "POLICYBZR.NS", "NYKAA.NS", "DELHIVERY.NS", "ZOMATO.NS", "PAYTM.NS",
+    "POLICYBZR.NS", "NYKAA.NS", "DELHIVERY.NS", "ETERNAL.NS", "PAYTM.NS",
     "IRCTC.NS", "HAL.NS", "BEL.NS", "BHEL.NS", "COCHINSHIP.NS",
     "VEDL.NS", "NMDC.NS", "SAIL.NS", "ASHOKLEY.NS", "ESCORTS.NS",
+    "UPL.NS", "DMART.NS", "TRENT.NS", "BHARTIARTL.NS",
 ]
 
 NIFTY_FIN_SERVICES = [
@@ -78,29 +79,35 @@ NIFTY_SMALLCAP = [
 
 # Sector index tickers (Yahoo Finance)
 SECTOR_INDEX_MAP = {
-    "IT": "^CNXIT",
-    "Banking": "^NSEBANK",
-    "Pharma": "^CNXPHARMA",
-    "Auto": "^CNXAUTO",
-    "FMCG": "^CNXFMCG",
-    "Metal": "^CNXMETAL",
-    "Energy": "^CNXENERGY",
-    "Realty": "^CNXREALTY",
-    "Financial Services": "^CNXFIN",
-    "Media": "^CNXMEDIA",
+    "IT":                  "^CNXIT",
+    "Banking":             "^NSEBANK",
+    "Pharma":              "^CNXPHARMA",
+    "Auto":                "^CNXAUTO",
+    "FMCG":                "^CNXFMCG",
+    "Metal":               "^CNXMETAL",
+    "Energy":              "^CNXENERGY",
+    "Realty":              "^CNXREALTY",
+    "Financial Services":  "^CNXFIN",
+    "Media":               "^CNXMEDIA",
+    "Infrastructure":      "^CNXINFRA",
+    "Consumer":            "HINDUNILVR.NS",   # proxy: largest FMCG/consumer stock
+    "Defence":             "HAL.NS",          # proxy: largest defence PSU
+    "Healthcare":          "APOLLOHOSP.NS",   # proxy: largest private hospital
+    "Cement":              "ULTRACEMCO.NS",   # proxy: largest cement company
 }
 
 # Map stock symbol → sector
 STOCK_SECTOR_MAP = {
     # IT
     "TCS.NS": "IT", "INFY.NS": "IT", "WIPRO.NS": "IT", "HCLTECH.NS": "IT",
-    "TECHM.NS": "IT", "LTIM.NS": "IT", "MPHASIS.NS": "IT", "COFORGE.NS": "IT",
+    "TECHM.NS": "IT", "MPHASIS.NS": "IT", "COFORGE.NS": "IT",
     "PERSISTENT.NS": "IT", "OFSS.NS": "IT",
     # Banking
     "HDFCBANK.NS": "Banking", "ICICIBANK.NS": "Banking", "KOTAKBANK.NS": "Banking",
     "SBIN.NS": "Banking", "AXISBANK.NS": "Banking", "INDUSINDBK.NS": "Banking",
     "BANDHANBNK.NS": "Banking", "FEDERALBNK.NS": "Banking", "PNB.NS": "Banking",
     "BANKBARODA.NS": "Banking", "IDFCFIRSTB.NS": "Banking", "AUBANK.NS": "Banking",
+    "UNIONBANK.NS": "Banking", "CANBK.NS": "Banking",
     # Financial Services
     "BAJFINANCE.NS": "Financial Services", "BAJAJFINSV.NS": "Financial Services",
     "SBILIFE.NS": "Financial Services", "HDFCLIFE.NS": "Financial Services",
@@ -128,14 +135,19 @@ STOCK_SECTOR_MAP = {
     "LT.NS": "Infrastructure", "ADANIPORTS.NS": "Infrastructure",
     "ADANIENT.NS": "Infrastructure", "BHEL.NS": "Infrastructure",
     "HAL.NS": "Defence", "BEL.NS": "Defence", "COCHINSHIP.NS": "Defence",
-    # Consumer / Lifestyle
+    # Consumer / Lifestyle / Retail
     "ASIANPAINT.NS": "Consumer", "TITAN.NS": "Consumer",
     "HAVELLS.NS": "Consumer", "VOLTAS.NS": "Consumer", "PIDILITIND.NS": "Consumer",
+    "DMART.NS": "Consumer", "TRENT.NS": "Consumer", "ETERNAL.NS": "Consumer",
     # Cement
     "ULTRACEMCO.NS": "Cement", "AMBUJACEM.NS": "Cement", "ACC.NS": "Cement",
     "SHREECEM.NS": "Cement", "GRASIM.NS": "Cement",
     # Healthcare
     "APOLLOHOSP.NS": "Healthcare",
+    # Telecom
+    "BHARTIARTL.NS": "Telecom",
+    # Agro / Chemicals
+    "UPL.NS": "Agro Chemicals",
 }
 
 INDEX_GROUPS = {

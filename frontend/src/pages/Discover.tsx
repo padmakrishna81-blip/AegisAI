@@ -340,6 +340,24 @@ function WatchlistTab({
   const [quotes, setQuotes] = useState<Record<string, QuoteData>>({})
   const [loading, setLoading] = useState(false)
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null)
+  const [generatingPred, setGeneratingPred] = useState(false)
+  const [predMsg, setPredMsg] = useState('')
+
+  const generatePredictions = async () => {
+    const enabled = items.filter(i => i.prediction_enabled)
+    if (enabled.length === 0) { setPredMsg('No stocks selected for prediction. Enable via the 🔮 checkbox.'); return }
+    setGeneratingPred(true)
+    setPredMsg('')
+    let done = 0
+    for (const item of enabled) {
+      try {
+        await client.get(`/predict/${encodeURIComponent(item.symbol)}`)
+        done++
+      } catch { /* skip */ }
+    }
+    setGeneratingPred(false)
+    setPredMsg(`✓ Generated predictions for ${done} stock${done !== 1 ? 's' : ''}. Results appear in AI Insights tracker.`)
+  }
 
   const fetchQuotes = useCallback(async () => {
     if (items.length === 0) return
@@ -412,13 +430,24 @@ function WatchlistTab({
             ? `Updated ${lastRefresh.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
             : 'Loading…'}
         </div>
-        <button
-          onClick={fetchQuotes}
-          disabled={loading}
-          className="px-3 py-1 bg-card border border-border text-xs text-muted hover:text-white rounded-lg disabled:opacity-40 transition-colors"
-        >
-          {loading ? '⟳ Refreshing…' : '⟳ Refresh'}
-        </button>
+        <div className="flex items-center gap-2">
+          {predMsg && <span className="text-[10px] text-score-green">{predMsg}</span>}
+          <button
+            onClick={generatePredictions}
+            disabled={generatingPred || loading}
+            className="px-3 py-1 bg-blue-950 border border-blue-800 text-xs text-blue-300 hover:text-white hover:bg-blue-900 rounded-lg disabled:opacity-40 transition-colors"
+            title="Generate next-session predictions for 🔮-enabled stocks"
+          >
+            {generatingPred ? '⟳ Generating…' : '🔮 Generate Predictions'}
+          </button>
+          <button
+            onClick={fetchQuotes}
+            disabled={loading}
+            className="px-3 py-1 bg-card border border-border text-xs text-muted hover:text-white rounded-lg disabled:opacity-40 transition-colors"
+          >
+            {loading ? '⟳ Refreshing…' : '⟳ Refresh'}
+          </button>
+        </div>
       </div>
 
       <div className="bg-card border border-border rounded-xl overflow-hidden">
@@ -436,6 +465,7 @@ function WatchlistTab({
                 <th className="text-right px-3 py-3 whitespace-nowrap">30D Low</th>
                 <th className="text-right px-3 py-3 whitespace-nowrap">Score</th>
                 <th className="text-center px-3 py-3 whitespace-nowrap">Signal</th>
+                <th className="text-center px-3 py-3 whitespace-nowrap" title="Enable next-session prediction tracking">🔮</th>
                 <th className="px-3 py-3"></th>
               </tr>
             </thead>
@@ -530,6 +560,17 @@ function WatchlistTab({
                           {item.last_recommendation}
                         </span>
                       ) : <span className="text-muted text-xs">—</span>}
+                    </td>
+
+                    {/* Prediction toggle */}
+                    <td className="px-3 py-3 text-center">
+                      <button
+                        onClick={() => onUpdateItem(item.symbol, { prediction_enabled: !item.prediction_enabled })}
+                        className={`text-base transition-colors ${item.prediction_enabled ? 'opacity-100' : 'opacity-25 hover:opacity-60'}`}
+                        title={item.prediction_enabled ? 'Prediction tracking ON — click to disable' : 'Click to enable prediction tracking'}
+                      >
+                        🔮
+                      </button>
                     </td>
 
                     {/* Actions */}

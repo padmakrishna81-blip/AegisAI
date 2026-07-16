@@ -308,8 +308,8 @@
         }
       },
       "commentary": null,
-      "actual_close": null,
-      "accuracy": null,
+      "actual_close": 24134.4,
+      "accuracy": "HIT",
       "market_hours": false
     },
     "VEDL.NS::2026-07-16": {
@@ -338,6 +338,110 @@
           "sp500_chg_pct": 0.24,
           "vix": 16.190000534057617,
           "crude_chg_pct": -1.4
+        }
+      },
+      "commentary": null,
+      "actual_close": 258.3,
+      "accuracy": "HIT",
+      "market_hours": false
+    },
+    "^NSEBANK::2026-07-16": {
+      "symbol": "^NSEBANK",
+      "company_name": "NIFTY BANK",
+      "session_date": "2026-07-16",
+      "predicted_at": "2026-07-16T08:38:51.589548+05:30",
+      "range": {
+        "low": 56676.06,
+        "base": 57767.58,
+        "high": 58859.1,
+        "current_price": 57757.85,
+        "bias_pct": 0.017,
+        "direction": "neutral",
+        "confidence": 60,
+        "iv_used": 30.0,
+        "one_sd_pts": 1091.52,
+        "plain_english": "Signals are mixed \u2014 no strong directional call. CMP \u20b957,757.8 is already at the predicted base. Upside target \u20b958,859, downside support \u20b956,676. MACD momentum is negative. The range spans 3.8% \u2014 moderate volatility expected.",
+        "news_alerts": [],
+        "factors": {
+          "overall_score": 53,
+          "rsi": null,
+          "macd_direction": "bearish",
+          "global_bias": "neutral",
+          "gift_nifty_gap": 18.5,
+          "sp500_chg_pct": null,
+          "vix": null,
+          "crude_chg_pct": null
+        }
+      },
+      "commentary": null,
+      "actual_close": 57682.7,
+      "accuracy": "HIT",
+      "market_hours": false
+    },
+    "^BSESN::2026-07-16": {
+      "symbol": "^BSESN",
+      "company_name": "S&P BSE SENSEX",
+      "session_date": "2026-07-16",
+      "predicted_at": "2026-07-16T08:39:10.388387+05:30",
+      "range": {
+        "low": 75739.92,
+        "base": 77198.59,
+        "high": 78657.26,
+        "current_price": 77185.43,
+        "bias_pct": 0.017,
+        "direction": "neutral",
+        "confidence": 60,
+        "iv_used": 30.0,
+        "one_sd_pts": 1458.67,
+        "plain_english": "Signals are mixed \u2014 no strong directional call. CMP \u20b977,185.4 is already at the predicted base. Upside target \u20b978,657, downside support \u20b975,740. MACD momentum is negative. The range spans 3.8% \u2014 moderate volatility expected.",
+        "news_alerts": [],
+        "factors": {
+          "overall_score": 53,
+          "rsi": null,
+          "macd_direction": "bearish",
+          "global_bias": "neutral",
+          "gift_nifty_gap": 20.5,
+          "sp500_chg_pct": null,
+          "vix": null,
+          "crude_chg_pct": null
+        }
+      },
+      "commentary": null,
+      "actual_close": 77365.4,
+      "accuracy": "HIT",
+      "market_hours": false
+    },
+    "^NSEI::2026-07-17": {
+      "symbol": "^NSEI",
+      "company_name": "NIFTY 50",
+      "session_date": "2026-07-17",
+      "predicted_at": "2026-07-16T16:22:01.289053+05:30",
+      "range": {
+        "low": 23739.9,
+        "base": 24103.85,
+        "high": 24467.8,
+        "current_price": 24072.75,
+        "bias_pct": 0.129,
+        "direction": "bullish",
+        "confidence": 85,
+        "iv_used": 30.0,
+        "one_sd_pts": 363.95,
+        "plain_english": "All signals lean strongly bullish. CMP \u20b924,072.8 is already at the predicted base. Upside target \u20b924,468, downside support \u20b923,740. MACD momentum is positive. The range spans 3.0% \u2014 moderate volatility expected. \u2726 Positive news: \"Indian shares set to open higher; TCS in focus after revenue beat\" \u2014 could provide upside catalyst.",
+        "news_alerts": [
+          {
+            "keyword": "revenue beat",
+            "headline": "Indian shares set to open higher; TCS in focus after revenue beat"
+          }
+        ],
+        "factors": {
+          "overall_score": 54,
+          "rsi": 50.5,
+          "macd_direction": "bullish",
+          "global_bias": "neutral",
+          "gift_nifty_gap": -8.0,
+          "sp500_chg_pct": 0.38,
+          "vix": 15.979999542236328,
+          "crude_chg_pct": 0.0
         }
       },
       "commentary": null,

@@ -16,6 +16,120 @@ async def get_macro():
     return JSONResponse(content=clean_for_json(calc_macro()))
 
 
+@router.get("/market/sector-detail/{sector_name}")
+async def get_sector_detail(sector_name: str):
+    """
+    Detailed view for a sector:
+    - Top 5 stocks by AegisAI score
+    - Sector trend (3M index return)
+    - 3-month outlook (rule-based)
+    - Recent sector-related news
+    """
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    from data.indices import STOCK_SECTOR_MAP, SECTOR_INDEX_MAP
+    from data.market_data import get_info, safe_get, get_index_history
+    from engines.recommendation import calculate_full
+    import urllib.parse
+
+    sector = urllib.parse.unquote(sector_name).strip()
+
+    # Stocks in this sector
+    stocks = [sym for sym, sec in STOCK_SECTOR_MAP.items() if sec.lower() == sector.lower()]
+    if not stocks:
+        return JSONResponse(content={"error": f"Sector '{sector}' not found"}, status_code=404)
+
+    from data.indices import NIFTY50
+    nifty50_set = set(NIFTY50)
+
+    loop = asyncio.get_event_loop()
+    executor = ThreadPoolExecutor(max_workers=8)
+
+    # Analyze ALL stocks in the sector (no limit), sorted by score
+    async def score_one(sym):
+        try:
+            r = await loop.run_in_executor(executor, calculate_full, sym)
+            cmp        = r.get("current_price") or 0
+            prev_close = r.get("prev_close")
+            change_pct = round((cmp / prev_close - 1) * 100, 2) if cmp and prev_close and prev_close > 0 else None
+            return {
+                "symbol":     sym.replace(".NS", ""),
+                "name":       r.get("company_name", sym),
+                "score":      r.get("overall_score", 50),
+                "signal":     r.get("recommendation", "HOLD"),
+                "cmp":        round(cmp, 2) if cmp else 0,
+                "change_pct": change_pct,
+                "nifty50":    sym in nifty50_set,
+            }
+        except Exception:
+            return None
+
+    tasks = [score_one(s) for s in stocks]
+    results = await asyncio.gather(*tasks)
+    all_stocks = sorted(
+        [r for r in results if r],
+        key=lambda x: x["score"],
+        reverse=True
+    )
+
+    # Sector trend from index
+    index_sym = SECTOR_INDEX_MAP.get(sector, SECTOR_INDEX_MAP.get(sector.title()))
+    trend_3m = None
+    trend_1y = None
+    if index_sym:
+        try:
+            hist = get_index_history(index_sym, period="1y")
+            if not hist.empty and len(hist) >= 63:
+                c = hist["Close"]
+                trend_3m = round((float(c.iloc[-1]) / float(c.iloc[-63]) - 1) * 100, 2)
+                trend_1y = round((float(c.iloc[-1]) / float(c.iloc[0])  - 1) * 100, 2)
+        except Exception:
+            pass
+
+    # Outlook — rule-based from sector score + trend
+    sector_score = 50
+    if all_stocks:
+        sector_score = round(sum(s["score"] for s in all_stocks) / len(all_stocks))
+
+    if sector_score >= 75 and (trend_3m or 0) > 3:
+        outlook = "Bullish — sector showing strong momentum and high analyst scores. Consider adding exposure."
+        outlook_label = "bullish"
+    elif sector_score >= 60 or (trend_3m or 0) > 1:
+        outlook = "Neutral-Positive — sector is stable with selective opportunities. Focus on top-scored stocks."
+        outlook_label = "neutral_positive"
+    elif sector_score < 45 or (trend_3m or 0) < -5:
+        outlook = "Bearish — sector under pressure. Reduce exposure or wait for stabilization."
+        outlook_label = "bearish"
+    else:
+        outlook = "Neutral — mixed signals. Monitor for a clearer trend before adding positions."
+        outlook_label = "neutral"
+
+    # Recent news — fetch from sector index or first stock
+    news = []
+    if stocks:
+        try:
+            from data.news_fetcher import fetch_stock_news
+            news_sym = index_sym or stocks[0]
+            raw = fetch_stock_news(news_sym)
+            news = [{"title": n["title"], "source": n["source"], "published_at": n["published_at"]}
+                    for n in raw[:5]]
+        except Exception:
+            pass
+
+    return JSONResponse(content=clean_for_json({
+        "sector":         sector,
+        "sector_score":   sector_score,
+        "index_symbol":   index_sym,
+        "trend_3m_pct":   trend_3m,
+        "trend_1y_pct":   trend_1y,
+        "outlook":        outlook,
+        "outlook_label":  outlook_label,
+        "top5_stocks":    all_stocks,
+        "news":           news,
+        "stock_count":    len(all_stocks),
+    }))
+
+
 @router.get("/market/sector/{sector}")
 async def get_sector_strength(sector: str = Path(...)):
     """Get sector strength score. Pass a stock symbol to get its sector."""
@@ -128,6 +242,83 @@ def _fetch_one_index(item: dict) -> dict:
     except Exception as e:
         return {**item, "price": None, "prev_close": None,
                 "change": None, "change_pct": None, "direction": "flat", "error": str(e)[:60]}
+
+
+@router.get("/market/history/{symbol_key}")
+async def get_index_history_data(symbol_key: str, sessions: int = 30):
+    """
+    Last N trading sessions OHLCV for an index.
+    symbol_key: 'nifty' | 'banknifty' | 'sensex'
+    Returns: Date, PrevClose, Open, GapUp/Down, Close, %Change, Volume
+    Auto-fetches fresh data every call — no stale cache issues.
+    """
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    import yfinance as yf
+    import math
+
+    SYMBOLS = {
+        "nifty":     ("^NSEI",    "NIFTY 50"),
+        "banknifty": ("^NSEBANK", "Bank Nifty"),
+        "sensex":    ("^BSESN",   "Sensex"),
+    }
+
+    entry = SYMBOLS.get(symbol_key.lower())
+    if not entry:
+        return JSONResponse(content={"error": f"Unknown symbol key '{symbol_key}'. Use: nifty, banknifty, sensex"}, status_code=400)
+
+    sym, name = entry
+
+    def fetch():
+        t    = yf.Ticker(sym)
+        hist = t.history(period="3mo")   # fetch 3mo to guarantee 30+ sessions
+        if hist.empty:
+            return []
+
+        hist = hist.dropna(subset=["Close"]).tail(sessions + 1)   # +1 to compute prev_close for first row
+        rows = []
+        closes = hist["Close"].tolist()
+        opens  = hist["Open"].tolist()
+        vols   = hist["Volume"].tolist()
+        dates  = [str(d.date()) for d in hist.index]
+
+        for i in range(1, len(closes)):
+            prev_close = round(closes[i - 1], 2)
+            open_px    = round(opens[i], 2)
+            close_px   = round(closes[i], 2)
+            vol        = int(vols[i]) if vols[i] and not math.isnan(vols[i]) else None
+
+            gap        = round(open_px - prev_close, 2)
+            gap_pct    = round(gap / prev_close * 100, 2) if prev_close else None
+            chg_pct    = round((close_px / prev_close - 1) * 100, 2) if prev_close else None
+            chg_pts    = round(close_px - prev_close, 2)
+
+            rows.append({
+                "date":           dates[i],
+                "prev_close":     prev_close,
+                "open":           open_px,
+                "gap_pts":        gap,
+                "gap_pct":        gap_pct,
+                "gap_direction":  "up" if gap > 0 else "down" if gap < 0 else "flat",
+                "close":          close_px,
+                "change_pts":     chg_pts,
+                "change_pct":     chg_pct,
+                "direction":      "up" if (chg_pts or 0) >= 0 else "down",
+                "volume":         vol,
+            })
+
+        rows.reverse()   # most recent first
+        return rows
+
+    loop = asyncio.get_event_loop()
+    rows = await loop.run_in_executor(ThreadPoolExecutor(max_workers=1), fetch)
+
+    return JSONResponse(content=clean_for_json({
+        "symbol":  sym,
+        "name":    name,
+        "sessions": len(rows),
+        "rows":    rows,
+    }))
 
 
 @router.get("/market/global-indices")
