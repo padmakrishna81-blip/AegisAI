@@ -18,6 +18,7 @@ interface StockDetailData {
   earnings_date: string | null
   year_end_targets: {
     methodology: string
+    ai_powered?: boolean
     targets: { year: number; low: number; base: number; high: number }[]
   } | null
 }
@@ -150,9 +151,16 @@ export default function GlobalStockDetailModal({ symbol, name, onClose }: Props)
                 )}
               </div>
 
-              {/* ── Year-End Targets (AI) ── */}
+              {/* ── Year-End Targets ── */}
               <div className="bg-slate-800/50 border border-border rounded-xl p-5 space-y-3">
-                <div className="text-sm font-semibold text-white flex items-center gap-2">🎯 Year-End Price Targets (AI-Generated)</div>
+                <div className="text-sm font-semibold text-white flex items-center gap-2">
+                  🎯 Year-End Price Targets
+                  {data.year_end_targets?.ai_powered ? (
+                    <span className="text-[10px] px-1.5 py-0.5 bg-blue-950 border border-blue-800 text-blue-400 rounded font-bold">◆ AI</span>
+                  ) : data.year_end_targets ? (
+                    <span className="text-[10px] px-1.5 py-0.5 bg-slate-700 border border-slate-600 text-slate-400 rounded font-bold">Rule-based</span>
+                  ) : null}
+                </div>
                 {data.year_end_targets ? (
                   <div className="space-y-3">
                     <div className="text-[11px] text-muted italic">{data.year_end_targets.methodology}</div>
@@ -179,7 +187,7 @@ export default function GlobalStockDetailModal({ symbol, name, onClose }: Props)
                     <div className="text-[10px] text-muted">⚠️ AI-generated estimates based on current fundamentals. Not financial advice.</div>
                   </div>
                 ) : (
-                  <div className="text-xs text-muted">Year-end targets not available. Ensure AI (LLM) is configured in Settings.</div>
+                  <div className="text-xs text-muted">Price targets unavailable — no price data for this stock.</div>
                 )}
               </div>
 

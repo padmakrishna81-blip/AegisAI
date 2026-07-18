@@ -10,18 +10,14 @@ export function useMarket() {
   useEffect(() => {
     const fetchAll = async () => {
       setLoading(true)
-      try {
-        const [macroRes, sectorRes] = await Promise.all([
-          client.get('/market/macro'),
-          client.get('/market/sectors'),
-        ])
-        setMacro(macroRes.data)
-        setSectors(sectorRes.data.sectors || [])
-      } catch (e) {
-        console.error(e)
-      } finally {
-        setLoading(false)
-      }
+      // Fetch independently so one failure doesn't blank the whole page
+      const [macroRes, sectorRes] = await Promise.allSettled([
+        client.get('/market/macro'),
+        client.get('/market/sectors'),
+      ])
+      if (macroRes.status === 'fulfilled') setMacro(macroRes.value.data)
+      if (sectorRes.status === 'fulfilled') setSectors(sectorRes.value.data.sectors || [])
+      setLoading(false)
     }
     fetchAll()
   }, [])

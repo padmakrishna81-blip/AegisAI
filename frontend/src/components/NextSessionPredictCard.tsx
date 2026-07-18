@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import client from '../api/client'
+import ConstituentsPredictCard from './ConstituentsPredictCard'
+import SmartRangeBar from './SmartRangeBar'
 
 const _HIGH_IMPACT_BEARISH_KEYWORDS = [
   "war","invasion","missile","attack","bomb","nuclear","sanctions","default",
@@ -12,15 +14,25 @@ const _HIGH_IMPACT_BEARISH_KEYWORDS = [
 ]
 
 interface PredRange {
+  // Closing range (backward compat)
   low: number
   base: number
   high: number
+  close_width?: number
+  // Opening range (new)
+  open_base?: number
+  open_low?: number
+  open_high?: number
+  open_width?: number
+  open_gap_pts?: number
+  // Common
   current_price: number
+  bias_pts?: number
   bias_pct: number
   direction: 'bullish' | 'bearish' | 'neutral'
   confidence: number
   iv_used: number
-  one_sd_pts: number
+  large_move?: boolean
   plain_english: string
   news_alerts?: { keyword: string; headline: string }[]
   factors: {
@@ -40,6 +52,7 @@ interface PredData {
   company_name: string
   session_date: string
   predicted_at: string
+  prediction_mode?: 'overnight' | 'intraday' | 'end_of_day'
   range: PredRange
   commentary: string | null
   actual_close: number | null
@@ -76,7 +89,7 @@ export default function NextSessionPredictCard({ symbol, name, compact }: Props)
     setLoading(true)
     setError('')
     Promise.all([
-      client.get(`/predict/${encodeURIComponent(symbol)}`),
+      client.get(`/predict/${encodeURIComponent(symbol)}?force=true`),
       client.get(`/predict/history/${encodeURIComponent(symbol)}?days=30`),
     ])
       .then(([pRes, hRes]) => {
@@ -130,16 +143,13 @@ export default function NextSessionPredictCard({ symbol, name, compact }: Props)
   const dirBg     = up ? 'bg-green-950 border-green-800' : down ? 'bg-red-950 border-red-800' : 'bg-slate-800 border-slate-700'
   const dirLabel  = up ? '▲ Bullish' : down ? '▼ Bearish' : '● Neutral'
 
-  // Range bar: position of current_price and base within low-high
-  const rangeSpan = r.high - r.low
-  const basePos   = rangeSpan > 0 ? ((r.base - r.low) / rangeSpan) * 100 : 50
-  const currPos   = rangeSpan > 0 ? ((r.current_price - r.low) / rangeSpan) * 100 : 50
-
   const fmt = (v: number) => v.toLocaleString('en-IN', { maximumFractionDigits: 2 })
   const fmtPct = (v: number | null) => v != null ? `${v >= 0 ? '+' : ''}${v.toFixed(2)}%` : '—'
 
   const accColor = (a: string | null) =>
     a === 'HIT' ? 'text-score-green' : a === 'NEAR' ? 'text-amber-400' : a === 'MISS' ? 'text-score-red' : 'text-muted'
+
+  const hasOpen = r.open_base != null && r.open_low != null && r.open_high != null
 
   return (
     <div className={`bg-card border border-border rounded-xl ${compact ? 'p-3' : 'p-5'} space-y-4`}>
@@ -149,7 +159,17 @@ export default function NextSessionPredictCard({ symbol, name, compact }: Props)
           <span className="text-base">🔮</span>
           <div>
             <div className="text-sm font-semibold text-white">Next Session Prediction</div>
-            <div className="text-[10px] text-muted">{name || pred.company_name} · {pred.session_date}</div>
+            <div className="text-[10px] text-muted flex items-center gap-1.5">
+              {name || pred.company_name} · {pred.session_date}
+              {pred.prediction_mode && pred.prediction_mode !== 'overnight' && (
+                <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold border ${
+                  pred.prediction_mode === 'intraday' ? 'bg-amber-950 border-amber-700 text-amber-400' :
+                  'bg-blue-950 border-blue-800 text-blue-400'
+                }`}>
+                  {pred.prediction_mode === 'intraday' ? '📈 Intraday' : '🌙 End-of-Day'}
+                </span>
+              )}
+            </div>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -168,47 +188,37 @@ export default function NextSessionPredictCard({ symbol, name, compact }: Props)
         </div>
       </div>
 
-      {/* Range bar */}
-      <div>
-        <div className="flex justify-between text-[10px] text-muted mb-1">
-          <span>Low ₹{fmt(r.low)}</span>
-          <span className="text-white font-semibold">Base ₹{fmt(r.base)}</span>
-          <span>High ₹{fmt(r.high)}</span>
-        </div>
-        {/* Bar container — extra top padding for the CMP label above */}
-        <div className="relative pt-5">
-          {/* CMP label pinned above the bar */}
-          <div className="absolute top-0 flex flex-col items-center"
-               style={{ left: `${Math.max(2, Math.min(94, currPos))}%`, transform: 'translateX(-50%)' }}>
-            <span className="text-[10px] font-bold text-blue-400 whitespace-nowrap bg-slate-900 px-1 rounded">
-              ₹{fmt(r.current_price)}
-            </span>
-            <span className="text-blue-400 text-[9px] leading-none">▼</span>
+      {/* Two range bars */}
+      <div className="space-y-4">
+        {/* Opening Range */}
+        {hasOpen && (
+          <div className="bg-slate-800/40 rounded-xl p-3">
+            <SmartRangeBar
+              low={r.open_low!} base={r.open_base!} high={r.open_high!}
+              cmp={r.current_price}
+              label="🔔 Opening Range (9:15 AM)"
+              sublabel={r.open_width != null ? `±${(r.open_width/2).toFixed(0)} pts range` : undefined}
+              biasNote={r.open_gap_pts != null
+                ? `Expected gap: ${r.open_gap_pts >= 0 ? '+' : ''}${r.open_gap_pts.toFixed(0)} pts  (GIFT Nifty + US + global cues)`
+                : undefined}
+              biasColor={r.open_gap_pts != null ? (r.open_gap_pts >= 0 ? 'text-score-green' : 'text-score-red') : undefined}
+            />
+            {r.large_move && (
+              <div className="mt-1.5 text-[9px] text-amber-400 font-bold">⚡ Large move expected</div>
+            )}
           </div>
+        )}
 
-          <div className="relative h-5 bg-slate-700 rounded-full overflow-hidden">
-            {/* Coloured range fill */}
-            <div className={`absolute inset-y-0 left-0 right-0 ${up ? 'bg-green-900/60' : down ? 'bg-red-900/60' : 'bg-blue-900/40'}`} />
-            {/* Base marker — white line */}
-            <div className="absolute top-0 bottom-0 w-0.5 bg-white/70"
-                 style={{ left: `${Math.max(1, Math.min(99, basePos))}%` }} />
-            {/* CMP marker — solid blue bar inside the range */}
-            <div className="absolute top-0 bottom-0 w-1.5 bg-blue-400 rounded"
-                 style={{ left: `${Math.max(0, Math.min(98, currPos))}%` }} />
-          </div>
-        </div>
-
-        {/* Below bar: IV info + bias + position note */}
-        <div className="flex justify-between text-[10px] mt-1">
-          <span className="text-muted">1SD range · IV {r.iv_used}%</span>
-          <span className={`font-medium ${
-            currPos > 85 ? 'text-score-red' : currPos < 15 ? 'text-score-green' :
-            currPos > 65 ? 'text-amber-400' : 'text-slate-400'
-          }`}>
-            CMP is {currPos > 85 ? 'near High' : currPos < 15 ? 'near Low' :
-                    currPos > 65 ? 'upper range' : currPos < 35 ? 'lower range' : 'mid-range'}
-          </span>
-          <span className={dirColor}>Bias {r.bias_pct >= 0 ? '+' : ''}{r.bias_pct.toFixed(2)}%</span>
+        {/* Closing Range */}
+        <div className="bg-slate-800/40 rounded-xl p-3">
+          <SmartRangeBar
+            low={r.low} base={r.base} high={r.high}
+            cmp={r.current_price}
+            label="🎯 Closing Range (3:30 PM)"
+            sublabel={r.close_width != null ? `±${(r.close_width/2).toFixed(0)} pts range` : undefined}
+            biasNote={`Bias ${r.bias_pct >= 0 ? '+' : ''}${r.bias_pct.toFixed(2)}%`}
+            biasColor={dirColor}
+          />
         </div>
       </div>
 
@@ -300,6 +310,11 @@ export default function NextSessionPredictCard({ symbol, name, compact }: Props)
       <div className="text-[9px] text-slate-600 text-center">
         IV-based statistical range · Not financial advice · Outside market hours only
       </div>
+
+      {/* Constituent-based prediction — only for tracked indices */}
+      {['^NSEI', '^NSEBANK', '^BSESN'].includes(symbol) && (
+        <ConstituentsPredictCard symbol={symbol} name={name} compact={compact} />
+      )}
     </div>
   )
 }

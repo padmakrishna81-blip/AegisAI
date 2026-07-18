@@ -6,7 +6,6 @@ import { RadarChart, PolarGrid, PolarAngleAxis, Radar, ResponsiveContainer, Tool
 import client from '../api/client'
 import { useWatchlistStore } from '../store/watchlistStore'
 import GlobalStockDetailModal from '../components/GlobalStockDetailModal'
-import NextSessionPredictCard from '../components/NextSessionPredictCard'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -1318,17 +1317,6 @@ export default function Market() {
       {tab === 'global' && (
         <div className="space-y-4">
           <GiftNiftyCard />
-          {/* Benchmark Predictions */}
-          <div className="bg-card border border-border rounded-xl p-4">
-            <div className="text-sm font-semibold text-white mb-4 flex items-center gap-2">
-              <span>🔮</span> Next Session Predictions — Benchmark Indices
-            </div>
-            <div className="grid grid-cols-3 gap-4">
-              <NextSessionPredictCard symbol="^NSEI"    name="NIFTY 50"  compact />
-              <NextSessionPredictCard symbol="^NSEBANK" name="Bank Nifty" compact />
-              <NextSessionPredictCard symbol="^BSESN"   name="Sensex"    compact />
-            </div>
-          </div>
           <GlobalIndicesTab />
         </div>
       )}

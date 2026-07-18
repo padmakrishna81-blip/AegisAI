@@ -46,5 +46,11 @@
     "name": "International Business Machines",
     "exchange": "NYSE",
     "sector": "Technology"
+  },
+  {
+    "symbol": "ASML",
+    "name": "ASML Holding N.V. - New York Re",
+    "exchange": "NASDAQ",
+    "sector": "Technology"
   }
 ]

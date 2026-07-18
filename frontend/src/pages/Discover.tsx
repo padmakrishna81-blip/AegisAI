@@ -610,7 +610,11 @@ function EtfTab({ onViewDetails }: { onViewDetails: (s: string) => void }) {
   const [selectedDetail, setSelectedDetail] = useState<string | null>(null)
   const [detailData, setDetailData] = useState<Record<string, unknown> | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
-  const [view, setView] = useState<'etfs' | 'indices'>('etfs')
+  const [view, setView] = useState<'etfs' | 'indices' | 'constituents'>('etfs')
+  const [constIndex, setConstIndex] = useState<'nifty' | 'banknifty' | 'sensex'>('nifty')
+  const [constData, setConstData] = useState<Record<string,unknown> | null>(null)
+  const [constLoading, setConstLoading] = useState(false)
+  const [openSectors, setOpenSectors] = useState<Set<string>>(new Set())
   const { add, remove, has } = useWatchlistStore()
 
   useEffect(() => {
@@ -624,7 +628,7 @@ function EtfTab({ onViewDetails }: { onViewDetails: (s: string) => void }) {
       .finally(() => setLoading(false))
   }, [])
 
-  const allItems = view === 'etfs' ? etfs : indices
+  const allItems = view === 'etfs' ? etfs : (view === 'indices' ? indices : [])
 
   const viewDetail = async (symbol: string) => {
     setSelectedDetail(symbol)
@@ -643,6 +647,18 @@ function EtfTab({ onViewDetails }: { onViewDetails: (s: string) => void }) {
   const findEntry = (sym: string) =>
     [...etfs, ...indices].find((e) => e.symbol === sym)
 
+  const loadConstituents = (idx: 'nifty' | 'banknifty' | 'sensex') => {
+    setConstIndex(idx); setConstLoading(true); setConstData(null); setOpenSectors(new Set())
+    client.get(`/predict/constituents-view/${idx}`)
+      .then(r => { setConstData(r.data); setOpenSectors(new Set((r.data.sectors as {sector:string}[]).map(s => s.sector))) })
+      .catch(() => setConstData({ error: 'Failed to load' }))
+      .finally(() => setConstLoading(false))
+  }
+
+  const toggleSector = (sec: string) => setOpenSectors(prev => {
+    const n = new Set(prev); n.has(sec) ? n.delete(sec) : n.add(sec); return n
+  })
+
   // Top 6 featured ETFs always shown first
   const TOP_ETF_SYMBOLS = ['NIFTYBEES.NS', 'BANKBEES.NS', 'GOLDBEES.NS', 'MOM100.NS', 'ITBEES.NS', 'PHARMABEES.NS']
   const topEtfs = TOP_ETF_SYMBOLS.map(s => etfs.find(e => e.symbol === s)).filter(Boolean) as EtfEntry[]
@@ -651,17 +667,154 @@ function EtfTab({ onViewDetails }: { onViewDetails: (s: string) => void }) {
     <div className="space-y-4">
       {/* View toggle */}
       <div className="flex gap-2">
-        {(['etfs', 'indices'] as const).map(v => (
-          <button key={v} onClick={() => setView(v)}
+        {([
+          { key: 'etfs',         label: 'Tradeable ETFs' },
+          { key: 'indices',      label: 'Benchmark Indices' },
+          { key: 'constituents', label: '🧩 Constituents' },
+        ] as {key: 'etfs'|'indices'|'constituents'; label: string}[]).map(({ key, label }) => (
+          <button key={key} onClick={() => { setView(key); if (key === 'constituents' && !constData) loadConstituents('nifty') }}
             className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
-              view === v ? 'bg-blue-600 border-blue-500 text-white' : 'bg-card border-border text-muted hover:text-white'
+              view === key ? 'bg-blue-600 border-blue-500 text-white' : 'bg-card border-border text-muted hover:text-white'
             }`}>
-            {v === 'etfs' ? 'Tradeable ETFs' : 'Benchmark Indices'}
+            {label}
           </button>
         ))}
       </div>
 
-      {loading && (
+      {/* Constituents view */}
+      {view === 'constituents' && (
+        <div className="space-y-3">
+          {/* Index selector */}
+          <div className="flex gap-2">
+            {([
+              { key: 'nifty',     label: 'NIFTY 50'   },
+              { key: 'banknifty', label: 'Bank Nifty' },
+              { key: 'sensex',    label: 'Sensex'      },
+            ] as {key:'nifty'|'banknifty'|'sensex'; label:string}[]).map(({ key, label }) => (
+              <button key={key} onClick={() => loadConstituents(key)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                  constIndex === key ? 'bg-slate-600 border-slate-500 text-white' : 'bg-card border-border text-muted hover:text-white'
+                }`}>
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {constLoading && <div className="text-center py-8 text-muted text-sm animate-pulse">Loading constituents…</div>}
+
+          {constData && !constLoading && (() => {
+            const d = constData as {
+              index_name: string; index_cmp: number; index_prev_close: number | null;
+              index_actual_move: number | null; total_stocks: number;
+              sectors: {sector:string; stock_count:number; total_weight:number; total_contrib_pts:number;
+                stocks:{symbol:string; weight_pct:number; cmp:number|null; change_pct:number|null; contrib_pts:number|null; sector:string}[]}[]
+            }
+            const totalContrib = d.sectors?.reduce((s,sec) => s + (sec.total_contrib_pts||0), 0) || 0
+            const totalWeight  = d.sectors?.reduce((s,sec) => s + (sec.total_weight||0), 0) || 0
+            const actualMove   = d.index_actual_move
+
+            return (
+              <div className="bg-card border border-border rounded-xl overflow-hidden">
+                {/* Header */}
+                <div className="px-4 py-3 bg-slate-800/40 border-b border-border flex items-center justify-between">
+                  <div>
+                    <span className="text-sm font-semibold text-white">{d.index_name}</span>
+                    <span className="text-xs text-muted ml-2">{d.total_stocks} stocks · CMP {d.index_cmp?.toLocaleString('en-IN')}</span>
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={() => setOpenSectors(new Set(d.sectors.map(s=>s.sector)))} className="text-[10px] text-muted hover:text-white">expand all</button>
+                    <button onClick={() => setOpenSectors(new Set())} className="text-[10px] text-muted hover:text-white">collapse all</button>
+                  </div>
+                </div>
+
+                {/* Sector groups */}
+                {d.sectors?.map(sec => (
+                  <div key={sec.sector} className="border-b border-border/40 last:border-0">
+                    {/* Sector header — clickable */}
+                    <button onClick={() => toggleSector(sec.sector)}
+                      className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-slate-800/20 transition-colors">
+                      <div className="flex items-center gap-3 text-left">
+                        <span className="text-xs font-semibold text-white">{sec.sector}</span>
+                        <span className="text-[10px] text-muted">{sec.stock_count} stocks · {sec.total_weight.toFixed(1)}% wt</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className={`text-xs font-bold ${(sec.total_contrib_pts||0) >= 0 ? 'text-score-green' : 'text-score-red'}`}>
+                          {(sec.total_contrib_pts||0) >= 0 ? '+' : ''}{(sec.total_contrib_pts||0).toFixed(1)} pts
+                        </span>
+                        <span className="text-muted text-xs">{openSectors.has(sec.sector) ? '▲' : '▼'}</span>
+                      </div>
+                    </button>
+
+                    {/* Stocks table */}
+                    {openSectors.has(sec.sector) && (
+                      <div className="bg-slate-900/30">
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="text-[10px] text-muted border-b border-border/30">
+                              <th className="text-left px-6 py-1.5">Stock</th>
+                              <th className="text-right px-3 py-1.5">Wt%</th>
+                              <th className="text-right px-3 py-1.5">CMP</th>
+                              <th className="text-right px-3 py-1.5">Day %</th>
+                              <th className="text-right px-4 py-1.5">Contrib pts</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {sec.stocks.map(s => (
+                              <tr key={s.symbol} className="border-b border-border/20 hover:bg-slate-800/20">
+                                <td className="px-6 py-2 font-medium text-white">{s.symbol}</td>
+                                <td className="px-3 py-2 text-right text-slate-400">{s.weight_pct}%</td>
+                                <td className="px-3 py-2 text-right text-slate-300">
+                                  {s.cmp ? `₹${s.cmp.toLocaleString('en-IN', {maximumFractionDigits:1})}` : '—'}
+                                </td>
+                                <td className={`px-3 py-2 text-right font-medium ${(s.change_pct||0) >= 0 ? 'text-score-green' : 'text-score-red'}`}>
+                                  {s.change_pct != null ? `${s.change_pct >= 0 ? '+' : ''}${s.change_pct.toFixed(2)}%` : '—'}
+                                </td>
+                                <td className={`px-4 py-2 text-right font-bold ${(s.contrib_pts||0) >= 0 ? 'text-score-green' : 'text-score-red'}`}>
+                                  {s.contrib_pts != null ? `${s.contrib_pts >= 0 ? '+' : ''}${s.contrib_pts.toFixed(1)}` : '—'}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                ))}
+
+                {/* Total row */}
+                <div className="px-4 py-3 bg-slate-800/50 border-t border-border space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-white">Total ({d.total_stocks} stocks · {totalWeight.toFixed(1)}% coverage)</span>
+                    <div className="flex items-center gap-6">
+                      <div className="text-right">
+                        <div className={`text-sm font-bold ${totalContrib >= 0 ? 'text-score-green' : 'text-score-red'}`}>
+                          {totalContrib >= 0 ? '+' : ''}{totalContrib.toFixed(1)} pts
+                          <span className="text-[10px] text-muted font-normal ml-1">sum of constituents</span>
+                        </div>
+                      </div>
+                      {actualMove != null && (
+                        <div className="text-right">
+                          <div className={`text-sm font-bold ${actualMove >= 0 ? 'text-score-green' : 'text-score-red'}`}>
+                            {actualMove >= 0 ? '+' : ''}{actualMove.toFixed(2)} pts
+                            <span className="text-[10px] text-muted font-normal ml-1">actual index move</span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  {actualMove != null && (
+                    <div className="text-[10px] text-muted">
+                      Deviation: {(totalContrib - actualMove).toFixed(1)} pts — approximate free-float weights cause small mismatch vs NSE official
+                    </div>
+                  )}
+                </div>
+              </div>
+            )
+          })()}
+        </div>
+      )}
+
+      {loading && view !== 'constituents' && (
         <div className="bg-card border border-border rounded-xl p-10 text-center text-muted text-sm">
           Loading ETF data…
         </div>
@@ -756,7 +909,7 @@ function EtfTab({ onViewDetails }: { onViewDetails: (s: string) => void }) {
       )}
 
       {/* Full table */}
-      {!loading && allItems.length > 0 && (
+      {!loading && view !== 'constituents' && allItems.length > 0 && (
         <div className="bg-card border border-border rounded-xl overflow-hidden">
           <div className="px-5 py-3 border-b border-border flex items-center justify-between">
             <span className="text-sm font-semibold text-white">

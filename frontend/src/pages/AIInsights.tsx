@@ -29,7 +29,12 @@ function PredictionLeaderboard() {
   const [expanded, setExpanded] = useState(false)
   const [filling, setFilling] = useState(false)
   const [fillMsg, setFillMsg] = useState('')
-  const [detailSym, setDetailSym] = useState<string | null>(null)
+  const [detailSym, setDetailSym]           = useState<string | null>(null)
+  const [constHistory, setConstHistory]     = useState<Record<string, unknown>[]>([])
+
+  const CONST_INDEX_MAP: Record<string, string> = {
+    '^NSEI': 'nifty', '^NSEBANK': 'banknifty', '^BSESN': 'sensex',
+  }
 
   const load = () => {
     setLoading(true)
@@ -41,9 +46,17 @@ function PredictionLeaderboard() {
 
   const loadHistory = (sym: string) => {
     setDetailSym(sym)
+    setConstHistory([])
     client.get(`/predict/history/${encodeURIComponent(sym)}?days=30`)
       .then(r => setHistory(r.data.predictions || []))
       .catch(() => setHistory([]))
+    // Also load constituent history if it's a tracked index
+    const constKey = CONST_INDEX_MAP[sym]
+    if (constKey) {
+      client.get(`/predict/constituents-history/${constKey}?days=30`)
+        .then(r => setConstHistory(r.data.predictions || []))
+        .catch(() => setConstHistory([]))
+    }
   }
 
   const fillActuals = async () => {
@@ -197,36 +210,85 @@ function PredictionLeaderboard() {
                 </table>
               </div>
 
-              {/* Per-symbol prediction history */}
+              {/* Per-symbol prediction history — two columns */}
               {detailSym && history.length > 0 && (
-                <div className="bg-slate-900/60 rounded-xl p-4 space-y-2">
-                  <div className="text-xs font-semibold text-white mb-3">
+                <div className="bg-slate-900/60 rounded-xl p-4 space-y-3">
+                  <div className="text-xs font-semibold text-white">
                     {detailSym.replace('.NS','').replace('^','')} — last {history.length} predictions
                   </div>
-                  <div className="space-y-1.5 max-h-64 overflow-y-auto">
+
+                  {/* Two-column header */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="text-[9px] text-muted font-semibold uppercase tracking-wide">Top-Down (Macro)</div>
+                    <div className="text-[9px] text-muted font-semibold uppercase tracking-wide">
+                      Constituent-Based {constHistory.length === 0 && CONST_INDEX_MAP[detailSym] ? <span className="text-slate-600 normal-case">— no data yet, click Sync</span> : ''}
+                    </div>
+                  </div>
+
+                  <div className="space-y-1 max-h-72 overflow-y-auto">
                     {history.map((p: Record<string,unknown>, i) => {
-                      const range = p.range as Record<string,unknown>
-                      const acc = p.accuracy as string | null
+                      const range   = p.range as Record<string,unknown>
+                      const acc     = p.accuracy as string | null
+                      const oacc    = p.open_accuracy as string | null
+                      // Find matching constituent prediction by session_date
+                      const cPred   = constHistory.find((c: Record<string,unknown>) => c.session_date === p.session_date) as Record<string,unknown> | undefined
+                      const cAcc    = cPred?.accuracy as string | null
+                      const cOAcc   = cPred?.open_accuracy as string | null
+
+                      const accBadgeCls = (a: string | null) =>
+                        a === 'HIT'  ? 'bg-green-950 text-green-400 border-green-800' :
+                        a === 'NEAR' ? 'bg-amber-950 text-amber-400 border-amber-800' :
+                        a === 'MISS' ? 'bg-red-950 text-red-400 border-red-800' : ''
+
                       return (
-                        <div key={i} className="flex items-center gap-3 text-xs border-b border-border/20 pb-1.5 last:border-0">
-                          <span className="text-muted w-20 shrink-0">{(p.session_date as string)}</span>
-                          <span className="text-slate-300 w-16 shrink-0">
-                            ₹{(range?.low as number)?.toFixed(0)}–{(range?.high as number)?.toFixed(0)}
-                          </span>
-                          <span className="text-blue-400 shrink-0">
-                            base ₹{(range?.base as number)?.toFixed(0)}
-                          </span>
-                          {p.actual_close != null ? (
-                            <span className="text-white shrink-0">actual ₹{p.actual_close as number}</span>
+                        <div key={i} className="grid grid-cols-2 gap-3 border-b border-border/20 pb-1.5 last:border-0">
+                          {/* Left: top-down */}
+                          <div className="flex items-center gap-2 text-[10px]">
+                            <span className="text-muted w-20 shrink-0">{(p.session_date as string)}</span>
+                            <div className="flex-1 min-w-0">
+                              <span className="text-slate-400">
+                                {(range?.low as number)?.toFixed(0)}–{(range?.high as number)?.toFixed(0)}
+                              </span>
+                              {p.actual_close != null ? (
+                                <span className="text-white ml-1">act {p.actual_close as number}</span>
+                              ) : (
+                                <span className="text-muted ml-1">pending</span>
+                              )}
+                            </div>
+                            <div className="flex flex-col items-end gap-0.5 shrink-0">
+                              {acc ? (
+                                <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold border ${accBadgeCls(acc)}`}>{acc}</span>
+                              ) : <span className="text-[9px] text-slate-600">—</span>}
+                              {oacc && (
+                                <span className={`px-1 py-0.5 rounded text-[8px] font-bold border ${accBadgeCls(oacc)}`}>O:{oacc}</span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Right: constituent */}
+                          {cPred ? (
+                            <div className="flex items-center gap-2 text-[10px]">
+                              <div className="flex-1 min-w-0">
+                                <span className="text-slate-400">
+                                  {(cPred.close_low as number)?.toFixed(0)}–{(cPred.close_high as number)?.toFixed(0)}
+                                </span>
+                                {cPred.actual_close != null ? (
+                                  <span className="text-white ml-1">act {cPred.actual_close as number}</span>
+                                ) : (
+                                  <span className="text-muted ml-1">pending</span>
+                                )}
+                              </div>
+                              <div className="flex flex-col items-end gap-0.5 shrink-0">
+                                {cAcc ? (
+                                  <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold border ${accBadgeCls(cAcc)}`}>{cAcc}</span>
+                                ) : <span className="text-[9px] text-slate-600">—</span>}
+                                {cOAcc && (
+                                  <span className={`px-1 py-0.5 rounded text-[8px] font-bold border ${accBadgeCls(cOAcc)}`}>O:{cOAcc}</span>
+                                )}
+                              </div>
+                            </div>
                           ) : (
-                            <span className="text-muted shrink-0">pending</span>
-                          )}
-                          {acc ? (
-                            <span className={`ml-auto px-2 py-0.5 rounded text-[10px] font-bold border ${accBadge(acc)}`}>
-                              {acc}
-                            </span>
-                          ) : (
-                            <span className="ml-auto text-[10px] text-muted">not evaluated</span>
+                            <div className="text-[10px] text-slate-700 italic flex items-center">no constituent data</div>
                           )}
                         </div>
                       )
@@ -866,6 +928,25 @@ export default function AIInsights() {
           Ask predefined questions about global markets, news, and sectors — or analyze any stock with AI.
           Configure your API key in Settings for stock-level AI verdicts.
         </p>
+      </div>
+
+      {/* Benchmark Index Predictions */}
+      <div className="bg-card border border-border rounded-xl p-4">
+        <div className="text-sm font-semibold text-white mb-4 flex items-center gap-2">
+          <span>🔮</span> Next Session Predictions — Benchmark Indices
+        </div>
+        <div className="grid grid-cols-3 gap-4">
+          {[
+            { symbol: '^NSEI',    name: 'NIFTY 50'   },
+            { symbol: '^NSEBANK', name: 'Bank Nifty' },
+            { symbol: '^BSESN',   name: 'Sensex'     },
+          ].map(({ symbol, name }) => (
+            <div key={symbol}>
+              <div className="text-xs font-semibold text-slate-400 mb-1.5 px-1">{name}</div>
+              <NextSessionPredictCard symbol={symbol} name={name} compact />
+            </div>
+          ))}
+        </div>
       </div>
 
       {/* Prediction Accuracy Tracker */}

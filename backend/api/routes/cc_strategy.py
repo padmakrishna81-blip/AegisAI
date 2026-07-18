@@ -216,7 +216,7 @@ LOT_SIZES: dict[str, int] = {
     "ONGC":     2250,  "PFC":       1300,  "PIDILITIND": 500, "PNB":       8000,
     "POWERGRID":1900,  "BANKBARODA":2925,  "RECLTD":    1575, "RELIANCE":   500,
     "SAIL":     4700,  "SBIN":       750,  "SBILIFE":    375, "SHRIRAMFIN": 825,
-    "SUNPHARMA": 350,  "TATACONSUM": 550,  "TATAMOTORS":1400, "TATAPOWER": 1450,
+    "SUNPHARMA": 350,  "TATACONSUM": 550,  "TMPV":1400, "TATAPOWER": 1450,
     "TATASTEEL":2750,  "TCS":        225,  "TECHM":      600, "TITAN":      175,
     "ULTRACEMCO": 50,  "VEDL":      1150,  "WIPRO":     3000, "ETERNAL":   4500,
     "BHEL":     2625,  "CANBK":     6750,  "CESC":       600, "ZYDUSLIFE":  900,

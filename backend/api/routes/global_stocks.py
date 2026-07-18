@@ -309,35 +309,81 @@ async def global_stock_detail(symbol: str):
         except Exception:
             pass
 
-        # --- Year-end targets via LLM ---
+        # --- Year-end targets: rule-based always, LLM enhancement if configured ---
         try:
-            from ai.llm_client import call_llm, is_configured
-            if is_configured() and current_price:
-                now_year = datetime.now().year
-                prompt = f"""You are a financial analyst. Given the following data about {symbol} ({result['name']}):
-- Current Price: {current_price}
-- Sector: {sector}, Industry: {industry}
-- Analyst Target Mean: {target_mean}, High: {target_high}, Low: {target_low}
-- Number of Analysts: {info.get('numberOfAnalystOpinions', 'N/A')}
-- Revenue Growth: {info.get('revenueGrowth', 'N/A')}
-- Earnings Growth: {info.get('earningsGrowth', 'N/A')}
-- Profit Margins: {info.get('profitMargins', 'N/A')}
-- Forward PE: {info.get('forwardPE', 'N/A')}
-- Trailing PE: {info.get('trailingPE', 'N/A')}
+            now_year = datetime.now().year
+            if current_price:
+                # Pull fundamentals for the model
+                rev_growth   = float(info.get("revenueGrowth")   or 0) * 100   # e.g. 0.12 → 12%
+                earn_growth  = float(info.get("earningsGrowth")  or 0) * 100
+                fwd_pe       = float(info.get("forwardPE")        or 0)
+                trail_pe     = float(info.get("trailingPE")       or 0)
+                profit_margin= float(info.get("profitMargins")    or 0) * 100
+                beta         = float(info.get("beta")             or 1.0)
 
-Provide year-end price targets for the next 3 years ({now_year}, {now_year+1}, {now_year+2}).
-For each year, provide LOW (bear case), BASE (most likely), and HIGH (bull case) estimates.
+                # Use analyst targets if available, else derive from fundamentals
+                if target_mean and target_mean > 0:
+                    # Year 1: analyst mean target
+                    base1 = round(float(target_mean), 2)
+                    low1  = round(float(target_low)  if target_low  else base1 * 0.85, 2)
+                    high1 = round(float(target_high) if target_high else base1 * 1.15, 2)
+                else:
+                    # Derive from revenue + earnings growth estimate
+                    growth_rate = max(0, (rev_growth + earn_growth) / 2) / 100
+                    growth_rate = min(growth_rate, 0.30)  # cap at 30%
+                    base1 = round(current_price * (1 + growth_rate), 2)
+                    low1  = round(current_price * (1 + growth_rate * 0.4), 2)
+                    high1 = round(current_price * (1 + growth_rate * 1.6), 2)
 
-Reply ONLY in this exact JSON format, no other text:
-{{"methodology": "brief 1-line explanation", "targets": [{{"year": {now_year}, "low": X, "base": Y, "high": Z}}, {{"year": {now_year+1}, "low": X, "base": Y, "high": Z}}, {{"year": {now_year+2}, "low": X, "base": Y, "high": Z}}]}}"""
+                # Year 2 & 3: compound from year 1 with decaying growth
+                # Bear case uses slower growth / mean-reversion
+                # Bull case uses sustained momentum
+                growth_y2 = max(0.03, (base1 / current_price - 1) * 0.75)
+                growth_y3 = max(0.03, growth_y2 * 0.80)
 
-                response = call_llm(prompt, system="You are a concise financial analyst. Reply only with valid JSON.", max_tokens=300)
-                # Try to parse JSON from response
-                import re
-                json_match = re.search(r'\{.*\}', response, re.DOTALL)
-                if json_match:
-                    targets_data = json.loads(json_match.group())
-                    result["year_end_targets"] = targets_data
+                base2 = round(base1 * (1 + growth_y2), 2)
+                low2  = round(low1  * (1 + growth_y2 * 0.5), 2)
+                high2 = round(high1 * (1 + growth_y2 * 1.3), 2)
+
+                base3 = round(base2 * (1 + growth_y3), 2)
+                low3  = round(low2  * (1 + growth_y3 * 0.5), 2)
+                high3 = round(high2 * (1 + growth_y3 * 1.3), 2)
+
+                # Build methodology note
+                if target_mean:
+                    method = f"Year 1 from analyst consensus ({len(info.get('numberOfAnalystOpinions') or []) if isinstance(info.get('numberOfAnalystOpinions'), list) else info.get('numberOfAnalystOpinions', 'N/A')} analysts). Years 2–3 extrapolated at declining growth rate."
+                else:
+                    method = f"Derived from revenue growth ({rev_growth:.1f}%) and earnings growth ({earn_growth:.1f}%). No analyst consensus available."
+
+                rule_based_targets = {
+                    "methodology": method,
+                    "ai_powered": False,
+                    "targets": [
+                        {"year": now_year,     "low": low1, "base": base1, "high": high1},
+                        {"year": now_year + 1, "low": low2, "base": base2, "high": high2},
+                        {"year": now_year + 2, "low": low3, "base": base3, "high": high3},
+                    ]
+                }
+                result["year_end_targets"] = rule_based_targets
+
+                # Try LLM enhancement if configured — overwrites rule-based if successful
+                from ai.llm_client import call_llm, is_configured
+                if is_configured():
+                    import re
+                    prompt = (
+                        f"Financial analyst. Data for {symbol} ({result['name']}):\n"
+                        f"Price: {current_price}, Sector: {sector}, FwdPE: {fwd_pe}, "
+                        f"RevGrowth: {rev_growth:.1f}%, EarnGrowth: {earn_growth:.1f}%, "
+                        f"AnalystMean: {target_mean}, High: {target_high}, Low: {target_low}\n"
+                        f"Give year-end targets for {now_year}, {now_year+1}, {now_year+2}.\n"
+                        f'Reply ONLY: {{"methodology":"1 line","ai_powered":true,"targets":[{{"year":{now_year},"low":X,"base":Y,"high":Z}},{{"year":{now_year+1},"low":X,"base":Y,"high":Z}},{{"year":{now_year+2},"low":X,"base":Y,"high":Z}}]}}'
+                    )
+                    response = call_llm(prompt, system="Concise financial analyst. Valid JSON only.", max_tokens=250)
+                    m = re.search(r'\{.*\}', response, re.DOTALL)
+                    if m:
+                        parsed = json.loads(m.group())
+                        if parsed.get("targets") and len(parsed["targets"]) == 3:
+                            result["year_end_targets"] = parsed
         except Exception:
             pass
 

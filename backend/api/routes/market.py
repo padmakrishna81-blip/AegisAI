@@ -172,12 +172,12 @@ async def get_all_sectors():
     tasks = [get_one(sec, sym) for sec, sym in sector_rep.items()]
     results = await asyncio.gather(*tasks)
 
-    return {
+    return JSONResponse(content=clean_for_json({
         "sectors": [
             {"sector": sec, "score": r.get("score", 50), "breakdown": r.get("breakdown", {})}
             for sec, r in sorted(results, key=lambda x: x[1].get("score", 0), reverse=True)
         ]
-    }
+    }))
 
 
 # ─── Global Indices ────────────────────────────────────────────────────────────

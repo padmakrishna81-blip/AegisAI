@@ -31,7 +31,7 @@ def convert_numpy(obj):
         return None if (math.isnan(obj) or math.isinf(obj)) else obj
     return obj
 
-from api.routes import analyze, discover, portfolio, covered_calls, market, ai_advisor, settings, validate, etf, paper_trade, global_stocks, nse_search, cc_strategy, predict
+from api.routes import analyze, discover, portfolio, covered_calls, market, ai_advisor, settings, validate, etf, paper_trade, global_stocks, nse_search, cc_strategy, predict, predict_constituents
 from api.routes import auth as auth_routes
 
 app = FastAPI(
@@ -63,6 +63,7 @@ app.include_router(auth_routes.router, prefix="/api", tags=["auth"])
 app.include_router(global_stocks.router, prefix="/api", tags=["global-stocks"])
 app.include_router(nse_search.router, prefix="/api", tags=["nse-search"])
 app.include_router(predict.router, prefix="/api", tags=["predict"])
+app.include_router(predict_constituents.router, prefix="/api", tags=["predict-constituents"])
 
 
 # ── Auto-fill actuals scheduler ───────────────────────────────────────────────

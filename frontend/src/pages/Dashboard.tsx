@@ -22,6 +22,26 @@ export default function Dashboard() {
   useEffect(() => {
     client.get('/market/macro').then(r => setMacro(r.data)).catch(() => {})
     client.get('/ai/briefing').then(r => setBriefing(r.data)).catch(() => {})
+
+    // Background: pre-generate full predictions for all Nifty/BankNifty/Sensex constituents
+    // Fire-and-forget — skips already-cached stocks, no spinner, no blocking
+    const constituents = [
+      // All Nifty 50
+      'RELIANCE.NS','HDFCBANK.NS','ICICIBANK.NS','INFY.NS','TCS.NS',
+      'BHARTIARTL.NS','KOTAKBANK.NS','SBIN.NS','ITC.NS','LT.NS',
+      'AXISBANK.NS','BAJFINANCE.NS','HCLTECH.NS','MARUTI.NS','SUNPHARMA.NS',
+      'HINDUNILVR.NS','M&M.NS','BAJAJFINSV.NS','TMPV.NS','ONGC.NS',
+      'ADANIPORTS.NS','WIPRO.NS','BAJAJ-AUTO.NS','CIPLA.NS','DRREDDY.NS',
+      'NTPC.NS','COALINDIA.NS','TITAN.NS','POWERGRID.NS','HINDALCO.NS',
+      'ULTRACEMCO.NS','ETERNAL.NS','GRASIM.NS','INDUSINDBK.NS','JSWSTEEL.NS',
+      'APOLLOHOSP.NS','EICHERMOT.NS','DIVISLAB.NS','HDFCLIFE.NS','SBILIFE.NS',
+      'HEROMOTOCO.NS','TECHM.NS','ASIANPAINT.NS','ADANIENT.NS','NESTLEIND.NS',
+      'BRITANNIA.NS','TATACONSUM.NS','TATASTEEL.NS','BEL.NS','BPCL.NS',
+      // BankNifty extras not in Nifty50
+      'BANDHANBNK.NS','FEDERALBNK.NS','IDFCFIRSTB.NS','AUBANK.NS','PNB.NS','BANKBARODA.NS',
+    ]
+    client.post('/predict/pre-generate', { symbols: constituents, force: false })
+      .catch(() => {})  // silent — never blocks dashboard
   }, [])
 
   const marketMode = macro?.market_mode || 'NEUTRAL'

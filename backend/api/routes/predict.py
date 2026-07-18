@@ -11,15 +11,18 @@ Architecture:
   - Accuracy tracked: HIT (inside range) / NEAR (within 0.5% outside) / MISS
 """
 
+import asyncio
 import json
 import math
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, date, time as dtime, timezone, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from api.utils import clean_for_json
 
 router = APIRouter()
@@ -153,6 +156,55 @@ def _fetch_global_factors() -> dict:
     elif bias <= -1.5: factors["global_bias"] = "bearish"
     else:              factors["global_bias"] = "neutral"
 
+    # ── Intraday signals (only during market hours 9:15–15:30 IST) ────────────
+    now_ist = datetime.now(IST).time()
+    if dtime(9, 15) <= now_ist <= dtime(15, 30):
+        try:
+            import yfinance as yf
+            # Nifty intraday momentum — current vs prev_close
+            nsei = yf.Ticker("^NSEI").fast_info
+            nifty_cmp   = float(getattr(nsei, "last_price", None) or 0)
+            nifty_prev  = float(getattr(nsei, "previous_close", None) or 0)
+            if nifty_cmp > 0 and nifty_prev > 0:
+                intraday_chg_pct = round((nifty_cmp / nifty_prev - 1) * 100, 2)
+                factors["nifty_intraday_chg_pct"] = intraday_chg_pct
+                # Momentum carry-over: today's trend has 30% chance of continuation next day
+                factors["intraday_momentum_bias"] = round(intraday_chg_pct * 0.30, 2)
+                if abs(intraday_chg_pct) > 0.3:
+                    bias += intraday_chg_pct * 0.15
+                    factors["global_bias_score"] = round(bias, 1)
+        except Exception:
+            pass
+
+        # FII/DII provisional (NSE publishes ~3:15 PM)
+        if now_ist >= dtime(15, 10):
+            try:
+                import requests, time as _t
+                headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.nseindia.com/"}
+                s = requests.Session()
+                s.get("https://www.nseindia.com", headers=headers, timeout=6)
+                _t.sleep(0.3)
+                r = s.get("https://www.nseindia.com/api/fiidiiTradesEquity?type=fiiDii",
+                          headers=headers, timeout=8)
+                if r.status_code == 200:
+                    data = r.json()
+                    if isinstance(data, list) and len(data) > 0:
+                        today = data[0]
+                        fii_net = float(today.get("FII_NET_PURCHASE_SALES") or 0)
+                        dii_net = float(today.get("DII_NET_PURCHASE_SALES") or 0)
+                        factors["fii_net_cr"]  = round(fii_net / 1e7, 1)  # convert to Cr
+                        factors["dii_net_cr"]  = round(dii_net / 1e7, 1)
+                        combined = fii_net + dii_net
+                        if combined > 500e7:    bias += 0.5
+                        elif combined < -500e7: bias -= 0.5
+                        factors["global_bias_score"] = round(bias, 1)
+            except Exception:
+                pass
+
+        factors["mode"] = "intraday"
+    else:
+        factors["mode"] = "overnight" if now_ist < dtime(9, 15) else "end_of_day"
+
     return factors
 
 
@@ -252,189 +304,207 @@ def _compute_prediction(
     recent_news: Optional[list] = None,
 ) -> dict:
     """
-    Build a prediction dict with low/base/high for next session.
+    TWO narrow ranges per session — always recalculated fresh:
 
-    Range method:
-      1. IV-based 1-day 1SD move = price × (IV/100) × sqrt(1/252)
-      2. Bias = weighted sum of: overall score, RSI extremes,
-                MACD direction, global_bias_score, ATR%, news impact
-      3. Base = current_price × (1 + bias_shift)
-      4. Low  = base - 1SD_adjusted
-      5. High = base + 1SD_adjusted
+    OPENING RANGE (9:15 AM ±30 min):
+    - Base = prev_close + expected gap (GIFT Nifty + US market + evening news + global queues)
+    - Width = fixed ±50 pts for indices (±0.4% for stocks)
+    - Widens to ±100 pts only on high-impact events
+
+    CLOSING RANGE (end of day):
+    - Base = opening base + intraday drift (RSI, MACD, crude, sector flow)
+    - Width = historical daily ATR capped at ±100 pts (±0.8% for stocks)
+    - Total range always ≤ 200 pts for indices (≤ 1.6% for stocks)
+    - If strong signal pushes expected move >300 pts, base is shifted further,
+      range stays tight — direction clarity matters more than coverage
     """
     if current_price <= 0:
         return {}
 
-    iv = atm_iv or 30.0  # fallback 30% if IV unavailable
+    is_index = symbol.startswith("^")
+    iv       = atm_iv or (13.0 if is_index else 25.0)
+    overall  = scores.get("overall", 50)
+    rsi      = float(tech_indicators.get("rsi") or 50)
+    macd     = float(tech_indicators.get("macd") or 0)
+    atr_pct  = float(tech_indicators.get("atr_pct") or 1.0)
 
-    # 1-day 1SD move in price terms
-    one_sd = current_price * (iv / 100) * math.sqrt(1 / 252)
+    gift_gap   = float(global_factors.get("gift_nifty_gap") or 0)
+    sp500_chg  = float(global_factors.get("sp500_chg_pct")  or 0)
+    vix        = float(global_factors.get("vix")            or 18)
+    crude_chg  = float(global_factors.get("crude_chg_pct")  or 0)
+    gb_score   = float(global_factors.get("global_bias_score") or 0)
 
-    # ── Bias calculation ─────────────────────────────────────────────────────
-    bias_pct = 0.0
+    news_impact     = _scan_news_impact(recent_news or [])
+    news_bias       = float(news_impact.get("news_bias_score", 0))
+    bearish_alerts  = news_impact.get("bearish_alerts", [])
+    bullish_alerts  = news_impact.get("bullish_alerts", [])
+    high_impact     = len(bearish_alerts) > 0 or len(bullish_alerts) > 0
 
-    # Score-based bias (overall 0-100 → -0.5% to +0.5%)
-    overall = scores.get("overall", 50)
-    bias_pct += (overall - 50) / 100 * 0.5
+    # ── OPENING GAP (pts) ────────────────────────────────────────────────────
+    # Considers: GIFT Nifty, US close, Asian queues (proxied via global_bias),
+    # overnight news, and crude/dollar move since previous Indian close.
+    # Each factor scaled to historical contribution to Indian open gap.
 
-    # RSI extremes
-    rsi = tech_indicators.get("rsi")
-    if rsi is not None:
-        if rsi > 75:   bias_pct -= 0.15   # overbought → likely pullback
-        elif rsi < 30: bias_pct += 0.15   # oversold → likely bounce
-        elif rsi > 60: bias_pct += 0.05
-        elif rsi < 45: bias_pct -= 0.05
+    open_gap = 0.0
+    if is_index:
+        # 1. GIFT Nifty — most direct (85% transmission rate historically)
+        open_gap += gift_gap * 0.85
 
-    # MACD direction
-    macd = tech_indicators.get("macd")
-    if macd is not None:
-        bias_pct += 0.05 if macd > 0 else -0.05
+        # 2. US market close (S&P500 — 40% transmission for Nifty open)
+        open_gap += current_price * sp500_chg / 100 * 0.40
 
-    # Global factors
-    gb = global_factors.get("global_bias_score", 0)
-    bias_pct += gb * 0.08  # each bias point → 0.08% price shift
+        # 3. Asian queue proxy — reflected in global_bias_score
+        open_gap += current_price * gb_score * 0.0015   # ±0.15% max
 
-    # GIFT Nifty gap (only for Indian stocks/indices)
-    gift_gap = global_factors.get("gift_nifty_gap")
-    if gift_gap is not None and not symbol.startswith("^GSPC"):
-        # Gap of ±100 pts → ±0.1% adjustment
-        bias_pct += (gift_gap / 1000) * 0.1
+        # 4. Overnight news catalyst
+        open_gap += current_price * news_bias * 0.003
 
-    # News impact — scan headlines for high-impact events
-    news_impact = _scan_news_impact(recent_news or [])
-    news_bias_score = news_impact.get("news_bias_score", 0)
-    bias_pct += news_bias_score * 0.3  # high-impact news can shift bias up to ±0.3%
-    # Widen range if there are bearish alerts (uncertainty increases)
-    bearish_alert_count = len(news_impact.get("bearish_alerts", []))
-    bullish_alert_count = len(news_impact.get("bullish_alerts", []))
+        # 5. Crude — significant for India; -2% crude → ~+30 pts Nifty open
+        if crude_chg < -2:
+            open_gap += abs(crude_chg) * 8   # falling crude = positive
+        elif crude_chg > 2:
+            open_gap -= crude_chg * 8        # rising crude = headwind
 
-    # ATR% — wider ATR → widen the range; also widen on news alerts
-    atr_pct = tech_indicators.get("atr_pct", 1.5)
-    range_multiplier = max(0.8, min(2.0, atr_pct / 1.5 + bearish_alert_count * 0.15))
+        # 6. VIX fear — high VIX dampens any bullish bias at open
+        if vix > 25:
+            open_gap -= (vix - 25) * 5       # each VIX point above 25 = -5 pts
+    else:
+        # For individual stocks: S&P500 + global as proxy
+        open_gap += current_price * sp500_chg / 100 * 0.35
+        open_gap += current_price * gb_score * 0.001
+        open_gap += current_price * news_bias * 0.003
 
-    # ── Build range ──────────────────────────────────────────────────────────
-    adjusted_sd = one_sd * range_multiplier
-    base = round(current_price * (1 + bias_pct / 100), 2)
-    low  = round(base - adjusted_sd, 2)
-    high = round(base + adjusted_sd, 2)
+    open_gap = round(open_gap, 1)
 
-    # Confidence 0-100 based on number of agreeing signals
-    signals_bullish = sum([
-        bias_pct > 0.1,
-        (rsi or 50) < 60,
-        (macd or 0) > 0,
-        global_factors.get("global_bias") == "bullish",
-        bullish_alert_count > 0,
+    # Large move detection — push base further, keep range tight
+    large_threshold = 250 if is_index else current_price * 0.012
+    large_move = abs(open_gap) > large_threshold
+    if large_move:
+        open_gap = round(open_gap * 1.15, 1)   # amplify, range stays same
+
+    # ── OPENING RANGE WIDTH ──────────────────────────────────────────────────
+    if is_index:
+        open_half = 100 if high_impact else 50
+    else:
+        open_half = round(current_price * (0.008 if high_impact else 0.004), 1)
+
+    open_base = round(current_price + open_gap, 1)
+    open_low  = round(open_base - open_half, 1)
+    open_high = round(open_base + open_half, 1)
+
+    # ── INTRADAY DRIFT (open → close) ────────────────────────────────────────
+    # After the gap is absorbed, intraday drift driven by:
+    # RSI momentum, MACD crossover, sector flow, crude continuation
+    intraday_drift = 0.0
+
+    if rsi > 70:    intraday_drift -= current_price * 0.002   # overbought fade
+    elif rsi < 35:  intraday_drift += current_price * 0.002   # oversold bounce
+    elif rsi > 58:  intraday_drift += current_price * 0.001
+    elif rsi < 45:  intraday_drift -= current_price * 0.001
+
+    if macd > 0:    intraday_drift += current_price * 0.0008
+    else:           intraday_drift -= current_price * 0.0008
+
+    # Crude continuation intraday
+    if crude_chg > 3:   intraday_drift -= current_price * 0.001
+    elif crude_chg < -3: intraday_drift += current_price * 0.0005
+
+    # Score-based drift — fundamentals can sustain or reverse gap
+    intraday_drift += current_price * (overall - 50) / 100 * 0.001
+
+    intraday_drift = round(intraday_drift, 1)
+    total_bias_pts = round(open_gap + intraday_drift, 1)
+
+    # ── CLOSING RANGE WIDTH ──────────────────────────────────────────────────
+    # Width = historical daily ATR (actual daily move), capped
+    daily_atr_pts = round(current_price * atr_pct / 100, 1)
+    if is_index:
+        close_half = min(100, max(40, round(daily_atr_pts * 0.55, 0)))
+        if high_impact: close_half = min(150, round(close_half * 1.5, 0))
+    else:
+        close_half = min(current_price * 0.008, max(current_price * 0.003, daily_atr_pts * 0.55))
+        if high_impact: close_half = min(current_price * 0.012, close_half * 1.5)
+    close_half = round(close_half, 1)
+
+    close_base = round(current_price + total_bias_pts, 1)
+    close_low  = round(close_base - close_half, 1)
+    close_high = round(close_base + close_half, 1)
+
+    # ── CONFIDENCE ───────────────────────────────────────────────────────────
+    bull_signals = sum([
+        open_gap > 20, sp500_chg > 0.5, gb_score > 0.5,
+        macd > 0, rsi < 65, news_bias > 0.1,
     ])
-    signals_bearish = sum([
-        bias_pct < -0.1,
-        (rsi or 50) > 65,
-        (macd or 0) < 0,
-        global_factors.get("global_bias") == "bearish",
-        bearish_alert_count > 0,
+    bear_signals = sum([
+        open_gap < -20, sp500_chg < -0.5, gb_score < -0.5,
+        macd < 0, rsi > 65, news_bias < -0.1,
     ])
-    signal_agreement = abs(signals_bullish - signals_bearish)
-    confidence = min(85, 50 + signal_agreement * 10)
+    confidence = min(85, 50 + abs(bull_signals - bear_signals) * 7
+                     + (8 if large_move else 0) + (5 if abs(gift_gap) > 50 else 0))
 
-    direction = "bullish" if bias_pct > 0.05 else "bearish" if bias_pct < -0.05 else "neutral"
+    direction = "bullish" if total_bias_pts > 10 else "bearish" if total_bias_pts < -10 else "neutral"
 
-    # ── Plain-English summary ─────────────────────────────────────────────────
-    range_pct = round((adjusted_sd / current_price) * 100 * 2, 1)  # full range as % of price
-    cmp_vs_base = round(current_price - base, 1)
-    cmp_position = (
-        "already at the predicted base" if abs(cmp_vs_base) < adjusted_sd * 0.1
-        else f"₹{abs(cmp_vs_base):.0f} {'below' if cmp_vs_base < 0 else 'above'} the predicted base"
-    )
+    # ── PLAIN ENGLISH ────────────────────────────────────────────────────────
+    dir_word = "positive" if direction == "bullish" else "negative" if direction == "bearish" else "flat"
 
-    # Direction sentence
-    if direction == "bullish":
-        dir_sentence = f"All signals lean {'strongly' if confidence >= 70 else 'mildly'} bullish."
-    elif direction == "bearish":
-        dir_sentence = f"Signals lean {'strongly' if confidence >= 70 else 'mildly'} bearish — caution advised."
-    else:
-        dir_sentence = "Signals are mixed — no strong directional call."
+    gap_drivers = []
+    if abs(gift_gap) > 15:
+        gap_drivers.append(f"GIFT Nifty gap {gift_gap:+.0f} pts")
+    if abs(sp500_chg) > 0.3:
+        gap_drivers.append(f"US {'rose' if sp500_chg > 0 else 'fell'} {abs(sp500_chg):.2f}%")
+    if vix > 22:
+        gap_drivers.append(f"VIX at {vix:.1f} (elevated fear)")
+    if abs(crude_chg) > 1.5:
+        gap_drivers.append(f"crude {'up' if crude_chg > 0 else 'down'} {abs(crude_chg):.1f}%")
+    if abs(news_bias) > 0.1:
+        gap_drivers.append("overnight news")
 
-    # Key driver
-    drivers = []
-    if (rsi or 50) > 70:
-        drivers.append("RSI is overbought — pullback risk")
-    elif (rsi or 50) < 35:
-        drivers.append("RSI is oversold — bounce likely")
-    if (macd or 0) > 0:
-        drivers.append("MACD momentum is positive")
-    else:
-        drivers.append("MACD momentum is negative")
-    if (gift_gap or 0) > 50:
-        drivers.append(f"GIFT Nifty gap of +{gift_gap:.0f} pts suggests a positive open")
-    elif (gift_gap or 0) < -50:
-        drivers.append(f"GIFT Nifty gap of {gift_gap:.0f} pts signals a weak open")
-    if (global_factors.get("vix") or 20) > 25:
-        drivers.append("elevated VIX signals market anxiety")
-    if (global_factors.get("crude_chg_pct") or 0) > 2:
-        drivers.append("rising crude is a headwind for India")
-    elif (global_factors.get("crude_chg_pct") or 0) < -2:
-        drivers.append("falling crude is positive for India")
-    if (global_factors.get("sp500_chg_pct") or 0) > 1:
-        drivers.append("strong US markets provide global tailwind")
-    elif (global_factors.get("sp500_chg_pct") or 0) < -1:
-        drivers.append("weak US markets are a headwind")
-
-    driver_sentence = f"{drivers[0][0].upper() + drivers[0][1:]}." if drivers else ""
-
-    # Range tightness
-    if range_pct < 2:
-        volatility_note = f"The range is tight ({range_pct}%), meaning low expected volatility for the session."
-    elif range_pct > 4:
-        volatility_note = f"The range is wide ({range_pct}%), reflecting elevated volatility expectations."
-    else:
-        volatility_note = f"The range spans {range_pct}% — moderate volatility expected."
-
-    # ── News alert sentences ──────────────────────────────────────────────────
-    news_sentences = []
+    gap_driver_str = ", ".join(gap_drivers) if gap_drivers else "mixed signals"
+    large_note = f" Strong directional move expected — base shifted to {open_base:,.0f}." if large_move else ""
+    news_note = ""
     top_alert = news_impact.get("top_alert")
     if top_alert:
-        h = top_alert["headline"][:80] + ("…" if len(top_alert["headline"]) > 80 else "")
-        if top_alert["type"] == "bearish":
-            news_sentences.append(f"⚠ High-impact news: \"{h}\" — this may cause sharp downside volatility.")
-        else:
-            news_sentences.append(f"✦ Positive news: \"{h}\" — could provide upside catalyst.")
-    # Extra bearish alerts beyond the top one
-    for alert in news_impact.get("bearish_alerts", [])[1:2]:
-        h = alert["headline"][:70] + "…"
-        news_sentences.append(f"⚠ Also watch: \"{h}\"")
-
-    news_paragraph = " ".join(news_sentences)
+        h = top_alert["headline"][:65] + ("…" if len(top_alert["headline"]) > 65 else "")
+        sym = "⚠" if top_alert["type"] == "bearish" else "✦"
+        news_note = f' {sym} "{h}"'
 
     plain_english = (
-        f"{dir_sentence} "
-        f"CMP ₹{current_price:,.1f} is {cmp_position}. "
-        f"Upside target ₹{high:,.0f}, downside support ₹{low:,.0f}. "
-        f"{driver_sentence} "
-        f"{volatility_note}"
-        + (f" {news_paragraph}" if news_paragraph else "")
+        f"Open expected {open_base:,.0f} ±{open_half:.0f} pts (drivers: {gap_driver_str}).{large_note} "
+        f"Day likely closes {dir_word} near {close_base:,.0f} ±{close_half:.0f} pts.{news_note}"
     ).strip()
 
     return {
-        "low":           low,
-        "base":          base,
-        "high":          high,
+        # Opening range
+        "open_base":   open_base,
+        "open_low":    open_low,
+        "open_high":   open_high,
+        "open_width":  round(open_half * 2, 1),
+        "open_gap_pts": open_gap,
+
+        # Closing range (low/base/high kept for backward compat with accuracy tracking)
+        "low":          close_low,
+        "base":         close_base,
+        "high":         close_high,
+        "close_width":  round(close_half * 2, 1),
+
         "current_price": current_price,
-        "bias_pct":      round(bias_pct, 3),
+        "bias_pts":      total_bias_pts,
+        "bias_pct":      round(total_bias_pts / current_price * 100, 3),
         "direction":     direction,
         "confidence":    confidence,
+        "large_move":    large_move,
         "iv_used":       round(iv, 1),
-        "one_sd_pts":    round(adjusted_sd, 2),
         "plain_english": plain_english,
-        "news_alerts":   news_impact.get("bearish_alerts", []) + news_impact.get("bullish_alerts", []),
+        "news_alerts":   bearish_alerts + bullish_alerts,
         "factors": {
-            "overall_score":     overall,
-            "rsi":               round(rsi, 1) if rsi else None,
-            "macd_direction":    "bullish" if (macd or 0) > 0 else "bearish",
-            "global_bias":       global_factors.get("global_bias"),
-            "gift_nifty_gap":    gift_gap,
-            "sp500_chg_pct":     global_factors.get("sp500_chg_pct"),
-            "vix":               global_factors.get("vix"),
-            "crude_chg_pct":     global_factors.get("crude_chg_pct"),
+            "overall_score":  overall,
+            "rsi":            round(rsi, 1),
+            "macd_direction": "bullish" if macd > 0 else "bearish",
+            "global_bias":    global_factors.get("global_bias"),
+            "gift_nifty_gap": gift_gap,
+            "sp500_chg_pct":  sp500_chg,
+            "vix":            vix,
+            "crude_chg_pct":  crude_chg,
         },
     }
 
@@ -465,8 +535,8 @@ def _get_llm_commentary(symbol: str, company_name: str, pred: dict) -> Optional[
 
 def fill_actuals(session_date: str) -> int:
     """
-    Fill actual close prices for all predictions made for session_date.
-    Returns count of predictions updated.
+    Fill actual close + actual open for all predictions made for session_date.
+    Evaluates CLOSING range accuracy (HIT/NEAR/MISS) and opening range accuracy separately.
     """
     import yfinance as yf
     with _pred_lock:
@@ -479,24 +549,80 @@ def fill_actuals(session_date: str) -> int:
             if pred.get("actual_close") is not None:
                 continue
             sym = pred["symbol"]
+
+            # Handle constituent predictions (stored as CONST::nifty etc.)
+            if sym.startswith("CONST::"):
+                index_sym_map = {"nifty": "^NSEI", "banknifty": "^NSEBANK", "sensex": "^BSESN"}
+                index_key_str = sym.replace("CONST::", "")
+                actual_sym    = index_sym_map.get(index_key_str)
+                if not actual_sym:
+                    continue
+                try:
+                    t = yf.Ticker(actual_sym)
+                    hist = t.history(period="2d")
+                    if hist.empty:
+                        continue
+                    actual_close = round(float(hist["Close"].iloc[-1]), 2)
+                    actual_open  = round(float(hist["Open"].iloc[-1]),  2)
+                    pred["actual_close"] = actual_close
+                    pred["actual_open"]  = actual_open
+
+                    low  = pred["close_low"];  high = pred["close_high"];  base = pred["close_base"]
+                    near_threshold = (high - low) * 0.25
+                    if low <= actual_close <= high:
+                        pred["accuracy"] = "HIT"
+                    elif abs(actual_close - base) <= near_threshold:
+                        pred["accuracy"] = "NEAR"
+                    else:
+                        pred["accuracy"] = "MISS"
+
+                    if pred.get("open_low") and pred.get("open_high"):
+                        o_low = pred["open_low"]; o_high = pred["open_high"]
+                        if o_low <= actual_open <= o_high:
+                            pred["open_accuracy"] = "HIT"
+                        elif abs(actual_open - pred["open_base"]) <= (o_high - o_low) * 0.3:
+                            pred["open_accuracy"] = "NEAR"
+                        else:
+                            pred["open_accuracy"] = "MISS"
+                    updated += 1
+                except Exception:
+                    pass
+                continue
             try:
                 t = yf.Ticker(sym)
                 hist = t.history(period="2d")
                 if hist.empty:
                     continue
-                actual_close = float(hist["Close"].iloc[-1])
-                pred["actual_close"] = round(actual_close, 2)
+                actual_close = round(float(hist["Close"].iloc[-1]), 2)
+                actual_open  = round(float(hist["Open"].iloc[-1]),  2)
+                pred["actual_close"] = actual_close
+                pred["actual_open"]  = actual_open
 
-                low  = pred["range"]["low"]
-                high = pred["range"]["high"]
-                pct_dev = abs(actual_close - pred["range"]["base"]) / pred["range"]["base"] * 100
-
+                # ── Closing range accuracy ────────────────────────────────
+                rng  = pred["range"]
+                low  = rng["low"]
+                high = rng["high"]
+                base = rng["base"]
+                # NEAR = within half the range width outside (tighter than old 0.5%)
+                near_threshold = (high - low) * 0.25
                 if low <= actual_close <= high:
                     pred["accuracy"] = "HIT"
-                elif pct_dev <= (pred["range"]["base"] * 0.005 / pred["range"]["base"] * 100 + 0.5):
+                elif abs(actual_close - base) <= (base * 0.005 + near_threshold):
                     pred["accuracy"] = "NEAR"
                 else:
                     pred["accuracy"] = "MISS"
+
+                # ── Opening range accuracy ────────────────────────────────
+                if rng.get("open_low") and rng.get("open_high"):
+                    o_low  = rng["open_low"]
+                    o_high = rng["open_high"]
+                    if o_low <= actual_open <= o_high:
+                        pred["open_accuracy"] = "HIT"
+                    elif abs(actual_open - rng["open_base"]) <= (o_high - o_low) * 0.3:
+                        pred["open_accuracy"] = "NEAR"
+                    else:
+                        pred["open_accuracy"] = "MISS"
+
                 updated += 1
             except Exception:
                 pass
@@ -514,7 +640,6 @@ async def predict_next_session(symbol: str, force: bool = Query(default=False)):
     force=true bypasses the market-hours gate (for testing).
     """
     import asyncio
-    from concurrent.futures import ThreadPoolExecutor
     from data.market_data import normalize_symbol, get_info, safe_get
     from engines.recommendation import calculate_full
     from engines.technical_strength import calculate as calc_tech
@@ -531,14 +656,11 @@ async def predict_next_session(symbol: str, force: bool = Query(default=False)):
     if existing and not force:
         return JSONResponse(content=clean_for_json(existing))
 
-    # Market-hours gate
+    # During live market hours: allow prediction (uses intraday mode), just label it clearly
+    # Only block if market hours AND not force AND NOT intraday mode
     if _is_market_hours() and not force:
-        return JSONResponse(content={
-            "symbol": sym,
-            "session_date": session_date,
-            "market_hours": True,
-            "message": "Predictions are generated outside market hours (before 9:15 AM or after 3:30 PM IST). Check back after market close.",
-        })
+        # Still generate — intraday factors will be included
+        pass  # fall through to build()
 
     loop = asyncio.get_event_loop()
     executor = ThreadPoolExecutor(max_workers=3)
@@ -585,6 +707,7 @@ async def predict_next_session(symbol: str, force: bool = Query(default=False)):
             "company_name":   company_name,
             "session_date":   session_date,
             "predicted_at":   datetime.now(IST).isoformat(),
+            "prediction_mode": gf.get("mode", "overnight"),  # overnight / intraday / end_of_day
             "range":          pred_range,
             "commentary":     commentary,
             "actual_close":   None,
@@ -632,6 +755,66 @@ async def predict_benchmarks():
     return JSONResponse(content=clean_for_json({"benchmarks": out}))
 
 
+class PreGenerateInput(BaseModel):
+    symbols: list[str]
+    force: bool = False
+
+
+@router.post("/predict/pre-generate")
+async def pre_generate_predictions(body: PreGenerateInput):
+    """
+    Bulk pre-generate and cache predictions for a list of symbols.
+    Skips symbols already cached for today's session unless force=True.
+    Runs full 6-engine analysis per stock. Fire-and-forget safe.
+    """
+    from data.market_data import normalize_symbol
+
+    session_date = _next_trading_date()
+    symbols_normalized = [normalize_symbol(s.strip()) for s in body.symbols if s.strip()]
+
+    # Determine which need generating
+    if not body.force:
+        with _pred_lock:
+            cached_data = _load_predictions()
+        to_generate = [
+            s for s in symbols_normalized
+            if not cached_data["predictions"].get(_pred_key(s, session_date))
+        ]
+    else:
+        to_generate = symbols_normalized
+
+    if not to_generate:
+        return JSONResponse(content={
+            "generated": 0, "skipped": len(symbols_normalized),
+            "session_date": session_date,
+            "message": "All predictions already cached for this session.",
+        })
+
+    # Generate in parallel batches — max 8 concurrent (full analysis is heavy)
+    loop     = asyncio.get_event_loop()
+    executor = ThreadPoolExecutor(max_workers=8)
+
+    async def generate_one(sym: str):
+        try:
+            # Call predict_next_session with force=True to bypass market-hours gate
+            resp = await predict_next_session(sym, force=True)
+            return sym, True
+        except Exception:
+            return sym, False
+
+    results = await asyncio.gather(*[generate_one(s) for s in to_generate])
+    generated = sum(1 for _, ok in results if ok)
+    failed    = sum(1 for _, ok in results if not ok)
+
+    return JSONResponse(content=clean_for_json({
+        "generated":    generated,
+        "failed":       failed,
+        "skipped":      len(symbols_normalized) - len(to_generate),
+        "total":        len(symbols_normalized),
+        "session_date": session_date,
+    }))
+
+
 @router.get("/predict/history/{symbol}")
 async def prediction_history(symbol: str, days: int = Query(default=30, le=90)):
     """Return prediction history + accuracy for a symbol."""
@@ -656,6 +839,31 @@ async def prediction_history(symbol: str, days: int = Query(default=30, le=90)):
         "hits":    hits,
         "nears":   nears,
         "misses":  misses,
+        "predictions": preds,
+    }))
+
+
+@router.get("/predict/constituents-history/{index_key}")
+async def constituent_prediction_history(index_key: str, days: int = Query(default=30, le=90)):
+    """Return constituent prediction history + accuracy for an index."""
+    key_prefix = f"CONST::{index_key.lower()}::"
+    with _pred_lock:
+        data = _load_predictions()
+    preds = [v for k, v in data["predictions"].items() if k.startswith(key_prefix)]
+    preds.sort(key=lambda x: x["session_date"], reverse=True)
+    preds = preds[:days]
+
+    total   = len([p for p in preds if p.get("accuracy")])
+    hits    = len([p for p in preds if p.get("accuracy") == "HIT"])
+    nears   = len([p for p in preds if p.get("accuracy") == "NEAR"])
+    misses  = len([p for p in preds if p.get("accuracy") == "MISS"])
+    hit_rate = round((hits + nears) / total * 100, 1) if total else None
+
+    return JSONResponse(content=clean_for_json({
+        "index_key": index_key,
+        "total_evaluated": total,
+        "hit_rate_pct": hit_rate,
+        "hits": hits, "nears": nears, "misses": misses,
         "predictions": preds,
     }))
 
