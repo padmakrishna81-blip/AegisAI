@@ -156,9 +156,12 @@ def _fetch_global_factors() -> dict:
     elif bias <= -1.5: factors["global_bias"] = "bearish"
     else:              factors["global_bias"] = "neutral"
 
-    # ── Intraday signals (only during market hours 9:15–15:30 IST) ────────────
-    now_ist = datetime.now(IST).time()
-    if dtime(9, 15) <= now_ist <= dtime(15, 30):
+    # ── Intraday signals (only during market hours 9:15–15:30 IST on weekdays) ──
+    now_ist  = datetime.now(IST)
+    now_time = now_ist.time()
+    is_weekday = now_ist.weekday() < 5  # Mon=0 … Fri=4; Sat=5, Sun=6
+    is_market_open = is_weekday and dtime(9, 15) <= now_time <= dtime(15, 30)
+    if is_market_open:
         try:
             import yfinance as yf
             # Nifty intraday momentum — current vs prev_close
@@ -177,7 +180,7 @@ def _fetch_global_factors() -> dict:
             pass
 
         # FII/DII provisional (NSE publishes ~3:15 PM)
-        if now_ist >= dtime(15, 10):
+        if now_time >= dtime(15, 10):
             try:
                 import requests, time as _t
                 headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.nseindia.com/"}
@@ -192,7 +195,7 @@ def _fetch_global_factors() -> dict:
                         today = data[0]
                         fii_net = float(today.get("FII_NET_PURCHASE_SALES") or 0)
                         dii_net = float(today.get("DII_NET_PURCHASE_SALES") or 0)
-                        factors["fii_net_cr"]  = round(fii_net / 1e7, 1)  # convert to Cr
+                        factors["fii_net_cr"]  = round(fii_net / 1e7, 1)
                         factors["dii_net_cr"]  = round(dii_net / 1e7, 1)
                         combined = fii_net + dii_net
                         if combined > 500e7:    bias += 0.5
@@ -203,7 +206,13 @@ def _fetch_global_factors() -> dict:
 
         factors["mode"] = "intraday"
     else:
-        factors["mode"] = "overnight" if now_ist < dtime(9, 15) else "end_of_day"
+        # Weekend or outside market hours
+        if not is_weekday:
+            factors["mode"] = "overnight"  # weekend — use overnight mode
+        elif now_time < dtime(9, 15):
+            factors["mode"] = "overnight"
+        else:
+            factors["mode"] = "end_of_day"
 
     return factors
 

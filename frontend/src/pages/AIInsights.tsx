@@ -876,6 +876,7 @@ export default function AIInsights() {
   const [error, setError] = useState('')
   const [activeQuestion, setActiveQuestion] = useState<string | null>(null)
   const [resultType, setResultType] = useState<ResultType>(null)
+  const [benchmarkOpen, setBenchmarkOpen] = useState(true)
   const [resultData, setResultData] = useState<Record<string, unknown> | null>(null)
 
   const fetchQuestion = async (q: QuickQuestion) => {
@@ -931,22 +932,32 @@ export default function AIInsights() {
       </div>
 
       {/* Benchmark Index Predictions */}
-      <div className="bg-card border border-border rounded-xl p-4">
-        <div className="text-sm font-semibold text-white mb-4 flex items-center gap-2">
-          <span>🔮</span> Next Session Predictions — Benchmark Indices
-        </div>
-        <div className="grid grid-cols-3 gap-4">
-          {[
-            { symbol: '^NSEI',    name: 'NIFTY 50'   },
-            { symbol: '^NSEBANK', name: 'Bank Nifty' },
-            { symbol: '^BSESN',   name: 'Sensex'     },
-          ].map(({ symbol, name }) => (
-            <div key={symbol}>
-              <div className="text-xs font-semibold text-slate-400 mb-1.5 px-1">{name}</div>
-              <NextSessionPredictCard symbol={symbol} name={name} compact />
+      <div className="bg-card border border-border rounded-xl overflow-hidden">
+        <button
+          onClick={() => setBenchmarkOpen(o => !o)}
+          className="w-full flex items-center justify-between px-4 py-3 hover:bg-slate-800/20 transition-colors"
+        >
+          <div className="text-sm font-semibold text-white flex items-center gap-2">
+            <span>🔮</span> Next Session Predictions — Benchmark Indices
+          </div>
+          <span className="text-muted text-sm">{benchmarkOpen ? '▲' : '▼'}</span>
+        </button>
+        {benchmarkOpen && (
+          <div className="px-4 pb-4">
+            <div className="grid grid-cols-3 gap-4">
+              {[
+                { symbol: '^NSEI',    name: 'NIFTY 50'   },
+                { symbol: '^NSEBANK', name: 'Bank Nifty' },
+                { symbol: '^BSESN',   name: 'Sensex'     },
+              ].map(({ symbol, name }) => (
+                <div key={symbol}>
+                  <div className="text-xs font-semibold text-slate-400 mb-1.5 px-1">{name}</div>
+                  <NextSessionPredictCard symbol={symbol} name={name} compact />
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          </div>
+        )}
       </div>
 
       {/* Prediction Accuracy Tracker */}

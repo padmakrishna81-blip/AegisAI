@@ -82,6 +82,7 @@ export default function NextSessionPredictCard({ symbol, name, compact }: Props)
   const [loading, setLoading] = useState(false)
   const [error, setError]     = useState('')
   const [triggered, setTriggered] = useState(false)
+  const [collapsed, setCollapsed] = useState(false)
 
   const load = () => {
     if (loading || triggered) return
@@ -152,28 +153,33 @@ export default function NextSessionPredictCard({ symbol, name, compact }: Props)
   const hasOpen = r.open_base != null && r.open_low != null && r.open_high != null
 
   return (
-    <div className={`bg-card border border-border rounded-xl ${compact ? 'p-3' : 'p-5'} space-y-4`}>
-      {/* Header */}
-      <div className="flex items-center justify-between">
+    <div className={`bg-card border border-border rounded-xl ${compact ? 'p-3' : 'p-5'}`}>
+      {/* Header — always visible, click to collapse/expand */}
+      <button
+        onClick={() => setCollapsed(c => !c)}
+        className="w-full flex items-center justify-between"
+      >
         <div className="flex items-center gap-2">
           <span className="text-base">🔮</span>
-          <div>
+          <div className="text-left">
             <div className="text-sm font-semibold text-white">Next Session Prediction</div>
             <div className="text-[10px] text-muted flex items-center gap-1.5">
               {name || pred.company_name} · {pred.session_date}
-              {pred.prediction_mode && pred.prediction_mode !== 'overnight' && (
+              {pred.prediction_mode && (
                 <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold border ${
-                  pred.prediction_mode === 'intraday' ? 'bg-amber-950 border-amber-700 text-amber-400' :
-                  'bg-blue-950 border-blue-800 text-blue-400'
+                  pred.prediction_mode === 'intraday'    ? 'bg-amber-950 border-amber-700 text-amber-400' :
+                  pred.prediction_mode === 'end_of_day'  ? 'bg-blue-950 border-blue-800 text-blue-400' :
+                  'bg-slate-800 border-slate-700 text-slate-400'
                 }`}>
-                  {pred.prediction_mode === 'intraday' ? '📈 Intraday' : '🌙 End-of-Day'}
+                  {pred.prediction_mode === 'intraday' ? '📈 Intraday' :
+                   pred.prediction_mode === 'end_of_day' ? '🌙 End-of-Day' : '🌙 Overnight'}
                 </span>
               )}
             </div>
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {history?.hit_rate_pct != null && (
+          {history?.hit_rate_pct != null && !collapsed && (
             <div className="text-center">
               <div className="text-[10px] text-muted">Accuracy</div>
               <div className={`text-xs font-bold ${history.hit_rate_pct >= 60 ? 'text-score-green' : history.hit_rate_pct >= 40 ? 'text-amber-400' : 'text-score-red'}`}>
@@ -185,8 +191,12 @@ export default function NextSessionPredictCard({ symbol, name, compact }: Props)
           <span className={`px-2.5 py-1 rounded-lg text-xs font-bold border ${dirBg} ${dirColor}`}>
             {dirLabel}
           </span>
+          <span className="text-muted text-xs ml-1">{collapsed ? '▼' : '▲'}</span>
         </div>
-      </div>
+      </button>
+
+      {/* Collapsible body */}
+      {!collapsed && <div className={`space-y-4 ${compact ? 'mt-3' : 'mt-4'}`}>
 
       {/* Two range bars */}
       <div className="space-y-4">
@@ -315,6 +325,7 @@ export default function NextSessionPredictCard({ symbol, name, compact }: Props)
       {['^NSEI', '^NSEBANK', '^BSESN'].includes(symbol) && (
         <ConstituentsPredictCard symbol={symbol} name={name} compact={compact} />
       )}
+      </div>}  {/* end collapsed body */}
     </div>
   )
 }
