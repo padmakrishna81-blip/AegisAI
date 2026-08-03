@@ -62,6 +62,10 @@ interface ScanResult {
   pct_from_high: number
   pct_from_low: number
   change_5d: number
+  change_1d?: number
+  opportunity_score?: number
+  opportunity_label?: string
+  opportunity_reason?: string
   above_200dma: boolean
   atm_iv: number | null
   lot_size: number
@@ -619,6 +623,7 @@ interface ScanCriteria {
   below_sma50_pct: string
   min_score: string
   min_iv: string
+  results_days: string
 }
 
 const DEFAULT_CRITERIA: ScanCriteria = {
@@ -628,12 +633,17 @@ const DEFAULT_CRITERIA: ScanCriteria = {
   below_sma50_pct: '10',
   min_score:       '0',
   min_iv:          '20',
+  results_days:    '7',
 }
 
 interface AssessResult extends ScanResult {
   eligible: boolean
   atm_iv: number | null
   high_risk_count: number
+  change_1d?: number
+  opportunity_score?: number
+  opportunity_label?: string
+  opportunity_reason?: string
   warnings: { level: 'ok' | 'medium' | 'high'; category: string; message: string }[]
 }
 
@@ -656,6 +666,8 @@ function ScannerTab({ onViewPlan }: { onViewPlan: (symbol: string) => void }) {
   // Multi-stock assess
   const [assessInput, setAssessInput]     = useState('')
   const [assessLoading, setAssessLoading] = useState(false)
+  const [oppScore1, setOppScore1]         = useState('3')    // cc: rose ≥3% = score 1
+  const [oppScore2, setOppScore2]         = useState('1')    // cc: rose ≥1% = score 2
   const [assessResults, setAssessResults] = useState<AssessResult[]>([])
 
   const updateCriteria = (k: keyof ScanCriteria, v: string) =>
@@ -682,6 +694,10 @@ function ScannerTab({ onViewPlan }: { onViewPlan: (symbol: string) => void }) {
         below_sma50_pct: criteria.below_sma50_pct,
         min_score:       criteria.min_score,
         min_iv:          criteria.min_iv,
+        strategy:        'cc',
+        opp_score1:      String(oppScore1 !== '' ? parseFloat(oppScore1) : 3),
+        opp_score2:      String(oppScore2 !== '' ? parseFloat(oppScore2) : 1),
+        results_days:    criteria.results_days,
       })
       const r = await client.get(`/covered-calls/scan/strategy?${params}`)
       setResults(r.data.stocks || [])
@@ -698,7 +714,11 @@ function ScannerTab({ onViewPlan }: { onViewPlan: (symbol: string) => void }) {
     setAssessLoading(true)
     setResults([])
     try {
-      const r = await client.post('/covered-calls/assess', { symbols: syms, min_iv: parseFloat(criteria.min_iv) || 25 })
+      const r = await client.post('/covered-calls/assess', {
+        symbols: syms, min_iv: parseFloat(criteria.min_iv) || 25,
+        opp_score1: oppScore1 !== '' ? parseFloat(oppScore1) : 3,
+        opp_score2: oppScore2 !== '' ? parseFloat(oppScore2) : 1,
+      })
       setAssessResults(r.data.results || [])  // show ALL, not just eligible
       setLastUpdated(new Date())
     } catch { /* ignore */ }
@@ -739,6 +759,7 @@ function ScannerTab({ onViewPlan }: { onViewPlan: (symbol: string) => void }) {
             { label: 'Max below 50DMA', val: `${criteria.below_sma50_pct}%` },
             { label: 'Min IV', val: parseFloat(criteria.min_iv) > 0 ? `≥${criteria.min_iv}%` : 'OFF' },
             { label: 'Min Score', val: parseFloat(criteria.min_score) > 0 ? `≥${criteria.min_score}` : 'OFF' },
+            { label: 'Results window', val: `${criteria.results_days}d` },
           ].map(({ label, val }) => (
             <span key={label} className="px-2 py-0.5 bg-slate-800 border border-border rounded text-slate-300">
               <span className="text-muted">{label}: </span>{val}
@@ -761,6 +782,7 @@ function ScannerTab({ onViewPlan }: { onViewPlan: (symbol: string) => void }) {
                 { key: 'below_sma50_pct', label: 'Max below 50 DMA',    unit: '%',    hint: 'Exclude stocks more than X% below 50DMA (breakdown filter)' },
                 { key: 'min_iv',          label: 'Min ATM IV',           unit: '%',    hint: 'Exclude if IV below this — premium too thin. Default 20%. Set to 0 to disable.' },
                 { key: 'min_score',       label: 'Min AegisAI Score',   unit: '/100', hint: '0 = no score filter' },
+                { key: 'results_days',    label: 'Results window',       unit: 'days', hint: 'Exclude stocks with results/events within this many days (default 7)' },
               ] as { key: keyof ScanCriteria; label: string; unit: string; hint: string }[]).map(f => (
                 <div key={f.key}>
                   <label className="text-[10px] text-slate-300 block mb-1">{f.label}</label>
@@ -825,6 +847,18 @@ function ScannerTab({ onViewPlan }: { onViewPlan: (symbol: string) => void }) {
               {assessLoading ? '⏳ Assessing…' : '✓ Assess Covered Call'}
             </button>
           </div>
+          {/* Opportunity score thresholds */}
+          <div className="flex items-center gap-2 text-xs text-muted mt-1.5">
+            <span>🔥 Score 1 if rose ≥</span>
+            <input type="number" value={oppScore1} onChange={e => setOppScore1(e.target.value)}
+              className="w-14 bg-slate-800 border border-border rounded px-1.5 py-0.5 text-white text-xs text-right"
+              step="0.5" placeholder="3" />
+            <span>% · Score 2 if rose ≥</span>
+            <input type="number" value={oppScore2} onChange={e => setOppScore2(e.target.value)}
+              className="w-14 bg-slate-800 border border-border rounded px-1.5 py-0.5 text-white text-xs text-right"
+              step="0.5" placeholder="1" />
+            <span>% (defaults: 3% / 1%)</span>
+          </div>
           <div className="text-[11px] text-blue-400 mt-1.5">
             Search and add multiple stocks — evaluates any F&O stock regardless of auto-scan criteria.
           </div>
@@ -872,7 +906,8 @@ function ScannerTab({ onViewPlan }: { onViewPlan: (symbol: string) => void }) {
                 <tr className="text-[10px] text-muted border-b border-border bg-slate-800/40">
                   <th className="text-left px-5 py-2.5">Stock</th>
                   <th className="text-right px-3 py-2.5">CMP</th>
-                  <th className="text-right px-3 py-2.5">5d Chg</th>
+                  <th className="text-right px-3 py-2.5" title="5-day % change">5d %</th>
+                  <th className="text-center px-3 py-2.5" title="Opportunity score (1=best)">Opp</th>
                   <th className="text-right px-3 py-2.5">ATM IV</th>
                   <th className="text-right px-3 py-2.5">From High</th>
                   <th className="text-right px-3 py-2.5">From Low</th>
@@ -906,9 +941,27 @@ function ScannerTab({ onViewPlan }: { onViewPlan: (symbol: string) => void }) {
                             </div>
                           </div>
                         </td>
-                        <td className="px-3 py-3 text-right text-white font-semibold">₹{r.cmp}</td>
-                        <td className={`px-3 py-3 text-right text-xs font-medium ${Math.abs(r.change_5d) < 0.5 ? 'text-muted' : r.change_5d > 0 ? 'text-score-green' : 'text-score-red'}`}>
-                          {r.change_5d >= 0 ? '+' : ''}{r.change_5d}%
+                        <td className="px-3 py-3 text-right">
+                          <div className="font-semibold text-white">₹{r.cmp}</div>
+                          <div className={`text-[10px] ${r.change_1d == null ? 'text-muted' : r.change_1d > 0 ? 'text-score-green' : r.change_1d < 0 ? 'text-score-red' : 'text-muted'}`}>
+                            {r.change_1d != null ? `${r.change_1d >= 0 ? '+' : ''}${r.change_1d.toFixed(2)}%` : ''}
+                          </div>
+                        </td>
+                        {/* 5d % change column */}
+                        <td className={`px-3 py-3 text-right text-xs font-medium ${r.change_5d == null ? 'text-muted' : r.change_5d > 0 ? 'text-score-green' : r.change_5d < 0 ? 'text-score-red' : 'text-muted'}`}>
+                          {r.change_5d != null ? `${r.change_5d >= 0 ? '+' : ''}${r.change_5d}%` : '—'}
+                        </td>
+                        {/* Opportunity score */}
+                        <td className="px-3 py-3 text-center">
+                          {r.opportunity_score != null ? (
+                            <span title={r.opportunity_reason} className={`text-xs font-bold px-1.5 py-0.5 rounded border ${
+                              r.opportunity_score === 1 ? 'bg-amber-950 border-amber-700 text-amber-300' :
+                              r.opportunity_score === 2 ? 'bg-blue-950 border-blue-800 text-blue-300' :
+                              'bg-slate-800 border-slate-700 text-slate-400'
+                            }`}>
+                              {r.opportunity_score}
+                            </span>
+                          ) : '—'}
                         </td>
                         <td className="px-3 py-3 text-right text-xs">
                           {(ar.atm_iv ?? r.atm_iv) != null

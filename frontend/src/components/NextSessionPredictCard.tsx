@@ -154,10 +154,13 @@ export default function NextSessionPredictCard({ symbol, name, compact }: Props)
 
   return (
     <div className={`bg-card border border-border rounded-xl ${compact ? 'p-3' : 'p-5'}`}>
-      {/* Header — always visible, click to collapse/expand */}
-      <button
+      {/* Header — always visible, click anywhere to collapse/expand */}
+      <div
         onClick={() => setCollapsed(c => !c)}
-        className="w-full flex items-center justify-between"
+        className="w-full flex items-center justify-between cursor-pointer select-none"
+        role="button"
+        tabIndex={0}
+        onKeyDown={e => e.key === 'Enter' && setCollapsed(c => !c)}
       >
         <div className="flex items-center gap-2">
           <span className="text-base">🔮</span>
@@ -193,10 +196,11 @@ export default function NextSessionPredictCard({ symbol, name, compact }: Props)
           </span>
           <span className="text-muted text-xs ml-1">{collapsed ? '▼' : '▲'}</span>
         </div>
-      </button>
+      </div>
 
       {/* Collapsible body */}
-      {!collapsed && <div className={`space-y-4 ${compact ? 'mt-3' : 'mt-4'}`}>
+      {!collapsed && (
+        <div className={`space-y-4 ${compact ? 'mt-3' : 'mt-4'}`}>
 
       {/* Two range bars */}
       <div className="space-y-4">
@@ -317,7 +321,7 @@ export default function NextSessionPredictCard({ symbol, name, compact }: Props)
         </div>
       )}
 
-      <div className="text-[9px] text-slate-600 text-center">
+      <div className="text-[9px] text-slate-400 text-center">
         IV-based statistical range · Not financial advice · Outside market hours only
       </div>
 
@@ -325,7 +329,8 @@ export default function NextSessionPredictCard({ symbol, name, compact }: Props)
       {['^NSEI', '^NSEBANK', '^BSESN'].includes(symbol) && (
         <ConstituentsPredictCard symbol={symbol} name={name} compact={compact} />
       )}
-      </div>}  {/* end collapsed body */}
+        </div>
+      )}  {/* end collapsed body */}
     </div>
   )
 }

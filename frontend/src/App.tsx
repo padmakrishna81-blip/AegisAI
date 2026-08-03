@@ -14,6 +14,7 @@ import Market from './pages/Market'
 import AIInsights from './pages/AIInsights'
 import Settings from './pages/Settings'
 import Users from './pages/Users'
+import Strategies from './pages/Strategies'
 import client from './api/client'
 
 function ProtectedLayout() {
@@ -44,6 +45,9 @@ function ProtectedLayout() {
             } />
             <Route path="/wheel" element={
               hasPermission(user, 'wheel') ? <Wheel /> : <AccessDenied />
+            } />
+            <Route path="/strategies" element={
+              hasPermission(user, 'market') ? <Strategies /> : <AccessDenied />
             } />
             <Route path="/market" element={
               hasPermission(user, 'market') ? <Market /> : <AccessDenied />

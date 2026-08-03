@@ -3,6 +3,7 @@ import client from '../api/client'
 import { useWatchlistStore, type WatchlistItem } from '../store/watchlistStore'
 import StockDetailModal from '../components/company/StockDetailModal'
 import NseStockSearch from '../components/NseStockSearch'
+import MonitorTab from './MonitorTab'
 import { scoreToColor, recommendationColor, shortSymbol } from '../utils/formatters'
 import type { ScanResult } from '../types'
 
@@ -45,7 +46,7 @@ const INDICES = [
   { key: 'nifty_smallcap', label: 'Nifty Smallcap' },
 ]
 
-type Tab = 'individual' | 'index' | 'watchlist' | 'etf'
+type Tab = 'individual' | 'index' | 'watchlist' | 'etf' | 'monitor'
 
 // ─── Add to Watchlist button ───────────────────────────────────────────────────
 
@@ -92,6 +93,7 @@ export default function Discover() {
           { key: 'index',      label: 'Index Scan' },
           { key: 'watchlist',  label: `Watchlist ${watchlistItems.length > 0 ? `(${watchlistItems.length})` : ''}` },
           { key: 'etf',        label: 'ETF & Indices' },
+          { key: 'monitor',    label: '📋 Monitor' },
         ] as { key: Tab; label: string }[]).map(({ key, label }) => (
           <button
             key={key}
@@ -125,6 +127,7 @@ export default function Discover() {
       {tab === 'etf' && (
         <EtfTab onViewDetails={setDetailSymbol} />
       )}
+      {tab === 'monitor' && <MonitorTab />}
 
       {/* Stock Detail Modal */}
       {detailSymbol && (

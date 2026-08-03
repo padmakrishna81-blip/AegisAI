@@ -1368,12 +1368,19 @@ function CcPositionsTab({ positions, onRefresh }: { positions: CcPosition[]; onR
                   <td className="px-3 py-3 text-right">
                     {p.option_status === 'OPEN' ? (
                       p.current_ltp != null ? (
-                        <div>
-                          <div className={`font-semibold ${p.current_ltp < p.sell_premium ? 'text-score-green' : 'text-score-red'}`}>
-                            ₹{p.current_ltp.toFixed(2)}
+                        p.current_ltp === -1 ? (
+                          <div>
+                            <div className="text-amber-400 text-xs font-semibold">No trades</div>
+                            <div className="text-[10px] text-amber-600">OI exists — illiquid today</div>
                           </div>
-                          <div className="text-[10px] text-muted">live</div>
-                        </div>
+                        ) : (
+                          <div>
+                            <div className={`font-semibold ${p.current_ltp < p.sell_premium ? 'text-score-green' : 'text-score-red'}`}>
+                              ₹{p.current_ltp.toFixed(2)}
+                            </div>
+                            <div className="text-[10px] text-muted">live</div>
+                          </div>
+                        )
                       ) : <span className="text-muted text-xs">fetching…</span>
                     ) : (
                       p.close_premium != null
@@ -1690,9 +1697,16 @@ export default function Trade() {
                           {p.current_ltp != null && (
                             <div className="text-center">
                               <div className="text-[10px] text-muted">Current LTP</div>
-                              <div className={`font-semibold ${p.current_ltp < p.sell_premium ? 'text-score-green' : 'text-score-red'}`}>
-                                ₹{p.current_ltp.toFixed(2)}
-                              </div>
+                              {p.current_ltp === -1 ? (
+                                <div>
+                                  <div className="text-amber-400 text-xs font-semibold">No trades</div>
+                                  <div className="text-[10px] text-amber-600">Illiquid today</div>
+                                </div>
+                              ) : (
+                                <div className={`font-semibold ${p.current_ltp < p.sell_premium ? 'text-score-green' : 'text-score-red'}`}>
+                                  ₹{p.current_ltp.toFixed(2)}
+                                </div>
+                              )}
                             </div>
                           )}
                           {p.option_mtm_inr != null && (

@@ -290,36 +290,52 @@ async def get_summary():
     live_option_prices: dict[str, float | None] = {}
     if open_opts:
         try:
-            from jugaad_data.nse import NSELive
-            nse = NSELive()
             import time as _time
-            # Group by underlying+expiry to avoid duplicate calls
-            seen_chains: set[tuple] = set()
+            from concurrent.futures import ThreadPoolExecutor as _TPE
+
+            # Group by (underlying, expiry) to deduplicate chain fetches
+            chain_keys: dict[tuple, list] = {}
             for opt in open_opts:
                 underlying = opt.get("underlying", "").replace(".NS", "")
                 expiry     = opt.get("expiry", "")
-                strike     = opt.get("strike", 0)
-                sym_key    = opt.get("option_symbol", "")
                 key = (underlying, expiry)
-                if key in seen_chains:
-                    continue
-                seen_chains.add(key)
+                chain_keys.setdefault(key, []).append(opt)
+
+            def fetch_chain(key_opts):
+                (underlying, expiry), opts = key_opts
+                result = {}
                 try:
+                    from jugaad_data.nse import NSELive
+                    nse  = NSELive()
                     data = nse.equities_option_chain(underlying, expiry=expiry)
                     rows = data.get("filtered", {}).get("data", []) or data.get("records", {}).get("data", [])
                     for r in rows:
-                        s = r.get("strikePrice", 0)
-                        # Match CE options
-                        ce_ltp = (r.get("CE") or {}).get("lastPrice", 0)
-                        # Match PE options
-                        pe_ltp = (r.get("PE") or {}).get("lastPrice", 0)
-                        for o2 in open_opts:
-                            if o2.get("underlying","").replace(".NS","") == underlying and abs(float(s or 0) - float(o2.get("strike",0) or 0)) < 0.1:
-                                ltp = pe_ltp if o2.get("_opt_type") == "PE" else ce_ltp
-                                live_option_prices[o2.get("option_symbol", "")] = float(ltp) if ltp else None
-                    _time.sleep(0.08)
+                        s      = float(r.get("strikePrice", 0) or 0)
+                        ce_ltp = float((r.get("CE") or {}).get("lastPrice", 0) or 0)
+                        pe_ltp = float((r.get("PE") or {}).get("lastPrice", 0) or 0)
+                        ce_oi  = int((r.get("CE") or {}).get("openInterest", 0) or 0)
+                        pe_oi  = int((r.get("PE") or {}).get("openInterest", 0) or 0)
+                        for o2 in opts:
+                            if abs(s - float(o2.get("strike", 0) or 0)) < 0.1:
+                                opt_type = o2.get("_opt_type", "CE")
+                                ltp = pe_ltp if opt_type == "PE" else ce_ltp
+                                oi  = pe_oi  if opt_type == "PE" else ce_oi
+                                sym_key = o2.get("option_symbol", "")
+                                if ltp and ltp > 0:
+                                    result[sym_key] = float(ltp)       # traded — real LTP
+                                elif oi > 0:
+                                    result[sym_key] = -1.0              # exists in OI but no trade today
+                                else:
+                                    result[sym_key] = None              # option not found
                 except Exception:
                     pass
+                return result
+
+            # Fetch all chains in parallel (each gets its own NSELive instance — thread-safe)
+            with _TPE(max_workers=min(len(chain_keys), 5)) as ex:
+                for chain_result in ex.map(fetch_chain, chain_keys.items()):
+                    live_option_prices.update(chain_result)
+
         except Exception:
             pass
 
@@ -1070,7 +1086,7 @@ async def get_wheel_plan(
             "expiry_note": f"Recommended expiry: {selected_expiry} ({days_to_expiry} days). Only real NSE strikes shown.",
         })
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     executor = ThreadPoolExecutor(max_workers=1)
     try:
         result = await loop.run_in_executor(executor, _do_plan)

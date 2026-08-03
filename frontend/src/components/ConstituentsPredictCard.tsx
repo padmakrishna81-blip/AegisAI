@@ -104,7 +104,7 @@ export default function ConstituentsPredictCard({ symbol, name, compact }: Props
         <button onClick={load} className="flex-1 flex items-center justify-center gap-2 text-xs text-muted hover:text-white transition-colors py-1">
           <span>🧩</span>
           <span className="font-medium">Load constituent-based prediction</span>
-          <span className="text-[10px] text-slate-600 hidden sm:inline">— bottom-up from index constituents</span>
+          <span className="text-[10px] text-slate-400 hidden sm:inline">— bottom-up from index constituents</span>
         </button>
         <button onClick={sync} disabled={syncing}
           className="shrink-0 text-[10px] text-blue-400 hover:text-blue-300 px-2.5 py-1 border border-blue-800 bg-blue-950 rounded-lg hover:bg-blue-900 transition-colors disabled:opacity-40 flex items-center gap-1">
@@ -387,7 +387,7 @@ export default function ConstituentsPredictCard({ symbol, name, compact }: Props
               </tr>
             </tfoot>
           </table>
-          <div className="text-[9px] text-slate-600 mt-2 px-1">
+          <div className="text-[9px] text-slate-400 mt-2 px-1">
             M=MACD · V=Volume · D=200DMA · F=FII sensitivity · Click row to expand
             · {new Date(d.predicted_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
           </div>

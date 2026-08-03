@@ -652,7 +652,7 @@ async def predict_by_constituents(index_key: str):
         return JSONResponse(content={"error": f"Could not fetch live price for {index_symbol}"}, status_code=503)
 
     # Fetch global factors (same as top-down)
-    loop     = asyncio.get_event_loop()
+    loop     = asyncio.get_running_loop()
     executor = ThreadPoolExecutor(max_workers=16)
 
     from api.routes.predict import _fetch_global_factors, _load_predictions, _pred_key, _next_trading_date
@@ -982,7 +982,7 @@ async def constituents_view(index_key: str):
     base_for_contrib = index_prev if index_prev > 0 else index_cmp
 
     # Quick per-stock data using fast_info only (no full analysis — fast)
-    loop     = asyncio.get_event_loop()
+    loop     = asyncio.get_running_loop()
     executor = ThreadPoolExecutor(max_workers=16)
 
     def fetch_stock(sym_w):

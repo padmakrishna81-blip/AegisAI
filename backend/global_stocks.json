@@ -6,12 +6,6 @@
     "sector": ""
   },
   {
-    "symbol": "ORCL",
-    "name": "Oracle Corporation",
-    "exchange": "NYSE",
-    "sector": "Technology"
-  },
-  {
     "symbol": "NVDA",
     "name": "NVIDIA Corporation",
     "exchange": "NASDAQ",
@@ -51,6 +45,18 @@
     "symbol": "ASML",
     "name": "ASML Holding N.V. - New York Re",
     "exchange": "NASDAQ",
+    "sector": "Technology"
+  },
+  {
+    "symbol": "ORCL",
+    "name": "Oracle Corporation",
+    "exchange": "NYSE",
+    "sector": "Technology"
+  },
+  {
+    "symbol": "SAP",
+    "name": "SAP  SE",
+    "exchange": "NYSE",
     "sector": "Technology"
   }
 ]

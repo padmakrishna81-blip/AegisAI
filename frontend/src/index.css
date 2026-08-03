@@ -7,7 +7,7 @@
   --color-background: #0f172a;
   --color-card: #1e293b;
   --color-border: #334155;
-  --color-muted: #475569;
+  --color-muted: #94a3b8;   /* slate-400 — readable in dark mode */
 }
 
 :root.light {

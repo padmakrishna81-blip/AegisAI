@@ -255,7 +255,7 @@ async def etf_overview():
             return {"symbol": sym, "name": item["name"], "type": item["type"],
                     "category": item["category"], "error": str(e)[:100]}
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     executor = ThreadPoolExecutor(max_workers=10)
     tasks = [loop.run_in_executor(executor, _analyze_one, item) for item in all_items]
     results = await asyncio.gather(*tasks)
@@ -441,7 +441,7 @@ async def predict_index(symbol: str):
             "note": "GIFT Nifty unavailable on Yahoo Finance — prediction uses technicals, global correlations, and news sentiment",
         })
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     executor = ThreadPoolExecutor(max_workers=1)
     result = await loop.run_in_executor(executor, _do_predict)
     return JSONResponse(content=result)

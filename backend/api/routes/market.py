@@ -42,7 +42,7 @@ async def get_sector_detail(sector_name: str):
     from data.indices import NIFTY50
     nifty50_set = set(NIFTY50)
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     executor = ThreadPoolExecutor(max_workers=8)
 
     # Analyze ALL stocks in the sector (no limit), sorted by score
@@ -162,7 +162,7 @@ async def get_all_sectors():
         if sec not in sector_rep:
             sector_rep[sec] = sym
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     executor = ThreadPoolExecutor(max_workers=8)
 
     async def get_one(sec, sym):
@@ -310,7 +310,7 @@ async def get_index_history_data(symbol_key: str, sessions: int = 30):
         rows.reverse()   # most recent first
         return rows
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     rows = await loop.run_in_executor(ThreadPoolExecutor(max_workers=1), fetch)
 
     return JSONResponse(content=clean_for_json({
@@ -327,7 +327,7 @@ async def get_global_indices():
     import asyncio
     from concurrent.futures import ThreadPoolExecutor
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     executor = ThreadPoolExecutor(max_workers=10)
     tasks = [loop.run_in_executor(executor, _fetch_one_index, item) for item in GLOBAL_INDICES]
     results = await asyncio.gather(*tasks)
@@ -405,7 +405,7 @@ async def get_gift_nifty():
         except Exception as e:
             return {"error": str(e)[:120]}
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     data = await loop.run_in_executor(ThreadPoolExecutor(max_workers=1), fetch)
     return JSONResponse(content=clean_for_json(data))
 
@@ -653,7 +653,7 @@ async def get_market_news():
     if cache["data"] and (time.time() - cache["ts"]) < 1800:
         return JSONResponse(content=clean_for_json({"news": cache["data"], "count": len(cache["data"])}))
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     executor = ThreadPoolExecutor(max_workers=1)
     items = await loop.run_in_executor(executor, _fetch_news)
     _news_cache["data"] = items
@@ -743,9 +743,74 @@ async def get_results_calendar():
     if cache["data"] is not None and (time.time() - cache["ts"]) < 3600:
         return JSONResponse(content=clean_for_json({"events": cache["data"], "count": len(cache["data"])}))
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     executor = ThreadPoolExecutor(max_workers=1)
     items = await loop.run_in_executor(executor, _fetch_results_calendar)
     _RESULTS_CACHE["data"] = items
     _RESULTS_CACHE["ts"] = time.time()
     return JSONResponse(content=clean_for_json({"events": items, "count": len(items)}))
+
+
+# ── Indian ADRs ───────────────────────────────────────────────────────────────
+_INDIAN_ADRS = [
+    {"symbol": "INFY",  "name": "Infosys",           "nse": "INFY",        "sector": "IT"},
+    {"symbol": "HDB",   "name": "HDFC Bank",          "nse": "HDFCBANK",    "sector": "Banking"},
+    {"symbol": "IBN",   "name": "ICICI Bank",         "nse": "ICICIBANK",   "sector": "Banking"},
+    {"symbol": "WIT",   "name": "Wipro",              "nse": "WIPRO",       "sector": "IT"},
+    {"symbol": "RDY",   "name": "Dr. Reddys Lab",     "nse": "DRREDDY",     "sector": "Pharma"},
+    {"symbol": "MFG",   "name": "Mahindra Finance",   "nse": "M&MFIN",      "sector": "NBFC"},
+    {"symbol": "MMYT",  "name": "MakeMyTrip",         "nse": None,          "sector": "Travel"},
+    {"symbol": "EXLS",  "name": "EXL Services",       "nse": None,          "sector": "IT"},
+    {"symbol": "SIFY",  "name": "Sify Technologies",  "nse": None,          "sector": "IT"},
+]
+
+_ADR_CACHE: dict = {"data": None, "ts": 0.0}
+
+
+def _fetch_adrs() -> list:
+    import yfinance as yf, time as _time
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _fetch_one(entry: dict) -> dict | None:
+        sym = entry["symbol"]
+        try:
+            fi = yf.Ticker(sym).fast_info
+            price = float(getattr(fi, "last_price", None) or 0)
+            prev  = float(getattr(fi, "previous_close", None) or 0)
+            high  = float(getattr(fi, "year_high", None) or 0)
+            low   = float(getattr(fi, "year_low", None) or 0)
+            if not price:
+                return None
+            chg_amt = round(price - prev, 4) if prev else 0.0
+            chg_pct = round((price / prev - 1) * 100, 2) if prev else 0.0
+            return {
+                **entry,
+                "cmp":         round(price, 2),
+                "prev_close":  round(prev, 2),
+                "change_amt":  chg_amt,
+                "change_pct":  chg_pct,
+                "high_52w":    round(high, 2),
+                "low_52w":     round(low, 2),
+                "currency":    "USD",
+            }
+        except Exception:
+            return None
+
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        results = list(ex.map(_fetch_one, _INDIAN_ADRS))
+    return [r for r in results if r]
+
+
+@router.get("/market/adrs")
+async def get_adrs():
+    """Indian ADRs listed on NYSE/NASDAQ — live price, change, 52W range."""
+    import asyncio, time
+    cache = _ADR_CACHE
+    if cache["data"] is not None and (time.time() - cache["ts"]) < 300:
+        return JSONResponse(content=clean_for_json({"adrs": cache["data"], "count": len(cache["data"])}))
+    loop = asyncio.get_running_loop()
+    from concurrent.futures import ThreadPoolExecutor
+    items = await loop.run_in_executor(ThreadPoolExecutor(max_workers=1), _fetch_adrs)
+    _ADR_CACHE["data"] = items
+    _ADR_CACHE["ts"] = time.time()
+    return JSONResponse(content=clean_for_json({"adrs": items, "count": len(items)}))

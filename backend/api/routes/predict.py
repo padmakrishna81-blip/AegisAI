@@ -134,33 +134,95 @@ def _fetch_global_factors() -> dict:
     except Exception:
         pass
 
-    # Derive global bias score (-3 to +3)
+    # ── Option A: Staleness weighting ────────────────────────────────────────
+    # CMP already prices in all known global factors from the last trading session.
+    # For next-session prediction, only apply factors that are NEW since Indian market closed.
+    #
+    # Indian market closes 15:30 IST (10:00 UTC). US market closes 21:00 ET (02:30 IST next day).
+    # After Indian close but before US close → S&P/crude are live new data → full weight
+    # After US close on weekday (02:30–09:15 IST next day) → next morning → full weight
+    # On weekend (Sat/Sun) → US closed, factors are stale → heavily discounted
+    # During Indian market hours → intraday, factors partially priced in → use CMP-based
+    #
+    # Staleness factor: how much of the global factor is NOT yet priced into CMP
+    now_ist    = datetime.now(IST)
+    now_utc    = datetime.now(timezone.utc)
+    weekday    = now_ist.weekday()  # 0=Mon … 4=Fri, 5=Sat, 6=Sun
+    now_time   = now_ist.time()
+    is_market_open = (weekday < 5) and dtime(9, 15) <= now_time <= dtime(15, 30)
+
+    # Estimate hours since last US market close (approx 21:00 ET = 02:30 IST next day)
+    # and since last Indian close (15:30 IST)
+    india_closed = now_time > dtime(15, 30) or not (weekday < 5)
+    us_session_active = (weekday < 5 and dtime(20, 30) <= now_time) or \
+                        (weekday < 5 and now_time <= dtime(2, 30)) or \
+                        (weekday == 5 and now_time <= dtime(2, 30))  # Friday night
+
+    if weekday >= 5:
+        # Weekend: US closed Friday, factors fully priced into Friday's CMP
+        # Indian market opens Monday — gap between Friday close and Monday open
+        # is what we're predicting. But Saturday/Sunday S&P data = Friday's = already priced.
+        # Only GIFT Nifty (Sunday evening) carries new info for Monday open.
+        staleness = {
+            "sp500":  0.05,   # almost fully priced in from Friday
+            "crude":  0.10,   # small residual (weekend geopolitical)
+            "gift":   1.00,   # GIFT Nifty is always live for next open
+            "vix":    0.30,   # VIX fear level still relevant as forward signal
+        }
+    elif india_closed and us_session_active:
+        # Post-Indian close, US still open → fresh data, not yet priced into Indian CMP
+        staleness = {
+            "sp500":  1.00,
+            "crude":  1.00,
+            "gift":   1.00,
+            "vix":    1.00,
+        }
+    elif not india_closed:
+        # Indian market is open → intraday, factors partially reflected in CMP already
+        staleness = {
+            "sp500":  0.30,   # yesterday's US move already in today's open
+            "crude":  0.40,
+            "gift":   0.60,   # GIFT gap already reflected in morning open
+            "vix":    0.70,   # VIX still relevant intraday
+        }
+    else:
+        # Post-US close, pre-Indian open (overnight window) → fresh for next session
+        staleness = {
+            "sp500":  1.00,
+            "crude":  1.00,
+            "gift":   1.00,
+            "vix":    1.00,
+        }
+
+    factors["staleness"] = staleness
+
+    # Apply staleness to the raw factor values before bias calculation
+    sp500_effective  = (factors.get("sp500_chg_pct")  or 0) * staleness["sp500"]
+    crude_effective  = (factors.get("crude_chg_pct")   or 0) * staleness["crude"]
+    gift_effective   = (factors.get("gift_nifty_gap")  or 0) * staleness["gift"]
+    vix_val          = factors.get("vix") or 18
+
+    # Store effective values for use in _compute_prediction
+    factors["sp500_chg_pct_effective"]  = round(sp500_effective, 2)
+    factors["crude_chg_pct_effective"]  = round(crude_effective, 2)
+    factors["gift_nifty_gap_effective"] = round(gift_effective,  1)
+
+    # ── Derive global bias score using effective (staleness-adjusted) values ──
     bias = 0
-    if factors["sp500_chg_pct"] is not None:
-        if factors["sp500_chg_pct"] > 0.5:   bias += 1
-        elif factors["sp500_chg_pct"] < -0.5: bias -= 1
-        if factors["sp500_chg_pct"] > 1.5:   bias += 1
-        elif factors["sp500_chg_pct"] < -1.5: bias -= 1
-    if factors["vix"] is not None:
-        if factors["vix"] > 25:  bias -= 1
-        if factors["vix"] > 35:  bias -= 1
-    if factors["crude_chg_pct"] is not None:
-        if factors["crude_chg_pct"] > 2:   bias -= 1  # high crude = bad for India
-        elif factors["crude_chg_pct"] < -2: bias += 0.5
-    if factors["gift_nifty_gap"] is not None:
-        if factors["gift_nifty_gap"] > 50:    bias += 1
-        elif factors["gift_nifty_gap"] < -50: bias -= 1
-
-    factors["global_bias_score"] = round(bias, 1)
-    if bias >= 1.5:    factors["global_bias"] = "bullish"
-    elif bias <= -1.5: factors["global_bias"] = "bearish"
-    else:              factors["global_bias"] = "neutral"
-
-    # ── Intraday signals (only during market hours 9:15–15:30 IST on weekdays) ──
-    now_ist  = datetime.now(IST)
-    now_time = now_ist.time()
-    is_weekday = now_ist.weekday() < 5  # Mon=0 … Fri=4; Sat=5, Sun=6
-    is_market_open = is_weekday and dtime(9, 15) <= now_time <= dtime(15, 30)
+    if sp500_effective:
+        if sp500_effective > 0.5:   bias += 1
+        elif sp500_effective < -0.5: bias -= 1
+        if sp500_effective > 1.5:   bias += 1
+        elif sp500_effective < -1.5: bias -= 1
+    if vix_val * staleness["vix"] > 25 * staleness["vix"]:
+        if vix_val > 25: bias -= 1
+        if vix_val > 35: bias -= 1
+    if crude_effective:
+        if crude_effective > 2:   bias -= 1
+        elif crude_effective < -2: bias += 0.5
+    if gift_effective:
+        if gift_effective > 50:    bias += 1
+        elif gift_effective < -50: bias -= 1
     if is_market_open:
         try:
             import yfinance as yf
@@ -207,7 +269,7 @@ def _fetch_global_factors() -> dict:
         factors["mode"] = "intraday"
     else:
         # Weekend or outside market hours
-        if not is_weekday:
+        if weekday >= 5:
             factors["mode"] = "overnight"  # weekend — use overnight mode
         elif now_time < dtime(9, 15):
             factors["mode"] = "overnight"
@@ -337,11 +399,18 @@ def _compute_prediction(
     macd     = float(tech_indicators.get("macd") or 0)
     atr_pct  = float(tech_indicators.get("atr_pct") or 1.0)
 
-    gift_gap   = float(global_factors.get("gift_nifty_gap") or 0)
-    sp500_chg  = float(global_factors.get("sp500_chg_pct")  or 0)
+    # Use staleness-adjusted effective values — prevents double-counting drivers
+    # already priced into CMP from the previous session
+    gift_gap   = float(global_factors.get("gift_nifty_gap_effective") or
+                       global_factors.get("gift_nifty_gap") or 0)
+    sp500_chg  = float(global_factors.get("sp500_chg_pct_effective") or
+                       global_factors.get("sp500_chg_pct")  or 0)
     vix        = float(global_factors.get("vix")            or 18)
-    crude_chg  = float(global_factors.get("crude_chg_pct")  or 0)
+    crude_chg  = float(global_factors.get("crude_chg_pct_effective") or
+                       global_factors.get("crude_chg_pct")  or 0)
     gb_score   = float(global_factors.get("global_bias_score") or 0)
+
+    staleness  = global_factors.get("staleness", {})  # for display
 
     news_impact     = _scan_news_impact(recent_news or [])
     news_bias       = float(news_impact.get("news_bias_score", 0))
@@ -477,9 +546,15 @@ def _compute_prediction(
         sym = "⚠" if top_alert["type"] == "bearish" else "✦"
         news_note = f' {sym} "{h}"'
 
+    # Add staleness note if drivers are discounted
+    sp_stale   = staleness.get("sp500", 1.0)
+    stale_note = ""
+    if sp_stale < 0.5:
+        stale_note = f" (Note: global factors {int((1-sp_stale)*100)}% discounted — already priced into CMP)"
+
     plain_english = (
         f"Open expected {open_base:,.0f} ±{open_half:.0f} pts (drivers: {gap_driver_str}).{large_note} "
-        f"Day likely closes {dir_word} near {close_base:,.0f} ±{close_half:.0f} pts.{news_note}"
+        f"Day likely closes {dir_word} near {close_base:,.0f} ±{close_half:.0f} pts.{news_note}{stale_note}"
     ).strip()
 
     return {
@@ -657,46 +732,71 @@ async def predict_next_session(symbol: str, force: bool = Query(default=False)):
     session_date = _next_trading_date()
     key = _pred_key(sym, session_date)
 
-    # Check cache first (don't recompute if already done for this session)
+    # Check cache — return existing if:
+    # 1. Not forcing, OR
+    # 2. Market already closed (actual_close filled) — never overwrite evaluated predictions
     with _pred_lock:
         data = _load_predictions()
         existing = data["predictions"].get(key)
 
-    if existing and not force:
-        return JSONResponse(content=clean_for_json(existing))
+    if existing:
+        # Never overwrite once actual_close is filled (post-evaluation)
+        if existing.get("actual_close") is not None:
+            return JSONResponse(content=clean_for_json(existing))
+        # After market closes (15:30 IST), freeze the prediction — it's the "final" one
+        now_ist = datetime.now(IST)
+        if now_ist.weekday() < 5 and now_ist.time() > dtime(15, 30) and not force:
+            existing["prediction_frozen"] = True
+            return JSONResponse(content=clean_for_json(existing))
+        if not force:
+            return JSONResponse(content=clean_for_json(existing))
 
-    # During live market hours: allow prediction (uses intraday mode), just label it clearly
-    # Only block if market hours AND not force AND NOT intraday mode
+    # During live market hours: allow prediction (uses intraday mode)
     if _is_market_hours() and not force:
         # Still generate — intraday factors will be included
         pass  # fall through to build()
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     executor = ThreadPoolExecutor(max_workers=3)
 
     def build():
-        # Full analysis for scores + tech indicators
-        result  = calculate_full(sym)
-        scores  = {
-            "overall":        result.get("overall_score", 50),
-            "company_health": result["scores"].get("company_health", 50),
-            "technical":      result["scores"].get("technical_strength", 50),
-            "growth":         result["scores"].get("growth_trend", 50),
-            "macro":          result["scores"].get("macro_environment", 50),
-        }
-        tech_ind = result.get("technical_indicators") or {}
-        current_price = float(result.get("current_price") or 0)
-        company_name  = result.get("company_name") or sym
+        # For indices skip heavy fundamental engines — use fast_info + macro only
+        if sym.startswith("^"):
+            import yfinance as _yf
+            fi = _yf.Ticker(sym).fast_info
+            current_price = float(getattr(fi, "last_price", None) or getattr(fi, "regular_market_price", None) or 0)
+            INDEX_NAMES_MAP = {"^NSEI": "NIFTY 50", "^NSEBANK": "Bank Nifty", "^BSESN": "Sensex"}
+            company_name = INDEX_NAMES_MAP.get(sym, sym)
+            scores = {"overall": 50, "company_health": 50, "technical": 50, "growth": 50, "macro": 50}
+            tech_ind = {}
+            recent_news = []
+        else:
+            # Full analysis for scores + tech indicators
+            result  = calculate_full(sym)
+            scores  = {
+                "overall":        result.get("overall_score", 50),
+                "company_health": result["scores"].get("company_health", 50),
+                "technical":      result["scores"].get("technical_strength", 50),
+                "growth":         result["scores"].get("growth_trend", 50),
+                "macro":          result["scores"].get("macro_environment", 50),
+            }
+            tech_ind = result.get("technical_indicators") or {}
+            current_price = float(result.get("current_price") or 0)
+            company_name  = result.get("company_name") or sym
+            recent_news = result.get("recent_news") or []
 
-        # Recent news from business_events engine (already fetched inside calculate_full)
-        recent_news = result.get("recent_news") or []
-
-        # ATM IV from NSE
+        # ATM IV from NSE — use a daemon thread so it doesn't block if slow
         atm_iv = None
         try:
             from api.routes.cc_strategy import _get_atm_iv
-            bare = sym.replace(".NS", "").replace("^", "")
-            atm_iv = _get_atm_iv(bare)
+            import threading as _th
+            _result = [None]
+            def _fetch_iv():
+                try: _result[0] = _get_atm_iv(sym.replace(".NS","").replace("^",""))
+                except Exception: pass
+            _t = _th.Thread(target=_fetch_iv, daemon=True)
+            _t.start(); _t.join(timeout=5)
+            atm_iv = _result[0]
         except Exception:
             pass
 
@@ -744,7 +844,7 @@ async def predict_benchmarks():
     import asyncio
     from concurrent.futures import ThreadPoolExecutor
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     async def get_one(sym):
         from fastapi.testclient import TestClient
@@ -800,7 +900,7 @@ async def pre_generate_predictions(body: PreGenerateInput):
         })
 
     # Generate in parallel batches — max 8 concurrent (full analysis is heavy)
-    loop     = asyncio.get_event_loop()
+    loop     = asyncio.get_running_loop()
     executor = ThreadPoolExecutor(max_workers=8)
 
     async def generate_one(sym: str):
@@ -921,7 +1021,147 @@ async def trigger_fill_actuals(session_date: str = Query(default="")):
         session_date = date.today().isoformat()
     import asyncio
     from concurrent.futures import ThreadPoolExecutor
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     count = await loop.run_in_executor(ThreadPoolExecutor(max_workers=1),
                                        fill_actuals, session_date)
     return JSONResponse(content={"updated": count, "session_date": session_date})
+
+
+@router.get("/predict/intraday-live/{symbol}")
+async def intraday_live_prediction(symbol: str):
+    """
+    Tomorrow's probable opening & day range — computed from live intraday signals only.
+    Does NOT use S&P500/crude/VIX from yesterday (already priced into CMP).
+    Only available during market hours (9:15–15:30 IST weekdays).
+    """
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    import re
+
+    now_ist  = datetime.now(IST)
+    weekday  = now_ist.weekday()
+    now_time = now_ist.time()
+    is_market_open = (weekday < 5) and dtime(9, 15) <= now_time <= dtime(15, 30)
+
+    INDEX_BARE = {"^NSEI": "NIFTY", "^NSEBANK": "BANKNIFTY", "^BSESN": None}
+    INDEX_MULT = {"^NSEI": 1.0, "^NSEBANK": 2.5, "^BSESN": 3.3}
+
+    if not is_market_open:
+        return JSONResponse(content=clean_for_json({
+            "symbol": symbol, "market_hours": False,
+            "message": "Live intraday prediction available 9:15 AM – 3:30 PM IST on weekdays.",
+        }))
+
+    loop = asyncio.get_running_loop()
+    executor = ThreadPoolExecutor(max_workers=3)
+
+    def compute():
+        import yfinance as yf
+        import requests as _req, time as _t
+
+        bare = INDEX_BARE.get(symbol)
+        mult = INDEX_MULT.get(symbol, 1.0)
+
+        # CMP + intraday open
+        try:
+            fi = yf.Ticker(symbol).fast_info
+            cmp        = float(getattr(fi, "last_price", None) or 0)
+            today_open = float(getattr(fi, "open", None) or cmp)
+        except Exception:
+            cmp = today_open = 0
+        if cmp <= 0:
+            return {"symbol": symbol, "error": "Could not fetch CMP", "market_hours": True}
+        intraday_move_pct = round((cmp / today_open - 1) * 100, 2) if today_open > 0 else 0
+
+        # GIFT Nifty live
+        gift_gap = 0.0
+        try:
+            r = _req.get("https://www.equitypandit.com/giftnifty/",
+                         headers={"User-Agent": "Mozilla/5.0"}, timeout=6)
+            chg_m = re.search(r"gift_Nifty_Live_Change[^>]+>([^<]+)", r.text)
+            if chg_m:
+                cm = re.search(r"([+-]?[\d,.]+)\s*\(([+-]?[\d,.]+)%\)", chg_m.group(1))
+                if cm: gift_gap = float(cm.group(1).replace(",", ""))
+        except Exception:
+            pass
+        gift_gap_scaled = round(gift_gap * mult, 1)
+
+        # PCR from NSE option chain
+        pcr = 1.0; pcr_signal = "neutral"
+        try:
+            if bare:
+                from jugaad_data.nse import NSELive
+                nse = NSELive()
+                data = nse.index_option_chain(bare)
+                rows = data.get("filtered", {}).get("data", []) or data.get("records", {}).get("data", [])
+                total_put_oi  = sum(float((r.get("PE") or {}).get("openInterest", 0) or 0) for r in rows)
+                total_call_oi = sum(float((r.get("CE") or {}).get("openInterest", 0) or 0) for r in rows)
+                if total_call_oi > 0:
+                    pcr = round(total_put_oi / total_call_oi, 2)
+                    if pcr > 1.2:   pcr_signal = "bullish"
+                    elif pcr < 0.8: pcr_signal = "bearish"
+        except Exception:
+            pass
+
+        # Volume vs 5-day avg
+        vol_ratio = 1.0; vol_signal = "normal"
+        try:
+            hist5 = yf.Ticker(symbol).history(period="5d")
+            if not hist5.empty and len(hist5) >= 2:
+                today_vol = float(hist5["Volume"].iloc[-1])
+                avg_vol   = float(hist5["Volume"].iloc[:-1].mean())
+                if avg_vol > 0:
+                    vol_ratio = round(today_vol / avg_vol, 2)
+                    if vol_ratio > 1.5:   vol_signal = "high"
+                    elif vol_ratio < 0.6: vol_signal = "low"
+        except Exception:
+            pass
+
+        # Tomorrow's events
+        event_tomorrow = None
+        try:
+            from api.routes.market import _fetch_results_calendar
+            from data.indices import NIFTY50
+            nifty_bare = {s.replace(".NS","") for s in NIFTY50}
+            for ev in _fetch_results_calendar():
+                if ev.get("days_from_today") == 1 and ev.get("symbol","").upper() in nifty_bare:
+                    event_tomorrow = ev; break
+        except Exception:
+            pass
+
+        # Compute tomorrow's probable opening from CMP (not prev_close)
+        open_bias  = gift_gap_scaled * 0.50
+        open_bias += (pcr - 1.0) * cmp * 0.004
+        if intraday_move_pct > 1.0:   open_bias += cmp * 0.001
+        elif intraday_move_pct < -1.0: open_bias -= cmp * 0.001
+        if vol_signal == "high":   open_bias *= 1.10
+        elif vol_signal == "low":  open_bias *= 0.85
+        open_bias = round(open_bias, 1)
+
+        base_range = max(40, min(80, round(abs(cmp) * 0.004, 0)))
+        if event_tomorrow: base_range = round(base_range * 1.6, 0)
+
+        ob   = round(cmp + open_bias, 1)
+        day_half = round(base_range * 2.0, 0)
+        direction = "bullish" if open_bias > 5 else "bearish" if open_bias < -5 else "neutral"
+
+        return clean_for_json({
+            "symbol": symbol, "market_hours": True,
+            "cmp": round(cmp, 2), "intraday_move_pct": intraday_move_pct, "direction": direction,
+            "probable_open_base": ob,
+            "probable_open_low":  round(ob - base_range, 1),
+            "probable_open_high": round(ob + base_range, 1),
+            "probable_range_low":  round(ob - day_half, 1),
+            "probable_range_high": round(ob + day_half, 1),
+            "open_bias_pts": open_bias,
+            "drivers": {
+                "gift_gap": gift_gap_scaled, "pcr": pcr, "pcr_signal": pcr_signal,
+                "vol_ratio": vol_ratio, "vol_signal": vol_signal,
+                "event_tomorrow": event_tomorrow.get("purpose") if event_tomorrow else None,
+                "intraday_move": intraday_move_pct,
+            },
+            "note": "Live intraday signals only. S&P500/crude already priced into CMP.",
+        })
+
+    result = await loop.run_in_executor(executor, compute)
+    return JSONResponse(content=result)

@@ -117,7 +117,7 @@ async def search_global_stocks(q: str):
         except Exception:
             return []
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     results = await loop.run_in_executor(ThreadPoolExecutor(max_workers=1), do_search)
     return JSONResponse(content={"results": results})
 
@@ -132,7 +132,7 @@ async def list_global_stocks():
     if not items:
         return JSONResponse(content={"stocks": []})
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     executor = ThreadPoolExecutor(max_workers=8)
 
     async def enrich(item):
@@ -184,7 +184,7 @@ async def global_stock_detail(symbol: str):
     from concurrent.futures import ThreadPoolExecutor
     import yfinance as yf
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     executor = ThreadPoolExecutor(max_workers=4)
 
     def fetch_detail():

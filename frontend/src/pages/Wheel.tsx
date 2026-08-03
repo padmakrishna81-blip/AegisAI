@@ -27,14 +27,18 @@ interface WheelScanResult {
   pct_from_high: number
   pct_from_low: number
   change_5d: number
+  change_1d?: number
+  opportunity_score?: number
+  opportunity_label?: string
+  opportunity_reason?: string
   above_200dma: boolean
   atm_iv: number | null
   lot_size: number
   score: number
   // Wheel-specific
-  put_strike_otm5: number    // 5% OTM put — conservative
-  put_strike_otm8: number    // 8% OTM put — balanced
-  effective_buy_otm5: number // put_strike - estimated premium
+  put_strike_otm5: number
+  put_strike_otm8: number
+  effective_buy_otm5: number
   effective_buy_otm8: number
   total_funds_required: number
 }
@@ -552,12 +556,13 @@ function PutPlanPanel({ plan, onClose, onPaperTrade, onRefetch }: {
 const WHEEL_STORAGE_KEY = 'aegisai-wheel-criteria-v1'
 
 const DEFAULT_WHEEL_CRITERIA = {
-  flat_pct: '3',           // slightly wider than CC — we WANT to buy the stock
-  below_high_pct: '8',     // must be below high — no point selling put near highs
-  above_low_pct: '15',     // 15% above 52W low — enough recovery room
+  flat_pct: '3',
+  below_high_pct: '8',
+  above_low_pct: '15',
   below_sma50_pct: '12',
-  min_iv: '22',            // lower threshold — put premium is richer than call
+  min_iv: '22',
   min_score: '0',
+  results_days: '7',
 }
 
 export default function Wheel() {
@@ -582,6 +587,8 @@ export default function Wheel() {
 
   const [assessInput, setAssessInput]   = useState('')
   const [assessLoading, setAssessLoading] = useState(false)
+  const [oppScore1, setOppScore1]       = useState('-5')   // wheel: fell ≥5% = score 1
+  const [oppScore2, setOppScore2]       = useState('-2')   // wheel: fell ≥2% = score 2
   const [assessResults, setAssessResults] = useState<WheelScanResult[]>([])
 
   const updateCriteria = (k: string, v: string) => setCriteria((p: typeof DEFAULT_WHEEL_CRITERIA) => ({ ...p, [k]: v }))
@@ -600,6 +607,10 @@ export default function Wheel() {
         below_sma50_pct: criteria.below_sma50_pct,
         min_score:       criteria.min_score,
         min_iv:          criteria.min_iv,
+        strategy:        'wheel',
+        opp_score1:      String(oppScore1 !== '' ? parseFloat(oppScore1) : -5),
+        opp_score2:      String(oppScore2 !== '' ? parseFloat(oppScore2) : -2),
+        results_days:    criteria.results_days,
       })
       const r = await client.get(`/covered-calls/scan/strategy?${params}`)
       // Adapt results to WheelScanResult — add put strike estimates
@@ -745,6 +756,7 @@ export default function Wheel() {
             'Above Low': `≥${criteria.above_low_pct}%`,
             'Max below 50DMA': `${criteria.below_sma50_pct}%`,
             'Min IV': parseFloat(criteria.min_iv) > 0 ? `≥${criteria.min_iv}%` : 'OFF',
+            'Results': `${criteria.results_days}d`,
           }).map(([k, v]) => (
             <span key={k} className="px-2 py-0.5 bg-slate-800 border border-border rounded text-slate-300">
               <span className="text-muted">{k}: </span>{v}
@@ -765,6 +777,7 @@ export default function Wheel() {
                 { key: 'below_sma50_pct', label: 'Max below 50 DMA',   unit: '%',    hint: 'Avoid breakdown stocks' },
                 { key: 'min_iv',          label: 'Min ATM IV',         unit: '%',    hint: 'Higher IV = richer put premium. 22%+ is ideal.' },
                 { key: 'min_score',       label: 'Min AegisAI Score',  unit: '/100', hint: '0 = no filter' },
+                { key: 'results_days',    label: 'Results window',     unit: 'days', hint: 'Exclude stocks with results/events within this many days (default 7)' },
               ] as { key: string; label: string; unit: string; hint: string }[]).map(f => (
                 <div key={f.key}>
                   <label className="text-[10px] text-slate-300 block mb-1">{f.label}</label>
@@ -838,12 +851,28 @@ export default function Wheel() {
               </div>
             )}
           </div>
+          {/* Opportunity score thresholds */}
+          <div className="flex items-center gap-2 text-xs text-muted mt-1">
+            <span>🔥 Score 1 if fell ≥</span>
+            <input type="number" value={oppScore1} onChange={e => setOppScore1(e.target.value)}
+              className="w-14 bg-slate-800 border border-border rounded px-1.5 py-0.5 text-white text-xs text-right"
+              step="0.5" placeholder="-5" />
+            <span>% · Score 2 if fell ≥</span>
+            <input type="number" value={oppScore2} onChange={e => setOppScore2(e.target.value)}
+              className="w-14 bg-slate-800 border border-border rounded px-1.5 py-0.5 text-white text-xs text-right"
+              step="0.5" placeholder="-2" />
+            <span>% (defaults: -5% / -2%)</span>
+          </div>
           <button onClick={async () => {
             const syms = assessInput.split(/[\s,]+/).map(s => s.trim().toUpperCase()).filter(Boolean)
             if (!syms.length) return
             setAssessLoading(true)
             try {
-              const r = await client.post('/covered-calls/assess', { symbols: syms, min_iv: parseFloat(criteria.min_iv) || 22 })
+              const r = await client.post('/covered-calls/assess', {
+                symbols: syms, min_iv: parseFloat(criteria.min_iv) || 22, strategy: 'wheel',
+                opp_score1: oppScore1 !== '' ? parseFloat(oppScore1) : -5,
+                opp_score2: oppScore2 !== '' ? parseFloat(oppScore2) : -2,
+              })
               const all = (r.data.results || []).map((s: WheelScanResult) => ({
                 ...s,
                 put_strike_otm5:    Math.round((s.cmp || 0) * 0.95 / 5) * 5,
@@ -895,7 +924,8 @@ export default function Wheel() {
                 <tr className="text-[10px] text-muted border-b border-border bg-slate-800/40">
                   <th className="text-left px-5 py-2.5">Stock</th>
                   <th className="text-right px-3 py-2.5">CMP</th>
-                  <th className="text-right px-3 py-2.5">5d Chg</th>
+                  <th className="text-right px-3 py-2.5" title="5-day % change">5d %</th>
+                  <th className="text-center px-3 py-2.5" title="Opportunity score (1=best)">Opp</th>
                   <th className="text-right px-3 py-2.5">ATM IV</th>
                   <th className="text-right px-3 py-2.5">5% OTM Put</th>
                   <th className="text-right px-3 py-2.5">8% OTM Put</th>
@@ -927,9 +957,27 @@ export default function Wheel() {
                             </div>
                           </div>
                         </td>
-                        <td className="px-3 py-3 text-right text-white font-semibold">₹{r.cmp}</td>
-                        <td className={`px-3 py-3 text-right text-xs font-medium ${Math.abs(r.change_5d) < 0.5 ? 'text-muted' : r.change_5d > 0 ? 'text-score-green' : 'text-score-red'}`}>
-                          {r.change_5d >= 0 ? '+' : ''}{r.change_5d}%
+                        <td className="px-3 py-3 text-right">
+                          <div className="font-semibold text-white">₹{r.cmp}</div>
+                          <div className={`text-[10px] ${r.change_1d == null ? 'text-muted' : r.change_1d > 0 ? 'text-score-green' : r.change_1d < 0 ? 'text-score-red' : 'text-muted'}`}>
+                            {r.change_1d != null ? `${r.change_1d >= 0 ? '+' : ''}${r.change_1d.toFixed(2)}%` : ''}
+                          </div>
+                        </td>
+                        {/* 5d % change column */}
+                        <td className={`px-3 py-3 text-right text-xs font-medium ${r.change_5d == null ? 'text-muted' : r.change_5d > 0 ? 'text-score-green' : r.change_5d < 0 ? 'text-score-red' : 'text-muted'}`}>
+                          {r.change_5d != null ? `${r.change_5d >= 0 ? '+' : ''}${r.change_5d}%` : '—'}
+                        </td>
+                        {/* Opportunity score */}
+                        <td className="px-3 py-3 text-center">
+                          {r.opportunity_score != null ? (
+                            <span title={r.opportunity_reason} className={`text-xs font-bold px-1.5 py-0.5 rounded border ${
+                              r.opportunity_score === 1 ? 'bg-amber-950 border-amber-700 text-amber-300' :
+                              r.opportunity_score === 2 ? 'bg-blue-950 border-blue-800 text-blue-300' :
+                              'bg-slate-800 border-slate-700 text-slate-400'
+                            }`}>
+                              {r.opportunity_score}
+                            </span>
+                          ) : '—'}
                         </td>
                         <td className="px-3 py-3 text-right text-xs">
                           {r.atm_iv != null

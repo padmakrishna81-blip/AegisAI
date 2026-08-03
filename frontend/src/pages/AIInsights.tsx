@@ -3,6 +3,7 @@ import client from '../api/client'
 import { scoreToColor } from '../utils/formatters'
 import NseStockSearch from '../components/NseStockSearch'
 import NextSessionPredictCard from '../components/NextSessionPredictCard'
+import { useWatchlistStore } from '../store/watchlistStore'
 
 // ─── Prediction Accuracy Leaderboard ─────────────────────────────────────────
 
@@ -27,6 +28,8 @@ function PredictionLeaderboard() {
   const [history, setHistory] = useState<Record<string, unknown>[]>([])
   const [loading, setLoading] = useState(false)
   const [expanded, setExpanded] = useState(false)
+  const [showAll, setShowAll] = useState(false)
+  const { items: watchlistItems } = useWatchlistStore()
   const [filling, setFilling] = useState(false)
   const [fillMsg, setFillMsg] = useState('')
   const [detailSym, setDetailSym]           = useState<string | null>(null)
@@ -140,6 +143,15 @@ function PredictionLeaderboard() {
           {data && data.total_predictions > 0 && (
             <>
               <div className="grid grid-cols-4 gap-3">
+                {(() => {
+                  const PRIORITY_SYMS_STAT = new Set([
+                    '^NSEI', '^NSEBANK', '^BSESN',
+                    ...watchlistItems.filter(i => i.prediction_enabled).map(i => i.symbol),
+                  ])
+                  const priorityCount = data.by_symbol.filter(r => PRIORITY_SYMS_STAT.has(r.symbol)).length
+                  const otherCount    = data.by_symbol.length - priorityCount
+                  return (
+                    <>
                 <div className="bg-slate-800/60 rounded-xl p-3 text-center">
                   <div className="text-[10px] text-muted mb-0.5">Total Evaluated</div>
                   <div className="text-xl font-bold text-white">{data.total_predictions}</div>
@@ -153,12 +165,16 @@ function PredictionLeaderboard() {
                 </div>
                 <div className="bg-slate-800/60 rounded-xl p-3 text-center">
                   <div className="text-[10px] text-muted mb-0.5">Symbols Tracked</div>
-                  <div className="text-xl font-bold text-white">{data.by_symbol.length}</div>
+                  <div className="text-xl font-bold text-white">{priorityCount}</div>
+                  {otherCount > 0 && <div className="text-[9px] text-slate-500">+{otherCount} hidden</div>}
                 </div>
                 <div className="bg-slate-800/60 rounded-xl p-3 text-center">
                   <div className="text-[10px] text-muted mb-0.5">Scoring</div>
                   <div className="text-[10px] text-slate-300 mt-1">HIT = in range<br/>NEAR = ±0.5% outside<br/>MISS = beyond</div>
                 </div>
+                    </>
+                  )
+                })()}
               </div>
 
               {/* Leaderboard table */}
@@ -176,10 +192,20 @@ function PredictionLeaderboard() {
                     </tr>
                   </thead>
                   <tbody>
-                    {data.by_symbol.map(row => (
-                      <tr key={row.symbol}
-                        className="border-b border-border/30 hover:bg-slate-800/30 cursor-pointer"
-                        onClick={() => detailSym === row.symbol ? setDetailSym(null) : loadHistory(row.symbol)}>
+                    {(() => {
+                      const PRIORITY_SYMS = new Set([
+                        '^NSEI', '^NSEBANK', '^BSESN',
+                        ...watchlistItems.filter(i => i.prediction_enabled).map(i => i.symbol),
+                      ])
+                      const priorityRows = data.by_symbol.filter(r => PRIORITY_SYMS.has(r.symbol))
+                      const otherRows    = data.by_symbol.filter(r => !PRIORITY_SYMS.has(r.symbol))
+                      const displayRows  = showAll ? data.by_symbol : priorityRows
+                      return (
+                        <>
+                          {displayRows.map(row => (
+                            <tr key={row.symbol}
+                              className="border-b border-border/30 hover:bg-slate-800/30 cursor-pointer"
+                              onClick={() => detailSym === row.symbol ? setDetailSym(null) : loadHistory(row.symbol)}>
                         <td className="px-4 py-2.5">
                           <div className="font-semibold text-white">{row.symbol.replace('.NS','').replace('^','')}</div>
                           <div className="text-[10px] text-muted truncate max-w-[140px]">{row.name}</div>
@@ -206,6 +232,21 @@ function PredictionLeaderboard() {
                         </td>
                       </tr>
                     ))}
+                    {otherRows.length > 0 && (
+                      <tr>
+                        <td colSpan={7} className="px-4 py-2 text-center">
+                          <button onClick={() => setShowAll(s => !s)}
+                            className="text-[10px] text-muted hover:text-white transition-colors">
+                            {showAll
+                              ? `▲ Show less (hide ${otherRows.length} others)`
+                              : `▼ Show all (${otherRows.length} more symbols)`}
+                          </button>
+                        </td>
+                      </tr>
+                    )}
+                        </>
+                      )
+                    })()}
                   </tbody>
                 </table>
               </div>
@@ -225,71 +266,93 @@ function PredictionLeaderboard() {
                     </div>
                   </div>
 
-                  <div className="space-y-1 max-h-72 overflow-y-auto">
+                  <div className="space-y-2 max-h-80 overflow-y-auto">
                     {history.map((p: Record<string,unknown>, i) => {
                       const range   = p.range as Record<string,unknown>
                       const acc     = p.accuracy as string | null
                       const oacc    = p.open_accuracy as string | null
-                      // Find matching constituent prediction by session_date
+                      const isToday = i === 0 && p.actual_close == null
+                      const isFrozen = p.prediction_frozen as boolean | undefined
                       const cPred   = constHistory.find((c: Record<string,unknown>) => c.session_date === p.session_date) as Record<string,unknown> | undefined
                       const cAcc    = cPred?.accuracy as string | null
                       const cOAcc   = cPred?.open_accuracy as string | null
 
-                      const accBadgeCls = (a: string | null) =>
-                        a === 'HIT'  ? 'bg-green-950 text-green-400 border-green-800' :
-                        a === 'NEAR' ? 'bg-amber-950 text-amber-400 border-amber-800' :
-                        a === 'MISS' ? 'bg-red-950 text-red-400 border-red-800' : ''
+                      const badge = (a: string | null, label?: string) => a ? (
+                        <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold border ${
+                          a === 'HIT'  ? 'bg-green-950 text-green-400 border-green-800' :
+                          a === 'NEAR' ? 'bg-amber-950 text-amber-400 border-amber-800' :
+                          a === 'MISS' ? 'bg-red-950 text-red-400 border-red-800' : ''
+                        }`}>{label ? `${label}:` : ''}{a}</span>
+                      ) : null
+
+                      const hasOpenRange = range?.open_base != null
 
                       return (
-                        <div key={i} className="grid grid-cols-2 gap-3 border-b border-border/20 pb-1.5 last:border-0">
-                          {/* Left: top-down */}
-                          <div className="flex items-center gap-2 text-[10px]">
-                            <span className="text-muted w-20 shrink-0">{(p.session_date as string)}</span>
-                            <div className="flex-1 min-w-0">
-                              <span className="text-slate-400">
-                                {(range?.low as number)?.toFixed(0)}–{(range?.high as number)?.toFixed(0)}
-                              </span>
-                              {p.actual_close != null ? (
-                                <span className="text-white ml-1">act {p.actual_close as number}</span>
-                              ) : (
-                                <span className="text-muted ml-1">pending</span>
+                        <div key={i} className={`border border-border/30 rounded-lg p-2 space-y-1.5 ${isToday ? 'bg-blue-950/10 border-blue-900/40' : 'bg-slate-900/40'}`}>
+                          {/* Date + today indicator */}
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-semibold text-slate-300">
+                              {(p.session_date as string)}
+                              {isToday && !isFrozen && <span className="ml-1.5 text-[9px] text-blue-400 font-bold">● LIVE — updates until 3:30 PM</span>}
+                              {isToday && isFrozen && <span className="ml-1.5 text-[9px] text-amber-400 font-bold">🔒 FINAL — pending evaluation</span>}
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-2">
+                            {/* Left: Top-down */}
+                            <div className="space-y-1">
+                              <div className="text-[9px] text-slate-500 uppercase">Top-Down</div>
+                              {/* Opening range row */}
+                              {hasOpenRange && (
+                                <div className="flex items-center gap-1.5 text-[10px]">
+                                  <span className="text-slate-600">O:</span>
+                                  <span className="text-slate-400">{(range.open_low as number)?.toFixed(0)}–{(range.open_high as number)?.toFixed(0)}</span>
+                                  {p.actual_open != null ? (
+                                    <span className="text-white">→{(p.actual_open as number).toFixed(0)}</span>
+                                  ) : <span className="text-slate-600">pending</span>}
+                                  {badge(oacc)}
+                                </div>
                               )}
+                              {/* Closing range row */}
+                              <div className="flex items-center gap-1.5 text-[10px]">
+                                <span className="text-slate-600">C:</span>
+                                <span className="text-slate-400">{(range?.low as number)?.toFixed(0)}–{(range?.high as number)?.toFixed(0)}</span>
+                                {p.actual_close != null ? (
+                                  <span className="text-white">→{(p.actual_close as number).toFixed(0)}</span>
+                                ) : <span className="text-slate-600">pending</span>}
+                                {badge(acc)}
+                              </div>
                             </div>
-                            <div className="flex flex-col items-end gap-0.5 shrink-0">
-                              {acc ? (
-                                <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold border ${accBadgeCls(acc)}`}>{acc}</span>
-                              ) : <span className="text-[9px] text-slate-600">—</span>}
-                              {oacc && (
-                                <span className={`px-1 py-0.5 rounded text-[8px] font-bold border ${accBadgeCls(oacc)}`}>O:{oacc}</span>
+
+                            {/* Right: Constituent-based */}
+                            <div className="space-y-1">
+                              <div className="text-[9px] text-slate-500 uppercase">Constituent</div>
+                              {cPred ? (
+                                <>
+                                  {(cPred.open_low != null) && (
+                                    <div className="flex items-center gap-1.5 text-[10px]">
+                                      <span className="text-slate-600">O:</span>
+                                      <span className="text-slate-400">{(cPred.open_low as number)?.toFixed(0)}–{(cPred.open_high as number)?.toFixed(0)}</span>
+                                      {cPred.actual_open != null ? (
+                                        <span className="text-white">→{(cPred.actual_open as number).toFixed(0)}</span>
+                                      ) : <span className="text-slate-600">pending</span>}
+                                      {badge(cOAcc)}
+                                    </div>
+                                  )}
+                                  <div className="flex items-center gap-1.5 text-[10px]">
+                                    <span className="text-slate-600">C:</span>
+                                    <span className="text-slate-400">{(cPred.close_low as number)?.toFixed(0)}–{(cPred.close_high as number)?.toFixed(0)}</span>
+                                    {cPred.actual_close != null ? (
+                                      <span className="text-white">→{(cPred.actual_close as number).toFixed(0)}</span>
+                                    ) : <span className="text-slate-600">pending</span>}
+                                    {badge(cAcc)}
+                                  </div>
+                                </>
+                              ) : (
+                                <div className="text-[10px] text-slate-700 italic">no data</div>
                               )}
                             </div>
                           </div>
-
-                          {/* Right: constituent */}
-                          {cPred ? (
-                            <div className="flex items-center gap-2 text-[10px]">
-                              <div className="flex-1 min-w-0">
-                                <span className="text-slate-400">
-                                  {(cPred.close_low as number)?.toFixed(0)}–{(cPred.close_high as number)?.toFixed(0)}
-                                </span>
-                                {cPred.actual_close != null ? (
-                                  <span className="text-white ml-1">act {cPred.actual_close as number}</span>
-                                ) : (
-                                  <span className="text-muted ml-1">pending</span>
-                                )}
-                              </div>
-                              <div className="flex flex-col items-end gap-0.5 shrink-0">
-                                {cAcc ? (
-                                  <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold border ${accBadgeCls(cAcc)}`}>{cAcc}</span>
-                                ) : <span className="text-[9px] text-slate-600">—</span>}
-                                {cOAcc && (
-                                  <span className={`px-1 py-0.5 rounded text-[8px] font-bold border ${accBadgeCls(cOAcc)}`}>O:{cOAcc}</span>
-                                )}
-                              </div>
-                            </div>
-                          ) : (
-                            <div className="text-[10px] text-slate-700 italic flex items-center">no constituent data</div>
-                          )}
                         </div>
                       )
                     })}
@@ -687,6 +750,192 @@ function StockResult({ data }: { data: Record<string, unknown> }) {
   )
 }
 
+// ─── Tomorrow's Live Section ──────────────────────────────────────────────────
+
+interface IntradayLive {
+  symbol: string
+  market_hours: boolean
+  message?: string
+  cmp?: number
+  direction?: 'bullish' | 'bearish' | 'neutral'
+  probable_open_base?: number
+  probable_open_low?: number
+  probable_open_high?: number
+  probable_range_low?: number
+  probable_range_high?: number
+  open_bias_pts?: number
+  drivers?: {
+    gift_gap: number
+    pcr: number
+    pcr_signal: 'bullish' | 'bearish' | 'neutral'
+    vol_ratio: number
+    vol_signal: 'high' | 'normal' | 'low'
+    event_tomorrow: string | null
+    intraday_move: number
+  }
+  note?: string
+}
+
+const LIVE_INDICES = [
+  { symbol: '^NSEI',    name: 'NIFTY 50'   },
+  { symbol: '^NSEBANK', name: 'Bank Nifty' },
+  { symbol: '^BSESN',   name: 'Sensex'     },
+]
+
+function TomorrowLiveSection() {
+  const [rows, setRows]     = useState<(IntradayLive | null)[]>([])
+  const [loading, setLoading] = useState(false)
+  const [lastFetch, setLastFetch] = useState<Date | null>(null)
+
+  // IST market hours check (client-side, approximate)
+  const isMarketHours = () => {
+    const now = new Date()
+    const ist = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }))
+    const h = ist.getHours(), m = ist.getMinutes()
+    const day = ist.getDay()   // 0=Sun, 6=Sat
+    const timeVal = h * 60 + m
+    return day >= 1 && day <= 5 && timeVal >= 9 * 60 + 15 && timeVal <= 15 * 60 + 30
+  }
+
+  const marketOpen = isMarketHours()
+
+  const fetchAll = async () => {
+    setLoading(true)
+    const results = await Promise.allSettled(
+      LIVE_INDICES.map(({ symbol }) =>
+        client.get(`/predict/intraday-live/${encodeURIComponent(symbol)}`)
+          .then(r => r.data as IntradayLive)
+          .catch(() => null)
+      )
+    )
+    setRows(results.map(r => r.status === 'fulfilled' ? r.value : null))
+    setLastFetch(new Date())
+    setLoading(false)
+  }
+
+  useEffect(() => {
+    fetchAll()
+    if (!marketOpen) return
+    const interval = setInterval(fetchAll, 5 * 60 * 1000)   // refresh every 5 min
+    return () => clearInterval(interval)
+  }, [])
+
+  const fmt = (v: number | undefined) =>
+    v != null ? v.toLocaleString('en-IN', { maximumFractionDigits: 0 }) : '—'
+
+  const pcrColor = (s: string | undefined) =>
+    s === 'bullish' ? 'text-score-green' : s === 'bearish' ? 'text-score-red' : 'text-slate-400'
+
+  const volColor = (s: string | undefined) =>
+    s === 'high' ? 'text-score-green' : s === 'low' ? 'text-slate-500' : 'text-slate-400'
+
+  const dirColor = (d: string | undefined) =>
+    d === 'bullish' ? 'text-score-green' : d === 'bearish' ? 'text-score-red' : 'text-slate-400'
+
+  const anyData = rows.some(r => r?.market_hours)
+
+  return (
+    <div className={`rounded-xl border overflow-hidden transition-opacity ${marketOpen ? 'border-border opacity-100' : 'border-border/30 opacity-50'}`}>
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-3 bg-slate-800/40 border-b border-border/40">
+        <div className="flex items-center gap-2">
+          <span className="text-sm">📡</span>
+          <div>
+            <div className="text-xs font-semibold text-white">Tomorrow's Probable Opening & Range</div>
+            <div className="text-[10px] text-slate-400">
+              {marketOpen
+                ? 'Live intraday signals — GIFT Nifty · PCR · Volume · Events'
+                : 'Available during market hours (9:15 AM – 3:30 PM IST)'}
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {lastFetch && marketOpen && (
+            <span className="text-[9px] text-slate-500">
+              {lastFetch.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+            </span>
+          )}
+          {marketOpen && (
+            <button onClick={fetchAll} disabled={loading}
+              className="text-[10px] text-muted hover:text-white px-2 py-0.5 border border-border rounded hover:border-slate-500 disabled:opacity-40">
+              {loading ? '⟳' : '⟳ Refresh'}
+            </button>
+          )}
+          <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold border ${marketOpen ? 'bg-green-950 border-green-800 text-green-400' : 'bg-slate-800 border-slate-700 text-slate-500'}`}>
+            {marketOpen ? '● LIVE' : '● CLOSED'}
+          </span>
+        </div>
+      </div>
+
+      {/* Table */}
+      <div className={marketOpen ? '' : 'pointer-events-none'}>
+        <table className="w-full text-[10px]">
+          <thead>
+            <tr className="border-b border-border/30 text-[9px] text-slate-500 bg-slate-900/30">
+              <th className="text-left px-4 py-2">Index</th>
+              <th className="text-right px-3 py-2">CMP</th>
+              <th className="text-right px-3 py-2">Probable Open ±</th>
+              <th className="text-right px-3 py-2">Day Range</th>
+              <th className="text-center px-3 py-2">PCR</th>
+              <th className="text-center px-3 py-2">Volume</th>
+              <th className="text-center px-3 py-2">Tomorrow Event</th>
+            </tr>
+          </thead>
+          <tbody>
+            {LIVE_INDICES.map(({ symbol, name }, i) => {
+              const row = rows[i]
+              if (!row || !row.market_hours) return (
+                <tr key={symbol} className="border-b border-border/20">
+                  <td className="px-4 py-2.5 font-medium text-slate-400">{name}</td>
+                  <td colSpan={6} className="px-3 py-2.5 text-slate-600 text-center">
+                    {marketOpen ? 'Loading…' : 'Market closed'}
+                  </td>
+                </tr>
+              )
+              const d = row.drivers
+              return (
+                <tr key={symbol} className="border-b border-border/20 hover:bg-slate-800/20">
+                  <td className="px-4 py-2.5">
+                    <div className="font-semibold text-white">{name}</div>
+                    {d?.event_tomorrow && (
+                      <div className="text-[9px] text-amber-400">⚠ {d.event_tomorrow} tmrw</div>
+                    )}
+                  </td>
+                  <td className="px-3 py-2.5 text-right text-slate-300">{fmt(row.cmp)}</td>
+                  <td className={`px-3 py-2.5 text-right font-semibold ${dirColor(row.direction)}`}>
+                    {fmt(row.probable_open_base)}
+                    <div className="text-[9px] text-slate-500">
+                      {fmt(row.probable_open_low)}–{fmt(row.probable_open_high)}
+                    </div>
+                  </td>
+                  <td className={`px-3 py-2.5 text-right ${dirColor(row.direction)}`}>
+                    {fmt(row.probable_range_low)}–{fmt(row.probable_range_high)}
+                  </td>
+                  <td className={`px-3 py-2.5 text-center font-bold ${pcrColor(d?.pcr_signal)}`}>
+                    {d?.pcr?.toFixed(2)} {d?.pcr_signal === 'bullish' ? '↑' : d?.pcr_signal === 'bearish' ? '↓' : ''}
+                  </td>
+                  <td className={`px-3 py-2.5 text-center ${volColor(d?.vol_signal)}`}>
+                    {d?.vol_ratio?.toFixed(1)}×
+                    <div className="text-[9px]">{d?.vol_signal}</div>
+                  </td>
+                  <td className="px-3 py-2.5 text-center text-slate-500 text-[9px]">
+                    {d?.event_tomorrow || '—'}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+        {anyData && (
+          <div className="px-4 py-1.5 text-[9px] text-slate-500 border-t border-border/20">
+            PCR &gt;1.2 = bullish (heavy put hedging) · PCR &lt;0.8 = bearish · Range uses CMP as base — no double-counting of yesterday's drivers
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 // ─── Prediction Result (Index / ETF) ─────────────────────────────────────────
@@ -943,7 +1192,7 @@ export default function AIInsights() {
           <span className="text-muted text-sm">{benchmarkOpen ? '▲' : '▼'}</span>
         </button>
         {benchmarkOpen && (
-          <div className="px-4 pb-4">
+          <div className="px-4 pb-4 space-y-4">
             <div className="grid grid-cols-3 gap-4">
               {[
                 { symbol: '^NSEI',    name: 'NIFTY 50'   },
@@ -956,6 +1205,7 @@ export default function AIInsights() {
                 </div>
               ))}
             </div>
+            <TomorrowLiveSection />
           </div>
         )}
       </div>

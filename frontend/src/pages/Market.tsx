@@ -1183,7 +1183,171 @@ function IndexHistoryTab() {
 
 // ─── Main Market Page ─────────────────────────────────────────────────────────
 
-type MarketTab = 'overview' | 'global' | 'global_stocks' | 'news' | 'results' | 'history'
+// ── Indian ADRs Tab ────────────────────────────────────────────────────────
+interface ADR {
+  symbol: string
+  name: string
+  nse: string | null
+  sector: string
+  cmp: number
+  prev_close: number
+  change_amt: number
+  change_pct: number
+  high_52w: number
+  low_52w: number
+  currency: string
+}
+
+function IndianADRsTab() {
+  const [adrs, setAdrs]       = useState<ADR[]>([])
+  const [loading, setLoading] = useState(true)
+  const [selected, setSelected] = useState<ADR | null>(null)
+  const [news, setNews]       = useState<any[]>([])
+  const [newsLoading, setNewsLoading] = useState(false)
+
+  useEffect(() => {
+    client.get('/market/adrs')
+      .then(r => setAdrs(r.data.adrs || []))
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [])
+
+  const openDetail = (adr: ADR) => {
+    setSelected(adr)
+    setNews([])
+    setNewsLoading(true)
+    // Fetch news for the NSE symbol if available, else ADR symbol
+    const sym = adr.nse || adr.symbol
+    client.get('/market/news')
+      .then(r => {
+        const items: any[] = r.data.news || []
+        const filtered = items.filter(n =>
+          n.title?.toLowerCase().includes(sym.toLowerCase()) ||
+          n.title?.toLowerCase().includes(adr.name.split(' ')[0].toLowerCase())
+        )
+        setNews(filtered.length > 0 ? filtered : items.slice(0, 5))
+      })
+      .catch(() => {})
+      .finally(() => setNewsLoading(false))
+  }
+
+  if (loading) return (
+    <div className="bg-card border border-border rounded-xl p-10 text-center text-muted text-sm">
+      Loading Indian ADRs…
+    </div>
+  )
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-card border border-border rounded-xl overflow-hidden">
+        <div className="px-5 py-3 border-b border-border flex items-center justify-between">
+          <div>
+            <div className="text-white font-semibold">Indian ADRs on NYSE / NASDAQ</div>
+            <div className="text-xs text-muted mt-0.5">Prices in USD · click a row for news & trend</div>
+          </div>
+          <span className="text-xs text-muted">{adrs.length} ADRs</span>
+        </div>
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-border text-xs text-muted">
+              <th className="px-4 py-2 text-left">Company</th>
+              <th className="px-4 py-2 text-center">Sector</th>
+              <th className="px-4 py-2 text-right">CMP (USD)</th>
+              <th className="px-4 py-2 text-right">Prev Close</th>
+              <th className="px-4 py-2 text-right">Change</th>
+              <th className="px-4 py-2 text-right">% Change</th>
+              <th className="px-4 py-2 text-right">52W High</th>
+              <th className="px-4 py-2 text-right">52W Low</th>
+            </tr>
+          </thead>
+          <tbody>
+            {adrs.map(adr => (
+              <tr
+                key={adr.symbol}
+                onClick={() => openDetail(adr)}
+                className={`border-b border-border cursor-pointer transition-colors hover:bg-slate-800 ${selected?.symbol === adr.symbol ? 'bg-slate-800' : ''}`}
+              >
+                <td className="px-4 py-3">
+                  <div className="font-semibold text-white">{adr.symbol}</div>
+                  <div className="text-[10px] text-muted">{adr.name}{adr.nse ? ` · NSE:${adr.nse}` : ''}</div>
+                </td>
+                <td className="px-4 py-3 text-center">
+                  <span className="text-xs bg-slate-800 border border-border px-1.5 py-0.5 rounded text-slate-300">{adr.sector}</span>
+                </td>
+                <td className="px-4 py-3 text-right font-semibold text-white">${adr.cmp.toFixed(2)}</td>
+                <td className="px-4 py-3 text-right text-muted text-xs">${adr.prev_close.toFixed(2)}</td>
+                <td className={`px-4 py-3 text-right text-xs font-medium ${adr.change_amt >= 0 ? 'text-score-green' : 'text-score-red'}`}>
+                  {adr.change_amt >= 0 ? '+' : ''}{adr.change_amt.toFixed(2)}
+                </td>
+                <td className={`px-4 py-3 text-right text-xs font-bold ${adr.change_pct >= 0 ? 'text-score-green' : 'text-score-red'}`}>
+                  {adr.change_pct >= 0 ? '+' : ''}{adr.change_pct.toFixed(2)}%
+                </td>
+                <td className="px-4 py-3 text-right text-xs text-slate-400">${adr.high_52w.toFixed(2)}</td>
+                <td className="px-4 py-3 text-right text-xs text-slate-400">${adr.low_52w.toFixed(2)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Detail panel — news + 52W range bar */}
+      {selected && (
+        <div className="bg-card border border-border rounded-xl p-5 space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <span className="text-white font-bold text-lg">{selected.symbol}</span>
+              <span className="text-muted ml-2 text-sm">{selected.name}</span>
+            </div>
+            <button onClick={() => setSelected(null)} className="text-muted hover:text-white text-xs px-2 py-1 rounded border border-border">✕ Close</button>
+          </div>
+
+          {/* 52W range bar */}
+          <div className="bg-slate-800 rounded-lg p-4">
+            <div className="text-xs text-muted mb-2">52-Week Range</div>
+            <div className="flex items-center gap-3 text-xs">
+              <span className="text-score-red w-14 text-right">${selected.low_52w.toFixed(2)}</span>
+              <div className="flex-1 h-2 bg-slate-700 rounded-full relative">
+                <div
+                  className="absolute h-3 w-3 rounded-full bg-blue-400 top-1/2 -translate-y-1/2 -translate-x-1/2"
+                  style={{ left: `${Math.min(100, Math.max(0, ((selected.cmp - selected.low_52w) / (selected.high_52w - selected.low_52w)) * 100))}%` }}
+                />
+                <div className="h-full bg-gradient-to-r from-score-red via-score-amber to-score-green rounded-full opacity-30" />
+              </div>
+              <span className="text-score-green w-14">${selected.high_52w.toFixed(2)}</span>
+              <span className="text-blue-400 font-semibold">CMP ${selected.cmp.toFixed(2)}</span>
+            </div>
+          </div>
+
+          {/* News */}
+          <div>
+            <div className="text-xs text-muted mb-2 font-semibold uppercase tracking-wider">Related News</div>
+            {newsLoading && <div className="text-muted text-xs">Loading news…</div>}
+            {!newsLoading && news.length === 0 && <div className="text-muted text-xs">No specific news found — showing latest market news.</div>}
+            <div className="space-y-2">
+              {news.map((item, i) => (
+                <a key={i} href={item.link} target="_blank" rel="noreferrer"
+                  className="block bg-slate-800 hover:bg-slate-700 border border-border rounded-lg p-3 transition-colors">
+                  <div className="text-white text-sm font-medium leading-snug">{item.title}</div>
+                  <div className="flex gap-3 mt-1 text-[10px] text-muted">
+                    <span>{item.source}</span>
+                    {item.published && <span>{new Date(item.published).toLocaleDateString('en-IN')}</span>}
+                    {item.sentiment && (
+                      <span className={item.sentiment === 'positive' ? 'text-score-green' : item.sentiment === 'negative' ? 'text-score-red' : 'text-muted'}>
+                        {item.sentiment}
+                      </span>
+                    )}
+                  </div>
+                </a>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+type MarketTab = 'overview' | 'global' | 'global_stocks' | 'news' | 'results' | 'history' | 'adrs'
 
 export default function Market() {
   const { macro, sectors, loading } = useMarket()
@@ -1202,6 +1366,7 @@ export default function Market() {
         {([
           { key: 'overview',      label: '📊 Market Overview' },
           { key: 'global',        label: '🌍 Global Indices' },
+          { key: 'adrs',          label: '🇺🇸 Indian ADRs' },
           { key: 'global_stocks', label: '🏢 Global Stocks' },
           { key: 'news',          label: '📰 News Room' },
           { key: 'results',       label: '📋 Quarterly Results' },
@@ -1330,6 +1495,7 @@ export default function Market() {
       {/* ── Quarterly Results Tab ── */}
       {tab === 'results' && <ResultsCalendarTab />}
       {tab === 'history' && <IndexHistoryTab />}
+      {tab === 'adrs' && <IndianADRsTab />}
     </div>
   )
 }

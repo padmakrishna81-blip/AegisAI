@@ -20,12 +20,10 @@ def generate_verdict(symbol: str, company_name: str, scores: dict) -> dict:
     macro = scores.get("macro", 50)
     current_price = scores.get("current_price", 0)
 
-    # Rule-based defaults (used when LLM not configured)
-    if overall >= 85:
+    # Rule-based defaults — thresholds match recommendation.py exactly
+    if overall >= 80:
         action, stars, confidence = "BUY", 5, min(95, overall)
-    elif overall >= 70:
-        action, stars, confidence = "BUY", 4, min(85, overall)
-    elif overall >= 55:
+    elif overall >= 65:
         action, stars, confidence = "HOLD", 3, min(75, overall)
     else:
         action, stars, confidence = "SELL", 2, min(65, 100 - overall)

@@ -39,7 +39,7 @@ async def scan_stocks(
 
     symbols_to_scan = symbols[:min(top_n, len(symbols))]
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def analyze_one(sym):
         try:
@@ -83,7 +83,7 @@ async def compare_stocks(symbols: str = Query(..., description="Comma-separated 
     if len(sym_list) < 2:
         raise HTTPException(status_code=400, detail="Provide at least 2 symbols")
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def analyze_one(sym):
         try:

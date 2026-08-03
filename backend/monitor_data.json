@@ -1,0 +1,24 @@
+{
+  "indian": [
+    {
+      "symbol": "VEDL.NS",
+      "name": "Vedanta Limited",
+      "sector": "Metals",
+      "exchange": "",
+      "added_at": "2026-07-29T18:47:16.051801",
+      "kpi_labels": [],
+      "quarters": {}
+    }
+  ],
+  "global": [
+    {
+      "symbol": "ORCL",
+      "name": "Oracle Corporation",
+      "sector": "",
+      "exchange": "NYSE",
+      "added_at": "2026-07-29T18:49:43.280903",
+      "kpi_labels": [],
+      "quarters": {}
+    }
+  ]
+}

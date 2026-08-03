@@ -452,41 +452,85 @@ def _get_upcoming_event(bare: str, days: int = 45) -> dict | None:
     return None
 
 
+def _opportunity_score(change_1d: float, strategy: str = "cc",
+                       score1_pct: float = None, score2_pct: float = None) -> dict:
+    """
+    Compute opportunity score (1=best, 3=neutral) based on today's price change.
+    Thresholds are user-configurable (passed from API body), with sensible defaults.
+
+    Wheel: fell stocks → score1_pct default -5%, score2_pct default -2%
+    CC:   rose stocks → score1_pct default +3%, score2_pct default +1%
+    """
+    if strategy == "wheel":
+        t1 = score1_pct if score1_pct is not None else -5.0   # fell ≥5% = score 1
+        t2 = score2_pct if score2_pct is not None else -2.0   # fell ≥2% = score 2
+        if change_1d <= t1:
+            return {"score": 1, "label": "🔥 Best", "reason": f"Fell {abs(change_1d):.1f}% today — put premium elevated"}
+        elif change_1d <= t2:
+            return {"score": 2, "label": "✓ Good", "reason": f"Fell {abs(change_1d):.1f}% today — decent premium"}
+        else:
+            return {"score": 3, "label": "Neutral", "reason": f"{'+' if change_1d >= 0 else ''}{change_1d:.1f}% today"}
+    else:  # cc
+        t1 = score1_pct if score1_pct is not None else 3.0    # rose ≥3% = score 1
+        t2 = score2_pct if score2_pct is not None else 1.0    # rose ≥1% = score 2
+        if change_1d >= t1:
+            return {"score": 1, "label": "🔥 Best", "reason": f"Rose {change_1d:.1f}% today — call premium elevated"}
+        elif change_1d >= t2:
+            return {"score": 2, "label": "✓ Good", "reason": f"Rose {change_1d:.1f}% today — decent premium"}
+        else:
+            return {"score": 3, "label": "Neutral", "reason": f"{'+' if change_1d >= 0 else ''}{change_1d:.1f}% today"}
+
+
 def _build_warnings(bare: str, cmp: float, high52: float, low52: float,
                     change_5d: float, above_200dma: bool, atm_iv: float | None,
-                    min_iv: float = 25.0) -> list[dict]:
-    """Build a list of risk warnings for display (used in assess endpoint)."""
+                    min_iv: float = 25.0, strategy: str = "cc") -> list[dict]:
+    """Build a list of risk warnings for display.
+    strategy: 'cc' = Covered Call (sells CE), 'wheel' = Wheel (sells PE first).
+    """
     warnings = []
+    is_wheel = strategy == "wheel"
+    sell_what = "PE (put)" if is_wheel else "CE (call)"
 
-    # IV warning
+    # IV warning — high IV is GOOD for sellers (more premium income)
     if atm_iv is None:
         warnings.append({"level": "medium", "category": "IV",
-                         "message": "Could not fetch live IV — verify premium manually before selling."})
+                         "message": f"Could not fetch live IV — verify premium manually before selling {sell_what}."})
     elif atm_iv < min_iv:
         warnings.append({"level": "high", "category": "IV",
-                         "message": f"IV at {atm_iv}% is below your threshold of {min_iv}% — premium too thin. Wait for IV expansion before selling CE."})
+                         "message": f"IV at {atm_iv}% is below your threshold of {min_iv}% — premium too thin. Wait for IV expansion before selling {sell_what}."})
     elif atm_iv < 30:
         warnings.append({"level": "medium", "category": "IV",
-                         "message": f"IV at {atm_iv}% is low-normal — premium is thin. Consider waiting for better IV."})
+                         "message": f"IV at {atm_iv}% is low-normal — premium is thin. Consider waiting for higher IV before selling {sell_what}."})
     elif atm_iv > 60:
-        warnings.append({"level": "medium", "category": "IV",
-                         "message": f"IV at {atm_iv}% is unusually high — premium may contract (mean-revert) after selling. Good for income but monitor."})
+        warnings.append({"level": "ok", "category": "IV",
+                         "message": f"IV at {atm_iv}% is very high — excellent premium income opportunity! Sell {sell_what} now. Monitor for mean-reversion after selling."})
     else:
         warnings.append({"level": "ok", "category": "IV",
-                         "message": f"IV at {atm_iv}% is in the good range — solid premium available."})
+                         "message": f"IV at {atm_iv}% is in the good range — solid premium available for {sell_what}."})
 
     # Upcoming event / IV spike risk
     event = _get_upcoming_event(bare, days=45)
     if event:
         days_left = event.get("days_from_today", 0)
-        warnings.append({"level": "high", "category": "IV Spike",
-                         "message": f"{event.get('purpose','Event')} on {event.get('when','soon')} ({days_left}d away) — IV will spike, CE will gain value. DO NOT sell CE now."})
+        if is_wheel:
+            # For Wheel (selling PE): IV spike before expiry HELPS the put seller (put gains value, stock may fall)
+            # But if assigned, you own stock at elevated price — mixed
+            warnings.append({"level": "medium", "category": "IV Spike",
+                             "message": f"{event.get('purpose','Event')} on {event.get('when','soon')} ({days_left}d away) — IV will spike. Selling PE now captures high premium but assignment risk increases. Choose strike carefully."})
+        else:
+            # For CC (selling CE): IV spike means CE gains value = loss for CE seller
+            warnings.append({"level": "high", "category": "IV Spike",
+                             "message": f"{event.get('purpose','Event')} on {event.get('when','soon')} ({days_left}d away) — IV will spike, CE will gain value. DO NOT sell CE now — wait until after results."})
 
     # 52W high proximity
     pct_from_high = round((cmp / high52 - 1) * 100, 2)
     if pct_from_high > -5:
-        warnings.append({"level": "high", "category": "52W High",
-                         "message": f"Stock is within 5% of 52W high (₹{high52}) — limited upside room, higher assignment risk. Wait for pullback."})
+        if is_wheel:
+            warnings.append({"level": "medium", "category": "52W High",
+                             "message": f"Stock is within 5% of 52W high (₹{high52}) — if assigned, buying near the top. Consider a lower strike for safer entry."})
+        else:
+            warnings.append({"level": "high", "category": "52W High",
+                             "message": f"Stock is within 5% of 52W high (₹{high52}) — limited upside room, higher assignment risk. Wait for pullback."})
     elif pct_from_high > -10:
         warnings.append({"level": "medium", "category": "52W High",
                          "message": f"Stock is {abs(pct_from_high):.1f}% below 52W high (₹{high52}) — borderline. Proceed with caution."})
@@ -494,33 +538,45 @@ def _build_warnings(bare: str, cmp: float, high52: float, low52: float,
     # 52W low proximity
     pct_from_low = round((cmp / low52 - 1) * 100, 2)
     if pct_from_low < 15:
-        warnings.append({"level": "high", "category": "52W Low",
-                         "message": f"Stock is only {pct_from_low:.1f}% above 52W low (₹{low52}) — near support but breakdown risk is high. Averaging may not help if fundamentals are weak."})
+        if is_wheel:
+            warnings.append({"level": "ok", "category": "52W Low",
+                             "message": f"Stock is only {pct_from_low:.1f}% above 52W low (₹{low52}) — selling put here gives discounted entry if assigned. Good for Wheel if you want to own at a lower cost basis."})
+        else:
+            warnings.append({"level": "high", "category": "52W Low",
+                             "message": f"Stock is only {pct_from_low:.1f}% above 52W low (₹{low52}) — near support but breakdown risk is high."})
 
     # Trend
     if not above_200dma:
-        warnings.append({"level": "medium", "category": "Trend",
-                         "message": "Stock is below 200 DMA — medium-term downtrend. Strategy still works but recovery may take longer. Monitor closely."})
+        if is_wheel:
+            warnings.append({"level": "medium", "category": "Trend",
+                             "message": "Stock is below 200 DMA — downtrend in place. Wheel still works: sell OTM puts below support, collect premium. If assigned, sell CCs above cost basis."})
+        else:
+            warnings.append({"level": "medium", "category": "Trend",
+                             "message": "Stock is below 200 DMA — medium-term downtrend. Covered Call strategy still works but recovery may take longer. Monitor closely."})
 
     # 5-day momentum
     if change_5d < -3:
         warnings.append({"level": "medium", "category": "Momentum",
-                         "message": f"Stock fell {abs(change_5d):.1f}% in last 5 sessions — recent selling pressure. May fall further before stabilising."})
+                         "message": f"Stock fell {abs(change_5d):.1f}% in last 5 sessions — recent selling pressure. {'Good entry for Wheel put selling — higher premium.' if is_wheel else 'May fall further before stabilising.'}"})
     elif change_5d > 4:
         warnings.append({"level": "medium", "category": "Momentum",
-                         "message": f"Stock rose {change_5d:.1f}% in last 5 sessions — may be near-term overbought. Better to wait for consolidation."})
+                         "message": f"Stock rose {change_5d:.1f}% in last 5 sessions — {'may pull back, put premium now elevated — good for Wheel selling.' if is_wheel else 'may be near-term overbought. Better to wait for consolidation.'}"})
 
     return warnings
 
 
 @router.get("/covered-calls/scan/strategy")
 async def scan_cc_strategy(
-    flat_pct:       float = Query(default=2.5,  description="Max 5-day price change % (both sides)"),
-    below_high_pct: float = Query(default=5.0,  description="Min % below 52W high"),
-    above_low_pct:  float = Query(default=10.0, description="Min % above 52W low"),
-    below_sma50_pct:float = Query(default=10.0, description="Max % below 50 DMA (breakdown filter)"),
-    min_score:      int   = Query(default=0,    description="Minimum AegisAI score (0 = no filter)"),
-    min_iv:         float = Query(default=20.0, description="Minimum ATM IV % — stocks below this are excluded (premium too thin)"),
+    flat_pct:       float = Query(default=2.5),
+    below_high_pct: float = Query(default=5.0),
+    above_low_pct:  float = Query(default=10.0),
+    below_sma50_pct:float = Query(default=10.0),
+    min_score:      int   = Query(default=0),
+    min_iv:         float = Query(default=20.0),
+    strategy:       str   = Query(default="cc"),
+    opp_score1:     float = Query(default=None),
+    opp_score2:     float = Query(default=None),
+    results_days:   int   = Query(default=7),
 ):
     from data.indices import NIFTY50, NIFTY_BANK, NIFTY_IT, NIFTY_MIDCAP_SELECTION
     candidates = list(set(NIFTY50 + NIFTY_BANK + NIFTY_IT + NIFTY_MIDCAP_SELECTION))
@@ -577,10 +633,14 @@ async def scan_cc_strategy(
         "min_score":       min_score,
         "min_iv":          min_iv,
         "iv_map":          iv_map,
-        "spot_map":        spot_map,  # pre-fetched spots — no extra NSE call per stock
+        "spot_map":        spot_map,
+        "strategy":        strategy,
+        "opp_score1":      opp_score1,
+        "opp_score2":      opp_score2,
+        "results_days":    results_days,
     }
 
-    loop     = asyncio.get_event_loop()
+    loop     = asyncio.get_running_loop()
     executor = ThreadPoolExecutor(max_workers=12)
     tasks    = [loop.run_in_executor(executor, _scan_one_with_criteria, sym, criteria) for sym in candidates]
     results  = await asyncio.gather(*tasks)
@@ -588,8 +648,8 @@ async def scan_cc_strategy(
     qualified = [r for r in results if r is not None]
     if min_score > 0:
         qualified = [r for r in qualified if r["score"] >= min_score]
-    # Sort by total funds required (low to high) — easier for user to find affordable ones
-    qualified.sort(key=lambda x: x["total_funds_required"])
+    # Sort by opportunity_score asc (1=best first), then by total_funds asc
+    qualified.sort(key=lambda x: (x.get("opportunity_score", 3), x.get("total_funds_required", 0)))
 
     # Build a helpful message when nothing qualifies
     why_empty = None
@@ -599,7 +659,7 @@ async def scan_cc_strategy(
         why_empty = (
             f"No stocks passed all filters this scan. Common reasons during {month}: "
             f"(1) Most large-caps are near 52W highs — try reducing 'Below 52W High' threshold. "
-            f"(2) Q1/Q2 results season blocks many stocks (results within 21 days). "
+            f"(2) Q1/Q2 results season blocks many stocks (results within {results_days} days). "
             f"(3) Low volatility period — try reducing Min ATM IV to 15–18%. "
             f"Try the 'Assess Specific Stocks' section to evaluate stocks of your choice without auto-filters."
         )
@@ -616,8 +676,11 @@ async def scan_cc_strategy(
 @router.post("/covered-calls/assess")
 async def assess_stocks(body: dict):
     """Assess user-provided stocks — no filters applied, full warnings for every risk."""
-    symbols = body.get("symbols", [])
-    min_iv  = float(body.get("min_iv", 25.0))
+    symbols    = body.get("symbols", [])
+    min_iv     = float(body.get("min_iv", 25.0))
+    strategy   = body.get("strategy", "cc")  # 'cc' or 'wheel'
+    opp_score1 = body.get("opp_score1", None)  # user threshold (e.g. -5 wheel / +3 cc)
+    opp_score2 = body.get("opp_score2", None)  # user threshold (e.g. -2 wheel / +1 cc)
     if not symbols:
         return JSONResponse(content={"results": []})
 
@@ -663,7 +726,11 @@ async def assess_stocks(body: dict):
         for bare, val in ex.map(_fetch_iv_assess, normalized):
             nse_data[bare] = val
 
-    loop     = asyncio.get_event_loop()
+    # Store opportunity thresholds in nse_data under sentinel keys
+    nse_data["__opp_score1"] = float(opp_score1) if opp_score1 is not None else None
+    nse_data["__opp_score2"] = float(opp_score2) if opp_score2 is not None else None
+
+    loop     = asyncio.get_running_loop()
     executor = ThreadPoolExecutor(max_workers=8)
 
     def _assess_one(sym: str) -> dict:
@@ -714,7 +781,7 @@ async def assess_stocks(body: dict):
             lot_size = _get_lot_size(sym)
 
             # Build all warnings (no filters skipped)
-            warnings = _build_warnings(bare, cmp, high52, low52, change_5d, above_200dma, atm_iv, min_iv)
+            warnings = _build_warnings(bare, cmp, high52, low52, change_5d, above_200dma, atm_iv, min_iv, strategy=strategy)
 
             # Additional: 5D flat check
             if abs(change_5d) > 2.0:
@@ -735,6 +802,13 @@ async def assess_stocks(body: dict):
             phase1_cost   = round((lot_size // 2) * cmp, 0)
             total_funds   = int(round(lot_size * cmp + lot_size * cmp * 0.12, 0))
 
+            # Today's 1-day change + opportunity score
+            prev_close = float(getattr(fi, "previous_close", None) or 0)
+            change_1d  = round((cmp / prev_close - 1) * 100, 2) if prev_close > 0 else 0.0
+            opp = _opportunity_score(change_1d, strategy=strategy,
+                                     score1_pct=nse_data.get("__opp_score1"),
+                                     score2_pct=nse_data.get("__opp_score2"))
+
             return {
                 "symbol":              bare,
                 "name":                name,
@@ -746,6 +820,10 @@ async def assess_stocks(body: dict):
                 "pct_from_high":       pct_from_high,
                 "pct_from_low":        pct_from_low,
                 "change_5d":           change_5d,
+                "change_1d":           change_1d,
+                "opportunity_score":   opp["score"],
+                "opportunity_label":   opp["label"],
+                "opportunity_reason":  opp["reason"],
                 "above_200dma":        above_200dma,
                 "atm_iv":              atm_iv,
                 "lot_size":            lot_size,
@@ -761,8 +839,12 @@ async def assess_stocks(body: dict):
 
     tasks   = [loop.run_in_executor(executor, _assess_one, sym) for sym in normalized]
     results = await asyncio.gather(*tasks)
-    # Sort: eligible first, then by high risk count asc
-    sorted_results = sorted(results, key=lambda r: (not r.get("eligible", False), r.get("high_risk_count", 0)))
+    # Sort: opportunity score asc (1=best first), then eligible first, then by risk count
+    sorted_results = sorted(results, key=lambda r: (
+        r.get("opportunity_score", 3),   # 1 = best opportunity first
+        not r.get("eligible", False),    # eligible stocks before ineligible
+        r.get("high_risk_count", 0),     # fewer risks first
+    ))
     return JSONResponse(content=clean_for_json({"results": sorted_results}))
 
 
@@ -838,8 +920,9 @@ def _scan_one_with_criteria(symbol: str, criteria: dict) -> dict | None:
         if min_iv > 0 and atm_iv is not None and atm_iv < min_iv:
             return None  # confirmed low IV — exclude
 
-        # ── Upcoming results check — only exclude if event within 21 days ──
-        upcoming_event = _get_upcoming_event(bare, days=21)
+        # ── Upcoming results check — exclude if event within results_days ──
+        results_days_val = int(criteria.get("results_days", 7))
+        upcoming_event = _get_upcoming_event(bare, days=results_days_val)
         if upcoming_event:
             return None  # imminent IV spike risk
 
@@ -852,6 +935,14 @@ def _scan_one_with_criteria(symbol: str, criteria: dict) -> dict | None:
         margin_est   = round(cmp * lot_size * 0.12, 0)
         total_funds  = int(full_lot_val + margin_est)
 
+        # change_1d and opportunity score
+        prev_close = float(getattr(fi, "previous_close", None) or 0)
+        change_1d  = round((cmp / prev_close - 1) * 100, 2) if prev_close > 0 else 0.0
+        strategy   = criteria.get("strategy", "cc")
+        opp_s1     = criteria.get("opp_score1")
+        opp_s2     = criteria.get("opp_score2")
+        opp        = _opportunity_score(change_1d, strategy=strategy, score1_pct=opp_s1, score2_pct=opp_s2)
+
         return {
             "symbol":              bare,
             "name":                name,
@@ -862,6 +953,10 @@ def _scan_one_with_criteria(symbol: str, criteria: dict) -> dict | None:
             "pct_from_high":       pct_from_high,
             "pct_from_low":        pct_from_low,
             "change_5d":           change_5d,
+            "change_1d":           change_1d,
+            "opportunity_score":   opp["score"],
+            "opportunity_label":   opp["label"],
+            "opportunity_reason":  opp["reason"],
             "above_200dma":        above_200dma,
             "atm_iv":              atm_iv,
             "lot_size":            lot_size,
@@ -897,7 +992,7 @@ async def get_cc_plan(
     bare = symbol.upper().replace(".NS", "")
     sym  = bare + ".NS"
 
-    loop     = asyncio.get_event_loop()
+    loop     = asyncio.get_running_loop()
     executor = ThreadPoolExecutor(max_workers=2)
 
     def _fetch():
