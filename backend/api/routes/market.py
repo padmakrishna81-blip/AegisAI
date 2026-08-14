@@ -402,8 +402,31 @@ async def get_gift_nifty():
                 "last_updated": last_updated,
                 "source":       "equitypandit.com / NSE IX",
             }
-        except Exception as e:
-            return {"error": str(e)[:120]}
+        except Exception:
+            # Fallback: use ^NSEI via yfinance as a proxy for GIFT Nifty
+            try:
+                import yfinance as yf
+                t = yf.Ticker("^NSEI")
+                fi = t.fast_info
+                price = round(float(fi.last_price or 0), 2)
+                prev  = round(float(fi.previous_close or price), 2)
+                chg   = round(price - prev, 2)
+                chg_p = round(chg / prev * 100, 2) if prev else 0
+                return {
+                    "price":        price,
+                    "prev_close":   prev,
+                    "day_high":     round(float(fi.day_high or price), 2),
+                    "day_low":      round(float(fi.day_low or price), 2),
+                    "day_open":     round(float(fi.open or price), 2),
+                    "change":       chg,
+                    "change_pct":   chg_p,
+                    "gap_pts":      chg,
+                    "gap_signal":   "positive" if chg > 0 else "negative" if chg < 0 else "flat",
+                    "last_updated": None,
+                    "source":       "NSE NIFTY 50 (equitypandit unavailable)",
+                }
+            except Exception as e2:
+                return {"error": f"Unavailable: {str(e2)[:80]}"}
 
     loop = asyncio.get_running_loop()
     data = await loop.run_in_executor(ThreadPoolExecutor(max_workers=1), fetch)

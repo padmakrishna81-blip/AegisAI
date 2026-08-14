@@ -58,5 +58,11 @@
     "name": "SAP  SE",
     "exchange": "NYSE",
     "sector": "Technology"
+  },
+  {
+    "symbol": "GOOG",
+    "name": "Alphabet Inc.",
+    "exchange": "NASDAQ",
+    "sector": "Communication Services"
   }
 ]
