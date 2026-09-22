@@ -32,7 +32,7 @@ const ETF_INDEX_CATALOG: NseResult[] = [
   { symbol: 'NIFTYBEES.NS', name: 'Nippon Nifty BeES',      sector: 'ETF', type: 'etf' },
   { symbol: 'BANKBEES.NS',  name: 'Nippon Bank BeES',        sector: 'ETF', type: 'etf' },
   { symbol: 'GOLDBEES.NS',  name: 'Nippon Gold BeES',        sector: 'ETF', type: 'etf' },
-  { symbol: 'MOM100.NS',    name: 'Motilal Oswal Nasdaq 100',sector: 'ETF', type: 'etf' },
+  { symbol: 'MON100.NS',    name: 'Motilal Oswal Nasdaq 100',sector: 'ETF', type: 'etf' },
   { symbol: 'ITBEES.NS',    name: 'Nippon IT BeES',          sector: 'ETF', type: 'etf' },
   { symbol: 'PHARMABEES.NS',name: 'Nippon Pharma BeES',      sector: 'ETF', type: 'etf' },
   { symbol: 'BANKBEES.NS',  name: 'Nippon Bank BeES',        sector: 'ETF', type: 'etf' },

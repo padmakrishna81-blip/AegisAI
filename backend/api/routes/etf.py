@@ -15,7 +15,7 @@ ETF_CATALOG = [
     {"symbol": "NIFTYBEES.NS",   "name": "Nippon Nifty BeES",          "category": "Broad Market", "tracks": "NIFTY 50",         "aum_cr": 9800,  "expense": 0.04},
     {"symbol": "JUNIORBEES.NS",  "name": "Nippon Junior BeES",         "category": "Broad Market", "tracks": "NIFTY Next 50",    "aum_cr": 1200,  "expense": 0.19},
     {"symbol": "SETFNIF50.NS",   "name": "SBI Nifty 50 ETF",           "category": "Broad Market", "tracks": "NIFTY 50",         "aum_cr": 3200,  "expense": 0.07},
-    {"symbol": "MOM100.NS",      "name": "Motilal Oswal Nasdaq 100",    "category": "Global",       "tracks": "NASDAQ 100",       "aum_cr": 4100,  "expense": 0.53},
+    {"symbol": "MON100.NS",      "name": "Motilal Oswal Nasdaq 100",    "category": "Global",       "tracks": "NASDAQ 100",       "aum_cr": 4100,  "expense": 0.53},
     {"symbol": "HNGSNGBEES.NS",  "name": "Nippon Hang Seng BeES",      "category": "Global",       "tracks": "Hang Seng",        "aum_cr": 220,   "expense": 0.87},
     # Sector
     {"symbol": "BANKBEES.NS",    "name": "Nippon Bank BeES",           "category": "Sector",       "tracks": "NIFTY Bank",       "aum_cr": 7200,  "expense": 0.19},

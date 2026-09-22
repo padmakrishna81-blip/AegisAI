@@ -3,7 +3,7 @@ import client from '../api/client'
 import NseStockSearch from '../components/NseStockSearch'
 
 // ── shared ────────────────────────────────────────────────────
-type StratTab = 'momentum' | 'breakout' | 'collar' | 'ironfly' | 'customfly'
+type StratTab = 'momentum' | 'breakout' | 'collar' | 'ironfly' | 'customfly' | 'customwheel'
 
 const fmt = (n: number | null | undefined, dec = 2) =>
   n == null ? '—' : n.toLocaleString('en-IN', { maximumFractionDigits: dec, minimumFractionDigits: dec })
@@ -1546,153 +1546,125 @@ function PayoffChart({legs,spot,lot,qty,currentDte,oiData,sd,atmIv}:PayoffChartP
   )
 }
 
-// ── P&L Session Table (next 10 trading days, 3 scenarios) ───────
-interface PnlTableProps {
-  legs:CfLeg[]; spot:number; lot:number; qty:number
-  currentDte:number; atmIv:number; margin:number; direction:CFDir
-  expiry:string
+// ── Probability Analysis Panel (next 10 trading days) ────────────
+
+function _lognormalPdf(s:number,spot:number,sigmaT:number):number {
+  if(s<=0||sigmaT<=0) return 0
+  const z=(Math.log(s/spot)+0.5*sigmaT*sigmaT)/sigmaT
+  return Math.exp(-0.5*z*z)/(s*sigmaT*Math.sqrt(2*Math.PI))
 }
 
-function PnlSessionTable({legs,spot,lot,qty,currentDte,atmIv,margin,direction,expiry}:PnlTableProps) {
-  const [exitPct,setExitPct] = useState('2')
+interface HorizonMetrics {
+  d:number; date:string; remainingDte:number
+  probProfit:number; expectedPnl:number
+  lo1:number; hi1:number; lo2:number; hi2:number
+}
 
-  if(!legs.length||currentDte<=0) return null
+function computeHorizon(legs:CfLeg[],spot:number,lot:number,qty:number,dte:number,d:number,iv:number):HorizonMetrics {
+  const sigmaT=(iv/100)*Math.sqrt(d/252)
+  const rem=Math.max(0,dte-d)
+  const lo=spot*Math.exp(-3.5*sigmaT), hi=spot*Math.exp(3.5*sigmaT), N=250, dx=(hi-lo)/N
+  let wSum=0,pnlSum=0,profW=0
+  for(let i=0;i<=N;i++){
+    const s=lo+i*dx, pdf=_lognormalPdf(s,spot,sigmaT), w=pdf*dx
+    const pnl=cfLegPnl(s,legs,lot,qty,rem===0,rem)
+    pnlSum+=pnl*w; if(pnl>0) profW+=w; wSum+=w
+  }
+  const probProfit=wSum>0?profW/wSum:0
+  const expectedPnl=wSum>0?pnlSum/wSum:0
+  const sd1=spot*sigmaT, sd2=sd1*2
+  const checkDate=new Date()
+  let td=0; while(td<d){checkDate.setDate(checkDate.getDate()+1);if(checkDate.getDay()!==0&&checkDate.getDay()!==6)td++}
+  const date=checkDate.toLocaleDateString('en-IN',{day:'2-digit',month:'short'})
+  return {d,date,remainingDte:rem,probProfit,expectedPnl,lo1:spot-sd1,hi1:spot+sd1,lo2:spot-sd2,hi2:spot+sd2}
+}
 
-  const exitThreshold = parseFloat(exitPct)||2
-  const exitAmt = margin * exitThreshold / 100
+interface ProbPanelProps {
+  legs:CfLeg[]; spot:number; lot:number; qty:number; currentDte:number; atmIv:number; expiry:string
+}
 
-  // Daily move per scenario using IV-based 1σ
-  const daily1sd = spot * (atmIv/100) / Math.sqrt(252)
-  const scenMoves:{key:string;label:string;drift:number;color:string;spotColor:string}[] = [
-    {key:'bear', label:`Bear (−0.5σ/d ≈ ${(daily1sd*0.5).toFixed(0)}pts)`, drift:-daily1sd*0.5, color:'text-score-red',   spotColor:'#f87171'},
-    {key:'neut', label:'Neutral (theta only)',                               drift:0,             color:'text-blue-300',    spotColor:'#60a5fa'},
-    {key:'bull', label:`Bull (+0.5σ/d ≈ ${(daily1sd*0.5).toFixed(0)}pts)`, drift:+daily1sd*0.5, color:'text-score-green', spotColor:'#4ade80'},
-  ]
+function ProbAnalysisPanel({legs,spot,lot,qty,currentDte,atmIv,expiry}:ProbPanelProps) {
+  if(!legs.length||currentDte<=0||spot<=0) return null
 
-  // Generate rows for next 10 trading sessions
-  const rows = Array.from({length:10},(_,i)=>{
-    const d    = i+1
-    const dte  = Math.max(0, currentDte - d)
-    const date = new Date()
-    // Skip weekends
-    let tradingDays=0,checkDate=new Date()
-    while(tradingDays<d){
-      checkDate.setDate(checkDate.getDate()+1)
-      if(checkDate.getDay()!==0&&checkDate.getDay()!==6) tradingDays++
-    }
-    const dateStr = checkDate.toLocaleDateString('en-IN',{day:'2-digit',month:'short'})
+  // Compute all 10 horizons (memoized by calling in render — useMemo equivalent via lazy compute)
+  const rows:HorizonMetrics[]=Array.from({length:10},(_,i)=>computeHorizon(legs,spot,lot,qty,currentDte,i+1,atmIv))
 
-    return {
-      d, dateStr, dte,
-      scenarios: scenMoves.map(s=>{
-        const projSpot = spot + s.drift * d
-        const pnl = cfLegPnl(projSpot, legs, lot, qty, dte===0, dte)
-        const rocPct = margin>0 ? (pnl/margin*100) : 0
-        return {projSpot, pnl, rocPct}
-      })
-    }
-  })
+  const fK=(v:number)=>{const a=Math.abs(v);return(v>=0?'+':'-')+(a>=100000?`${(a/100000).toFixed(1)}L`:a>=1000?`${(a/1000).toFixed(1)}K`:a.toFixed(0))}
+  const fP=(p:number)=>p.toLocaleString('en-IN',{maximumFractionDigits:0})
 
-  // Find first exit/stop day per scenario
-  const firstExit = scenMoves.map((_,si)=>rows.findIndex(r=>r.scenarios[si].pnl>=exitAmt))
-  const firstStop = scenMoves.map((_,si)=>rows.findIndex(r=>r.scenarios[si].pnl<=-exitAmt))
-
-  const fK=(v:number)=>{const a=Math.abs(v);return(v<0?'-':'+')+( a>=100000?`${(a/100000).toFixed(1)}L`:a>=1000?`${(a/1000).toFixed(1)}K`:a.toFixed(0))}
+  // Find first day where probProfit exceeds 55% and 65%
+  const day55=rows.findIndex(r=>r.probProfit>=0.55)
+  const day65=rows.findIndex(r=>r.probProfit>=0.65)
 
   return(
     <div className="bg-card border border-border rounded-xl overflow-hidden">
-      {/* Header */}
       <div className="px-4 py-3 border-b border-border flex items-center justify-between flex-wrap gap-2">
         <div>
-          <div className="text-sm font-semibold text-white">📅 10-Session P&L Forecast</div>
+          <div className="text-sm font-semibold text-white">📈 10-Day Probability Analysis</div>
           <div className="text-[10px] text-muted mt-0.5">
-            IV: {atmIv.toFixed(1)}% · 1σ/day: {daily1sd.toFixed(0)} pts · Margin: ₹{margin.toLocaleString('en-IN',{maximumFractionDigits:0})} · Expiry: {expiry} ({currentDte}d)
+            IV: {atmIv.toFixed(1)}% · 1σ/day: {(spot*(atmIv/100)/Math.sqrt(252)).toFixed(0)} pts · Expiry: {expiry} ({currentDte}d) · Log-normal distribution
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-muted">Exit/Stop at</span>
-          <input type="number" value={exitPct} onChange={e=>setExitPct(e.target.value)} step={0.5} min={0.5} max={20}
-            className="w-16 bg-slate-800 border border-border rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-blue-500"/>
-          <span className="text-xs text-muted">% of margin = ₹{exitAmt.toLocaleString('en-IN',{maximumFractionDigits:0})}</span>
+        <div className="flex gap-3 text-xs">
+          {day55>=0&&<span className="text-score-green bg-green-950 border border-green-800 px-2 py-1 rounded">&gt;55% POP from D{rows[day55].d}</span>}
+          {day65>=0&&<span className="text-blue-300 bg-blue-950 border border-blue-800 px-2 py-1 rounded">&gt;65% POP from D{rows[day65].d}</span>}
         </div>
       </div>
 
-      {/* Scenario key */}
-      <div className="px-4 py-2 bg-slate-900/40 border-b border-border flex gap-6 flex-wrap">
-        {scenMoves.map((s,si)=>(
-          <div key={s.key} className="flex items-center gap-2 text-xs">
-            <div className="w-8 h-0.5" style={{background:s.spotColor}}/>
-            <span className={s.color}>{s.label}</span>
-            {firstExit[si]>=0&&<span className="text-[10px] text-score-green bg-green-950 border border-green-800 px-1.5 py-0.5 rounded">Exit day {rows[firstExit[si]].d}</span>}
-            {firstStop[si]>=0&&<span className="text-[10px] text-score-red bg-red-950 border border-red-800 px-1.5 py-0.5 rounded">Stop day {rows[firstStop[si]].d}</span>}
-          </div>
-        ))}
-      </div>
-
-      {/* Table */}
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead>
-            <tr className="border-b border-border text-muted">
-              <th className="px-3 py-2 text-left sticky left-0 bg-card">Day</th>
+            <tr className="border-b border-border text-muted text-[10px] uppercase tracking-wide">
+              <th className="px-3 py-2 text-left">Day</th>
               <th className="px-3 py-2 text-left">Date</th>
-              <th className="px-3 py-2 text-left">DTE</th>
-              {scenMoves.map(s=>(
-                <th key={s.key} colSpan={2} className={`px-3 py-2 text-center border-l border-border/50 ${s.color}`}>{s.key==='bear'?'↓ Bear':s.key==='neut'?'↔ Neutral':'↑ Bull'}</th>
-              ))}
-            </tr>
-            <tr className="border-b border-border text-muted text-[10px]">
-              <th className="px-3 py-1 sticky left-0 bg-card"/>
-              <th className="px-3 py-1"/>
-              <th className="px-3 py-1"/>
-              {scenMoves.map(s=>(
-                <Fragment key={s.key}>
-                  <th className="px-2 py-1 text-right border-l border-border/50">Proj. Spot</th>
-                  <th className="px-2 py-1 text-right">P&L (ROC%)</th>
-                </Fragment>
-              ))}
+              <th className="px-3 py-2 text-left">DTE left</th>
+              <th className="px-3 py-2 text-left">±1SD Range</th>
+              <th className="px-3 py-2 text-left">±2SD Range</th>
+              <th className="px-3 py-2 text-left">P(Profit)</th>
+              <th className="px-3 py-2 text-right">E[P&amp;L]</th>
             </tr>
           </thead>
           <tbody>
-            {rows.map(row=>{
+            {rows.map(r=>{
+              const pp=r.probProfit, ep=r.expectedPnl
+              const ppPct=Math.round(pp*100)
+              const barW=Math.round(pp*100)
+              const barColor=pp>=0.65?'bg-score-green':pp>=0.50?'bg-score-amber':'bg-score-red'
+              const textColor=pp>=0.65?'text-score-green':pp>=0.50?'text-score-amber':'text-score-red'
               return(
-                <tr key={row.d} className="border-b border-border/40 hover:bg-slate-800/30">
-                  <td className="px-3 py-2 font-semibold text-white sticky left-0 bg-card">D{row.d}</td>
-                  <td className="px-3 py-2 text-muted">{row.dateStr}</td>
-                  <td className="px-3 py-2 text-muted">{row.dte}d</td>
-                  {row.scenarios.map((sc,si)=>{
-                    const isExit = firstExit[si]===row.d-1
-                    const isStop = firstStop[si]===row.d-1
-                    const pnlColor = sc.pnl>0?'text-score-green':sc.pnl<0?'text-score-red':'text-muted'
-                    return(
-                      <Fragment key={si}>
-                        <td className={`px-2 py-2 text-right border-l border-border/50 ${sc.pnl>0?'text-slate-300':'text-muted'}`}>
-                          {sc.projSpot.toLocaleString('en-IN',{maximumFractionDigits:0})}
-                        </td>
-                        <td className={`px-2 py-2 text-right font-semibold ${pnlColor}`}>
-                          <div className="flex items-center justify-end gap-1">
-                            {(isExit||isStop)&&(
-                              <span className={`text-[9px] px-1 py-0.5 rounded border font-bold ${isExit?'bg-green-950 border-green-700 text-green-300':'bg-red-950 border-red-700 text-red-300'}`}>
-                                {isExit?'EXIT':'STOP'}
-                              </span>
-                            )}
-                            <span>{fK(sc.pnl)}</span>
-                            <span className="text-[9px] text-slate-500">({sc.rocPct.toFixed(1)}%)</span>
-                          </div>
-                        </td>
-                      </Fragment>
-                    )
-                  })}
+                <tr key={r.d} className="border-b border-border/40 hover:bg-slate-800/20">
+                  <td className="px-3 py-2 font-semibold text-white">D{r.d}</td>
+                  <td className="px-3 py-2 text-muted">{r.date}</td>
+                  <td className="px-3 py-2 text-muted">{r.remainingDte}d</td>
+                  <td className="px-3 py-2">
+                    <span className="text-slate-400">{fP(r.lo1)}</span>
+                    <span className="text-slate-600 mx-1">–</span>
+                    <span className="text-slate-400">{fP(r.hi1)}</span>
+                    <span className="text-slate-600 ml-1 text-[9px]">({(r.hi1-r.lo1).toFixed(0)} pts)</span>
+                  </td>
+                  <td className="px-3 py-2">
+                    <span className="text-slate-500">{fP(r.lo2)}</span>
+                    <span className="text-slate-600 mx-1">–</span>
+                    <span className="text-slate-500">{fP(r.hi2)}</span>
+                  </td>
+                  <td className="px-3 py-2">
+                    <div className="flex items-center gap-2">
+                      <div className="w-20 h-2 bg-slate-800 rounded-full overflow-hidden">
+                        <div className={`h-full rounded-full transition-all ${barColor}`} style={{width:`${barW}%`}}/>
+                      </div>
+                      <span className={`font-semibold ${textColor}`}>{ppPct}%</span>
+                      <span className="text-slate-600 text-[9px]">loss {100-ppPct}%</span>
+                    </div>
+                  </td>
+                  <td className={`px-3 py-2 text-right font-semibold ${ep>=0?'text-score-green':'text-score-red'}`}>{fK(ep)}</td>
                 </tr>
               )
             })}
           </tbody>
         </table>
       </div>
-
-      {/* Footer note */}
       <div className="px-4 py-2 border-t border-border text-[10px] text-muted leading-relaxed">
-        💡 P&L computed via Black-Scholes with time decay. Bull/Bear scenarios assume ±0.5σ/day move (~{(daily1sd*0.5).toFixed(0)} pts for {atmIv.toFixed(0)}% IV). EXIT = take profit at {exitThreshold}% of margin. STOP = cut loss at {exitThreshold}% of margin. Actual IV and slippage may differ.
+        💡 P(Profit) = probability spot lands in profitable zone on that day (log-normal, no drift). E[P&amp;L] = probability-weighted expected value using Black-Scholes with remaining DTE. Range assumes IV stays at {atmIv.toFixed(0)}%. Actual outcomes may differ.
       </div>
     </div>
   )
@@ -1736,6 +1708,7 @@ function CustomFlyTab() {
   const [expDays,setExpDays]   = useState('30')
   const [qtyLots,setQtyLots]   = useState('1')
   const [direction,setDir]     = useState<CFDir>('up')
+  const [lockedDir,setLockedDir] = useState<CFDir|null>(null)
   const [chain1,setChain1]     = useState<CFChainData|null>(null)
   const [chain2,setChain2]     = useState<CFChainData|null>(null)
   const [loading1,setL1]       = useState(false)
@@ -1762,8 +1735,8 @@ function CustomFlyTab() {
         if(r.data.error){setError(r.data.error);return}
         if(forStage2){
           setChain2(r.data)
-          // Pre-fill Stage 2 prices from fresh chain
-          if(direction==='up'){setEp2({sc:String(r.data.sp?.ltp||''),bc:'',sp:'',bp:String(r.data.bp?.ltp||'')})}
+          // Pre-fill Stage 2 prices from fresh chain (use lockedDir — direction may no longer reflect Stage 1 choice)
+          if((lockedDir||direction)==='up'){setEp2({sc:String(r.data.sp?.ltp||''),bc:'',sp:'',bp:String(r.data.bp?.ltp||'')})}
           else{setEp2({sc:String(r.data.sc?.ltp||''),bc:String(r.data.bc?.ltp||''),sp:'',bp:''})}
         } else {
           setChain1(r.data)
@@ -1805,6 +1778,7 @@ function CustomFlyTab() {
         ]
 
     setLocked(newLegs)
+    setLockedDir(direction)
     setS1Done(true)
     if(!currentDte) setCurDte(String(chain1.dte))
   }
@@ -1814,7 +1788,7 @@ function CustomFlyTab() {
     const iv2 = chain2.atm_iv || 15
     const dte2 = chain2.dte
 
-    const stage2Legs: CfLeg[] = direction==='up'
+    const stage2Legs: CfLeg[] = (lockedDir||direction)==='up'
       // Stage 2 for UP: now add Bull Put Spread at new (lower) ATM
       ? [
           {id:'s2-sp',type:'PE',pos:'short',strike:chain2.atm_strike,ltp:parseFloat(ep2.sc)||chain2.sp?.ltp||0,iv:chain2.sp?.iv||iv2,dte:dte2,stage:2},
@@ -1829,7 +1803,7 @@ function CustomFlyTab() {
     setS2Done(true)
   }
 
-  const resetAll = () => { setChain1(null);setChain2(null);setLocked([]);setS1Done(false);setS2Done(false);setError('') }
+  const resetAll = () => { setChain1(null);setChain2(null);setLocked([]);setS1Done(false);setS2Done(false);setLockedDir(null);setError('') }
 
   const allLegs = lockedLegs
   const lot = chain1?.lot_size || (uType==='nifty'?75:uType==='banknifty'?35:100)
@@ -1871,7 +1845,7 @@ function CustomFlyTab() {
   const oiData = chain1?.oi_distribution
   const sdData = chain1?.sd
 
-  const isComplete = direction==='neutral'?stage1Done:stage1Done&&stage2Done
+  const isComplete = (lockedDir||direction)==='neutral'?stage1Done:stage1Done&&stage2Done
 
   const dirButtons:(CFDir|string)[] = ['up','down','neutral']
   const dirMeta:Record<string,{icon:string;label:string;color:string;s1:string;s2:string}> = {
@@ -1947,11 +1921,12 @@ function CustomFlyTab() {
 
         {/* Direction selector */}
         <div>
-          <div className="text-xs text-muted mb-2">Today's Market View <span className="text-[10px] text-slate-500">(auto-set from trend after fetch — override if needed)</span></div>
+          <div className="text-xs text-muted mb-2">Today's Market View <span className="text-[10px] text-slate-500">(auto-set from trend after fetch — override if needed)</span>{stage1Done&&<span className="ml-2 text-[10px] text-amber-400 bg-amber-950 border border-amber-800 px-1.5 py-0.5 rounded">Locked after Stage 1</span>}</div>
           <div className="flex gap-2">
             {(['up','down','neutral'] as CFDir[]).map(d=>(
-              <button key={d} onClick={()=>setDir(d)}
-                className={`px-3 py-2 text-xs font-semibold rounded-lg border transition-colors flex items-center gap-1.5 ${direction===d?'bg-blue-600 border-blue-500 text-white':'bg-slate-800 border-border text-muted hover:text-white'}`}>
+              <button key={d} onClick={()=>{if(!stage1Done)setDir(d)}}
+                disabled={stage1Done}
+                className={`px-3 py-2 text-xs font-semibold rounded-lg border transition-colors flex items-center gap-1.5 ${direction===d?'bg-blue-600 border-blue-500 text-white':'bg-slate-800 border-border text-muted hover:text-white'} ${stage1Done?'opacity-50 cursor-not-allowed':''}`}>
                 <span>{dirMeta[d].icon}</span> {dirMeta[d].label}
               </button>
             ))}
@@ -1966,47 +1941,145 @@ function CustomFlyTab() {
         {error&&<div className="text-score-red text-xs">{error}</div>}
       </div>
 
-      {/* Trend analysis banner — shown immediately after fetch */}
-      {chain1?.trend&&!chain1.error&&(()=>{
-        const t = chain1.trend!
-        const dirColor = t.suggested_direction==='up'?'border-green-700 bg-green-950/30':t.suggested_direction==='down'?'border-red-700 bg-red-950/30':'border-blue-700 bg-blue-950/30'
-        const prevColor = t.prev_day_chg>0?'text-score-green':t.prev_day_chg<0?'text-score-red':'text-muted'
-        const fiveColor = t.five_day_chg>0?'text-score-green':t.five_day_chg<0?'text-score-red':'text-muted'
-        // Mini sparkline from last5_closes
-        const closes = t.last5_closes
-        const spark = closes.length >= 2 ? (()=>{
-          const lo=Math.min(...closes),hi=Math.max(...closes),rng=hi-lo||1
-          const pts=closes.map((c,i)=>`${(i/(closes.length-1))*80+10},${30-((c-lo)/rng)*22}`).join(' ')
-          const lineColor=closes[closes.length-1]>=closes[0]?'#22c55e':'#ef4444'
-          return <svg viewBox="0 0 100 36" className="w-20 h-7 shrink-0"><polyline points={pts} fill="none" stroke={lineColor} strokeWidth={2}/></svg>
-        })():null
+      {/* Market Snapshot + Trend chart — shown after fetch */}
+      {chain1&&!chain1.error&&chain1.trend&&(()=>{
+        const t      = chain1.trend!
+        const spot   = chain1.spot
+        const atmIv  = chain1.atm_iv || 15
+        const daily1sd = spot * (atmIv/100) / Math.sqrt(252)
+
+        const prevColor = t.prev_day_chg>0?'text-score-green':t.prev_day_chg<0?'text-score-red':'text-slate-400'
+        const fiveColor = t.five_day_chg>0?'text-score-green':t.five_day_chg<0?'text-score-red':'text-slate-400'
+        const dirColor  = t.suggested_direction==='up'?'border-green-700 bg-green-950/20':t.suggested_direction==='down'?'border-red-700 bg-red-950/20':'border-blue-700 bg-blue-950/20'
+        const sigColor  = t.suggested_direction==='up'?'text-score-green':t.suggested_direction==='down'?'text-score-red':'text-blue-300'
+
+        // Build chart data: 5 historical closes + today spot + 5 projected days
+        const hist = [...(t.last5_closes||[]), spot]  // up to 6 points (past→now)
+        // Projections from spot: bear (-0.5σ/d), neutral (0), bull (+0.5σ/d)
+        const projBear    = Array.from({length:6},(_,i)=>spot - daily1sd*0.5*(i))
+        const projNeutral = Array.from({length:6},(_,i)=>spot)
+        const projBull    = Array.from({length:6},(_,i)=>spot + daily1sd*0.5*(i))
+
+        // Combined Y range for consistent scale
+        const allPts = [...hist,...projBear,...projBull]
+        const yLo = Math.min(...allPts)*0.998, yHi = Math.max(...allPts)*1.002
+        const yRng = yHi - yLo || 1
+
+        // SVG dimensions
+        const W=560, H=130, pL=8, pR=8, pT=12, pH=H-pT-24
+        const histW = (W-pL-pR) * 0.45    // 45% width for history
+        const projW = (W-pL-pR) * 0.55    // 55% for projection
+        const hN = hist.length
+
+        const hx = (i:number) => pL + (histW / Math.max(hN-1,1)) * i
+        const hy = (v:number) => pT + pH - ((v-yLo)/yRng)*pH
+        const px = (i:number) => pL + histW + (projW / 5) * i
+        const py = (v:number) => pT + pH - ((v-yLo)/yRng)*pH
+
+        const histPts   = hist.map((v,i)=>`${hx(i)},${hy(v)}`).join(' ')
+        const bearPts   = projBear.map((v,i)=>`${px(i)},${py(v)}`).join(' ')
+        const neutPts   = projNeutral.map((v,i)=>`${px(i)},${py(v)}`).join(' ')
+        const bullPts   = projBull.map((v,i)=>`${px(i)},${py(v)}`).join(' ')
+
+        // Shaded projection band (bear to bull)
+        const bandTop  = projBull.map((v,i)=>`${px(i)},${py(v)}`).join(' ')
+        const bandBot  = [...projBear].reverse().map((v,i)=>`${px(5-i)},${py(v)}`).join(' ')
+        const bandPoly = bandTop+' '+bandBot
+
+        const nowX = pL + histW
+        const histColor = hist[hist.length-1]>=(hist[0]||spot)?'#22c55e':'#ef4444'
+
         return(
-          <div className={`border rounded-xl px-4 py-3 flex flex-col gap-2 ${dirColor}`}>
-            <div className="flex items-start gap-4 flex-wrap">
-              <div className="flex items-center gap-3">
-                {spark}
-                <div>
-                  <div className="text-[10px] text-muted uppercase tracking-wide mb-0.5">5-day trend</div>
-                  <div className="flex gap-4 items-center">
-                    <span className="text-xs text-muted">Prev day:</span>
-                    <span className={`text-sm font-bold ${prevColor}`}>{t.prev_day_chg>0?'+':''}{t.prev_day_chg.toFixed(0)} pts</span>
-                    <span className="text-xs text-muted">5d:</span>
-                    <span className={`text-sm font-bold ${fiveColor}`}>{t.five_day_chg>0?'+':''}{t.five_day_chg.toFixed(0)} pts</span>
-                  </div>
+          <div className={`border rounded-xl overflow-hidden ${dirColor}`}>
+            {/* Top row: CMP + changes + signal */}
+            <div className="px-4 pt-3 pb-2 flex flex-wrap items-start gap-4">
+              {/* CMP block */}
+              <div>
+                <div className="text-[10px] text-muted uppercase tracking-wide">CMP</div>
+                <div className="text-2xl font-bold text-white leading-tight">{spot.toLocaleString('en-IN',{maximumFractionDigits:0})}</div>
+                <div className={`text-sm font-semibold mt-0.5 ${prevColor}`}>
+                  {t.prev_day_chg>=0?'+':''}{t.prev_day_chg.toFixed(0)} pts prev day
                 </div>
               </div>
-              <div className="flex-1 min-w-0">
+              {/* Change tiles */}
+              <div className="flex gap-3 flex-wrap mt-1">
+                <div className="bg-slate-800/60 rounded-lg px-3 py-1.5 min-w-[80px]">
+                  <div className="text-[10px] text-muted">Prev day</div>
+                  <div className={`text-sm font-bold ${prevColor}`}>{t.prev_day_chg>=0?'+':''}{t.prev_day_chg.toFixed(0)}</div>
+                </div>
+                <div className="bg-slate-800/60 rounded-lg px-3 py-1.5 min-w-[80px]">
+                  <div className="text-[10px] text-muted">5-day</div>
+                  <div className={`text-sm font-bold ${fiveColor}`}>{t.five_day_chg>=0?'+':''}{t.five_day_chg.toFixed(0)}</div>
+                </div>
+                <div className="bg-slate-800/60 rounded-lg px-3 py-1.5 min-w-[80px]">
+                  <div className="text-[10px] text-muted">ATM IV</div>
+                  <div className="text-sm font-bold text-white">{atmIv.toFixed(1)}%</div>
+                </div>
+                <div className="bg-slate-800/60 rounded-lg px-3 py-1.5 min-w-[80px]">
+                  <div className="text-[10px] text-muted">1σ/day</div>
+                  <div className="text-sm font-bold text-slate-300">{daily1sd.toFixed(0)} pts</div>
+                </div>
+              </div>
+              {/* Trend signal */}
+              <div className="ml-auto text-right">
                 <div className="text-[10px] text-muted uppercase tracking-wide mb-0.5">Trend signal</div>
-                <div className={`text-xs font-semibold ${t.suggested_direction==='up'?'text-score-green':t.suggested_direction==='down'?'text-score-red':'text-blue-300'}`}>
-                  {t.suggested_direction==='up'?'↑ Bullish':t.suggested_direction==='down'?'↓ Bearish':'↔ Neutral'} → {t.suggested_direction==='up'?'Enter Bear Call Spread first':t.suggested_direction==='down'?'Enter Bull Put Spread first':'Enter all legs simultaneously'}
+                <div className={`text-sm font-bold ${sigColor}`}>
+                  {t.suggested_direction==='up'?'↑ Bullish':t.suggested_direction==='down'?'↓ Bearish':'↔ Neutral'}
                 </div>
-                <div className="text-[10px] text-muted mt-0.5 leading-relaxed">{t.direction_reason}</div>
+                <div className="text-[10px] text-muted mt-0.5 max-w-[220px] text-right leading-relaxed">{t.direction_reason}</div>
               </div>
-              <div className="text-right shrink-0">
-                <div className="text-[10px] text-muted mb-0.5">Expiry</div>
-                <div className="text-xs text-white font-semibold">{chain1.expiry}</div>
-                <div className="text-[10px] text-muted">{chain1.dte}d · Monthly</div>
-              </div>
+            </div>
+
+            {/* Chart */}
+            <div className="px-2 pb-3">
+              <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{height:H}}>
+                {/* Divider between history and projection */}
+                <line x1={nowX} y1={pT-4} x2={nowX} y2={pT+pH+2} stroke="#475569" strokeWidth={1} strokeDasharray="3,3"/>
+                <text x={nowX-2} y={pT-6} fontSize={8} fill="#64748b" textAnchor="end">← 5d history</text>
+                <text x={nowX+4} y={pT-6} fontSize={8} fill="#64748b">next 5d →</text>
+
+                {/* Projection band (bull-bear fill) */}
+                <polygon points={bandPoly} fill="#3b82f6" fillOpacity={0.08}/>
+
+                {/* Projection lines */}
+                <polyline points={bearPts}   fill="none" stroke="#ef4444" strokeWidth={1.2} strokeDasharray="5,3" opacity={0.7}/>
+                <polyline points={neutPts}   fill="none" stroke="#94a3b8" strokeWidth={1.2} strokeDasharray="5,3" opacity={0.7}/>
+                <polyline points={bullPts}   fill="none" stroke="#22c55e" strokeWidth={1.2} strokeDasharray="5,3" opacity={0.7}/>
+
+                {/* Historical line */}
+                <polyline points={histPts} fill="none" stroke={histColor} strokeWidth={2}/>
+
+                {/* Dots on historical closes */}
+                {hist.map((v,i)=>(
+                  <circle key={i} cx={hx(i)} cy={hy(v)} r={i===hN-1?4:2.5}
+                    fill={i===hN-1?'#ffffff':histColor} stroke={histColor} strokeWidth={i===hN-1?2:0}/>
+                ))}
+
+                {/* NOW label */}
+                <text x={nowX} y={pT+pH+14} fontSize={8} fill="#94a3b8" textAnchor="middle">NOW</text>
+
+                {/* Y-axis price hints */}
+                <text x={W-pR} y={hy(yHi)+4}  fontSize={8} fill="#475569" textAnchor="end">{yHi.toFixed(0)}</text>
+                <text x={W-pR} y={hy(yLo)+4}  fontSize={8} fill="#475569" textAnchor="end">{yLo.toFixed(0)}</text>
+                <text x={W-pR} y={hy(spot)+4} fontSize={8} fill="#94a3b8" textAnchor="end">{spot.toFixed(0)}</text>
+
+                {/* Legend */}
+                <line x1={pL} y1={H-6} x2={pL+14} y2={H-6} stroke="#ef4444" strokeWidth={1.2} strokeDasharray="4,2"/>
+                <text x={pL+18} y={H-3} fontSize={8} fill="#ef4444">Bear (−0.5σ/d)</text>
+                <line x1={pL+90} y1={H-6} x2={pL+104} y2={H-6} stroke="#94a3b8" strokeWidth={1.2} strokeDasharray="4,2"/>
+                <text x={pL+108} y={H-3} fontSize={8} fill="#94a3b8">Neutral</text>
+                <line x1={pL+155} y1={H-6} x2={pL+169} y2={H-6} stroke="#22c55e" strokeWidth={1.2} strokeDasharray="4,2"/>
+                <text x={pL+173} y={H-3} fontSize={8} fill="#22c55e">Bull (+0.5σ/d)</text>
+              </svg>
+            </div>
+
+            {/* Bottom: expiry info */}
+            <div className="px-4 py-1.5 border-t border-border/40 flex items-center gap-4 text-[10px] text-muted">
+              <span>Expiry: <span className="text-white font-semibold">{chain1.expiry}</span></span>
+              <span>{chain1.dte}d remaining · Monthly</span>
+              <span className={`ml-auto font-semibold ${sigColor}`}>
+                → {t.suggested_direction==='up'?'Enter Bear Call Spread first':t.suggested_direction==='down'?'Enter Bull Put Spread first':'Enter all 4 legs simultaneously'}
+              </span>
             </div>
           </div>
         )
@@ -2077,10 +2150,10 @@ function CustomFlyTab() {
       )}
 
       {/* STAGE 2 (only for up/down, only after stage 1 locked) */}
-      {stage1Done&&direction!=='neutral'&&(
+      {stage1Done&&(lockedDir||direction)!=='neutral'&&(
         <div className={`bg-card border rounded-xl overflow-hidden ${stage2Done?'border-green-700':'border-amber-700'}`}>
           <div className={`px-4 py-3 flex items-center justify-between text-sm font-semibold border-b border-border ${stage2Done?'bg-green-950/30 text-green-300':'bg-amber-950/30 text-amber-300'}`}>
-            <span>{stage2Done?'✅ Stage 2 — Complete':'⏳ Stage 2 — '}{direction==='up'?'Bull Put Spread (enter after pullback — add put side at lower ATM)':'Bear Call Spread (enter after bounce — add call side at higher ATM)'}</span>
+            <span>{stage2Done?'✅ Stage 2 — Complete':'⏳ Stage 2 — '}{(lockedDir||direction)==='up'?'Bull Put Spread (enter after pullback — add put side at lower ATM)':'Bear Call Spread (enter after bounce — add call side at higher ATM)'}</span>
             {stage2Done&&<span className="text-xs text-green-400">Locked · Net credit ₹{stage2Net.toLocaleString('en-IN',{maximumFractionDigits:0})}</span>}
           </div>
 
@@ -2089,7 +2162,7 @@ function CustomFlyTab() {
               {!chain2?(
                 <div className="space-y-2">
                   <div className="text-xs text-slate-300">
-                    {direction==='up'
+                    {(lockedDir||direction)==='up'
                       ?"Wait 1–2 trading sessions for the market to pull back, then refresh the chain. The new ATM will be lower — you'll collect put spread premium at that level."
                       :"Wait 1–2 trading sessions for the market to bounce, then refresh the chain. The new ATM will be higher — you'll collect call spread premium at that level."
                     }
@@ -2107,7 +2180,7 @@ function CustomFlyTab() {
                     </span>}
                   </div>
                   <div className="grid grid-cols-2 gap-3">
-                    {direction==='up'?(
+                    {(lockedDir||direction)==='up'?(
                       <>
                         <div>
                           <div className="text-[10px] text-score-red mb-1">▼ SHORT {chain2.atm_strike} PE</div>
@@ -2143,7 +2216,7 @@ function CustomFlyTab() {
                     <div className="text-xs text-muted">
                       Stage 2 credit:
                       <span className="text-score-green font-semibold ml-2">
-                        {direction==='up'?`${chain2.put_spread.net_credit} pts = ₹${chain2.put_spread.net_credit_rs.toLocaleString('en-IN',{maximumFractionDigits:0})}`:`${chain2.call_spread.net_credit} pts = ₹${chain2.call_spread.net_credit_rs.toLocaleString('en-IN',{maximumFractionDigits:0})}`}
+                        {(lockedDir||direction)==='up'?`${chain2.put_spread.net_credit} pts = ₹${chain2.put_spread.net_credit_rs.toLocaleString('en-IN',{maximumFractionDigits:0})}`:`${chain2.call_spread.net_credit} pts = ₹${chain2.call_spread.net_credit_rs.toLocaleString('en-IN',{maximumFractionDigits:0})}`}
                       </span>
                     </div>
                     <button onClick={lockStage2}
@@ -2164,7 +2237,7 @@ function CustomFlyTab() {
           {/* Incomplete position warning */}
           {!isComplete&&(
             <div className="bg-amber-950 border border-amber-700 rounded-xl px-4 py-3 text-sm text-amber-300">
-              ⚠ Stage 1 only — {direction==='up'?'Bear call spread: unlimited profit below, capped above. Stage 2 will add the put spread to complete the iron fly.':'Bull put spread: unlimited profit above, capped below. Stage 2 will add the call spread to complete the iron fly.'}
+              ⚠ Stage 1 only — {(lockedDir||direction)==='up'?'Bear call spread: unlimited profit below, capped above. Stage 2 will add the put spread to complete the iron fly.':'Bull put spread: unlimited profit above, capped below. Stage 2 will add the call spread to complete the iron fly.'}
             </div>
           )}
           {isComplete&&(
@@ -2214,12 +2287,11 @@ function CustomFlyTab() {
             </div>
           )}
 
-          {/* 10-session P&L forecast table */}
+          {/* 10-day probability analysis */}
           {chartDte > 0 && (
-            <PnlSessionTable
+            <ProbAnalysisPanel
               legs={allLegs} spot={spot} lot={lot} qty={qty}
-              currentDte={chartDte} atmIv={atmIv} margin={marginEst}
-              direction={direction} expiry={chain1?.expiry||''}
+              currentDte={chartDte} atmIv={atmIv} expiry={chain1?.expiry||''}
             />
           )}
 
@@ -2289,6 +2361,385 @@ function CustomFlyTab() {
   )
 }
 
+// ── CustomWheelTab ─────────────────────────────────────────────
+
+interface WheelLeg {
+  strike:number; ltp:number; iv:number|null
+  oi:number|null; bid:number|null; ask:number|null; otm_pct:number
+}
+interface WheelData {
+  underlying_type:string; symbol:string; is_index:boolean
+  spot:number; expiry:string; dte:number; lot_size:number; atm_iv:number
+  short_call:WheelLeg; short_put:WheelLeg
+  combined_credit_pts:number; combined_credit_rs:number
+  break_even_upper:number; break_even_lower:number
+  range_width_pts:number; range_width_pct:number; pop:number
+  margin_estimate:number; yield_on_margin_pct:number
+  target_yield_pct:number; target_profit_rs:number
+  exit_credit_pts:number; exit_premium_pct:number
+  theta_daily_pts:number; days_to_target:number
+  nearby_calls:{strike:number;ltp:number;iv:number;oi:number}[]
+  nearby_puts:{strike:number;ltp:number;iv:number;oi:number}[]
+  error?:string
+}
+
+function CustomWheelTab() {
+  const [uType,setUType]         = useState<CFType>('nifty')
+  const [symbol,setSymbol]       = useState('')
+  const [symName,setSymName]     = useState('')
+  const [callOtm,setCallOtm]     = useState('5')
+  const [putOtm,setPutOtm]       = useState('5')
+  const [expDays,setExpDays]     = useState('30')
+  const [targetYld,setTargetYld] = useState('3.5')
+  const [qty,setQty]             = useState('1')
+  const [data,setData]           = useState<WheelData|null>(null)
+  const [loading,setLoading]     = useState(false)
+  const [error,setError]         = useState('')
+
+  // Position tracker
+  const [posLocked,setPosLocked] = useState(false)
+  const [callFill,setCallFill]   = useState('')
+  const [putFill,setPutFill]     = useState('')
+  const [callCur,setCallCur]     = useState('')
+  const [putCur,setPutCur]       = useState('')
+
+  const fetchData = () => {
+    const params = new URLSearchParams({
+      underlying_type: uType, symbol: symbol||'',
+      call_otm_pct: callOtm, put_otm_pct: putOtm,
+      expiry_days: expDays, target_yield_pct: targetYld,
+    })
+    setLoading(true); setError(''); setData(null); setPosLocked(false)
+    client.get(`/strategies/customwheel?${params}`)
+      .then(r => {
+        if(r.data.error){setError(r.data.error);return}
+        setData(r.data)
+        setCallFill(String(r.data.short_call.ltp))
+        setPutFill(String(r.data.short_put.ltp))
+        setCallCur(''); setPutCur('')
+      })
+      .catch(()=>setError('Failed to fetch. Market may be closed.'))
+      .finally(()=>setLoading(false))
+  }
+
+  const lot  = data?.lot_size || (uType==='nifty'?75:uType==='banknifty'?35:100)
+  const qtyN = parseInt(qty)||1
+  const cFill = parseFloat(callFill)||0
+  const pFill = parseFloat(putFill)||0
+  const cCur  = parseFloat(callCur)||0
+  const pCur  = parseFloat(putCur)||0
+  const trackingPnl = posLocked ? ((cFill-cCur)+(pFill-pCur))*lot*qtyN : 0
+  const targetRs    = data ? data.target_profit_rs*qtyN : 0
+  const pnlPct      = targetRs>0 ? Math.min(trackingPnl/targetRs*100, 110) : 0
+  const exitHit     = posLocked && trackingPnl>=targetRs && targetRs>0
+
+  const chartLegs: CfLeg[] = data ? [
+    {id:'sc',type:'CE',pos:'short',strike:data.short_call.strike,ltp:cFill||data.short_call.ltp,iv:data.short_call.iv||data.atm_iv,dte:data.dte,stage:1},
+    {id:'sp',type:'PE',pos:'short',strike:data.short_put.strike, ltp:pFill||data.short_put.ltp, iv:data.short_put.iv||data.atm_iv,dte:data.dte,stage:1},
+  ] : []
+
+  return (
+    <div className="space-y-5">
+      {/* Explainer */}
+      <div className="bg-card border border-border rounded-xl p-4">
+        <div className="text-sm font-semibold text-white mb-2">🎡 Custom Wheel — Short Strangle + Wheel Overlay</div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+          <div className="bg-slate-800/60 rounded-lg p-3 space-y-1">
+            <div className="font-bold text-score-green">1. Enter — Short Both Sides</div>
+            <div className="text-muted leading-relaxed">Sell OTM Call + Sell OTM Put simultaneously. Collect premium from both sides. Profit if market stays within break-evens.</div>
+          </div>
+          <div className="bg-slate-800/60 rounded-lg p-3 space-y-1">
+            <div className="font-bold text-score-amber">2. Monitor — Target 3–4% in 1–2 Weeks</div>
+            <div className="text-muted leading-relaxed">Let theta decay. Exit when combined premium drops to ~20–30% of entry (locks 70–80% of max profit). No need to wait till expiry.</div>
+          </div>
+          <div className="bg-slate-800/60 rounded-lg p-3 space-y-1">
+            <div className="font-bold text-blue-300">3. Assigned? — Continue the Wheel</div>
+            <div className="text-muted leading-relaxed">Put assigned → own stock → sell Covered Call. Call assigned → stock sold at gain → sell new Put below market. Repeat the cycle.</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Controls */}
+      <div className="bg-card border border-border rounded-xl p-5 space-y-4">
+        <div className="flex flex-wrap gap-2 items-center">
+          {(['nifty','banknifty'] as CFType[]).map(t=>(
+            <button key={t} onClick={()=>{setUType(t);setData(null)}}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors ${uType===t?'bg-blue-600 border-blue-500 text-white':'bg-slate-800 border-border text-muted hover:text-white'}`}>
+              📈 {t==='banknifty'?'BANK NIFTY':'NIFTY 50'}
+            </button>
+          ))}
+          <button onClick={()=>{setUType('stock');setData(null)}}
+            className={`px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors ${uType==='stock'?'bg-blue-600 border-blue-500 text-white':'bg-slate-800 border-border text-muted hover:text-white'}`}>
+            🏢 Stock F&O
+          </button>
+          <div className="ml-auto flex gap-2 items-center">
+            <span className="text-xs text-muted">Lots:</span>
+            <input type="number" value={qty} onChange={e=>setQty(e.target.value)} min={1}
+              className="w-14 bg-slate-800 border border-border rounded px-2 py-1.5 text-xs text-white focus:outline-none"/>
+          </div>
+        </div>
+
+        {uType==='stock'&&(
+          <div>
+            <div className="text-xs text-muted mb-1">NSE F&O Stock</div>
+            {symbol?(
+              <div className="flex items-center gap-2">
+                <div className="flex-1 bg-slate-800 border border-border rounded px-3 py-2 text-sm">
+                  <span className="text-white font-semibold">{symbol}</span>
+                  {symName&&<span className="text-muted ml-2 text-xs">{symName}</span>}
+                </div>
+                <button onClick={()=>{setSymbol('');setSymName('');setData(null)}} className="text-muted hover:text-white text-xs border border-border rounded px-2 py-2">✕</button>
+              </div>
+            ):(
+              <NseStockSearch onSelect={(sym,name)=>{setSymbol(sym.replace('.NS',''));setSymName(name)}}
+                placeholder="Search NSE F&O stock"/>
+            )}
+          </div>
+        )}
+
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div>
+            <div className="text-[10px] text-score-red mb-1">Call OTM %</div>
+            <input type="number" value={callOtm} onChange={e=>setCallOtm(e.target.value)} step={0.5} min={1} max={15}
+              className="w-full bg-slate-800 border border-border rounded px-2 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"/>
+            <div className="text-[10px] text-muted mt-0.5">above spot</div>
+          </div>
+          <div>
+            <div className="text-[10px] text-score-green mb-1">Put OTM %</div>
+            <input type="number" value={putOtm} onChange={e=>setPutOtm(e.target.value)} step={0.5} min={1} max={15}
+              className="w-full bg-slate-800 border border-border rounded px-2 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"/>
+            <div className="text-[10px] text-muted mt-0.5">below spot</div>
+          </div>
+          <div>
+            <div className="text-[10px] text-muted mb-1">Monthly Expiry</div>
+            <select value={expDays} onChange={e=>setExpDays(e.target.value)}
+              className="w-full bg-slate-800 border border-border rounded px-2 py-1.5 text-sm text-white focus:outline-none">
+              <option value="30">Current month (~30d)</option>
+              <option value="60">Next month (~60d)</option>
+              <option value="90">2 months out (~90d)</option>
+            </select>
+          </div>
+          <div>
+            <div className="text-[10px] text-muted mb-1">Target yield %</div>
+            <input type="number" value={targetYld} onChange={e=>setTargetYld(e.target.value)} step={0.5} min={1} max={10}
+              className="w-full bg-slate-800 border border-border rounded px-2 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"/>
+            <div className="text-[10px] text-muted mt-0.5">of margin</div>
+          </div>
+        </div>
+
+        <button onClick={fetchData} disabled={loading||(uType==='stock'&&!symbol)}
+          className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-semibold px-5 py-2.5 rounded-lg">
+          {loading?'⏳ Fetching…':'🔍 Analyse Strangle'}
+        </button>
+        {error&&<div className="text-score-red text-xs">{error}</div>}
+      </div>
+
+      {data&&!data.error&&(
+        <div className="space-y-4">
+          {/* Leg cards */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="bg-card border border-red-800/60 rounded-xl p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <div className="text-[10px] text-score-red uppercase tracking-wide mb-0.5">▼ Short Call (OTM)</div>
+                  <div className="text-xl font-bold text-white">{data.short_call.strike.toLocaleString('en-IN')}</div>
+                  <div className="text-xs text-muted">{data.short_call.otm_pct.toFixed(1)}% above spot</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-lg font-bold text-score-green">₹{data.short_call.ltp.toFixed(2)}</div>
+                  <div className="text-xs text-muted">premium / unit</div>
+                  {data.short_call.iv&&<div className="text-[10px] text-slate-500 mt-0.5">IV {data.short_call.iv.toFixed(1)}%</div>}
+                </div>
+              </div>
+              <div className="flex gap-4 text-[10px] text-muted">
+                {data.short_call.oi!=null&&<span>OI: {(data.short_call.oi/1000).toFixed(0)}K</span>}
+                {data.short_call.bid!=null&&<span>Bid: ₹{data.short_call.bid}</span>}
+                {data.short_call.ask!=null&&<span>Ask: ₹{data.short_call.ask}</span>}
+              </div>
+              {data.nearby_calls.length>0&&(
+                <div className="mt-3 border-t border-border pt-2">
+                  <div className="text-[10px] text-muted mb-1.5">Nearby strikes</div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {data.nearby_calls.map(c=>(
+                      <span key={c.strike} className={`text-[10px] px-1.5 py-0.5 rounded border ${c.strike===data.short_call.strike?'border-red-600 bg-red-950 text-red-300':'border-border text-slate-400'}`}>
+                        {c.strike.toLocaleString('en-IN')} · ₹{c.ltp}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="bg-card border border-green-800/60 rounded-xl p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <div className="text-[10px] text-score-green uppercase tracking-wide mb-0.5">▼ Short Put (OTM)</div>
+                  <div className="text-xl font-bold text-white">{data.short_put.strike.toLocaleString('en-IN')}</div>
+                  <div className="text-xs text-muted">{data.short_put.otm_pct.toFixed(1)}% below spot</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-lg font-bold text-score-green">₹{data.short_put.ltp.toFixed(2)}</div>
+                  <div className="text-xs text-muted">premium / unit</div>
+                  {data.short_put.iv&&<div className="text-[10px] text-slate-500 mt-0.5">IV {data.short_put.iv.toFixed(1)}%</div>}
+                </div>
+              </div>
+              <div className="flex gap-4 text-[10px] text-muted">
+                {data.short_put.oi!=null&&<span>OI: {(data.short_put.oi/1000).toFixed(0)}K</span>}
+                {data.short_put.bid!=null&&<span>Bid: ₹{data.short_put.bid}</span>}
+                {data.short_put.ask!=null&&<span>Ask: ₹{data.short_put.ask}</span>}
+              </div>
+              {data.nearby_puts.length>0&&(
+                <div className="mt-3 border-t border-border pt-2">
+                  <div className="text-[10px] text-muted mb-1.5">Nearby strikes</div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {data.nearby_puts.map(p=>(
+                      <span key={p.strike} className={`text-[10px] px-1.5 py-0.5 rounded border ${p.strike===data.short_put.strike?'border-green-600 bg-green-950 text-green-300':'border-border text-slate-400'}`}>
+                        {p.strike.toLocaleString('en-IN')} · ₹{p.ltp}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Key metrics */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {[
+              {label:'Combined Credit',   val:`₹${(data.combined_credit_rs*qtyN).toLocaleString('en-IN',{maximumFractionDigits:0})}`,  sub:`${data.combined_credit_pts} pts/unit · ${qtyN} lot${qtyN>1?'s':''}`, col:'text-score-green'},
+              {label:'Margin (est. SPAN)',val:`₹${(data.margin_estimate*qtyN).toLocaleString('en-IN',{maximumFractionDigits:0})}`,      sub:`${data.yield_on_margin_pct.toFixed(2)}% yield on capital`,              col:'text-blue-300'},
+              {label:'P(Profit at Exp.)', val:`${(data.pop*100).toFixed(1)}%`,                                                          sub:`spot stays ${data.short_put.strike.toLocaleString('en-IN')}–${data.short_call.strike.toLocaleString('en-IN')}`, col:data.pop>=0.7?'text-score-green':data.pop>=0.55?'text-score-amber':'text-score-red'},
+              {label:'Target Profit',     val:`₹${(data.target_profit_rs*qtyN).toLocaleString('en-IN',{maximumFractionDigits:0})}`,     sub:`${data.target_yield_pct}% of margin · est. ${data.days_to_target.toFixed(0)}d`,col:'text-score-amber'},
+            ].map(c=>(
+              <div key={c.label} className="bg-card border border-border rounded-xl p-3">
+                <div className="text-xs text-muted mb-1">{c.label}</div>
+                <div className={`text-base font-bold ${c.col}`}>{c.val}</div>
+                <div className="text-[10px] text-muted leading-snug mt-0.5">{c.sub}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Break-even + theta + exit banner */}
+          <div className="bg-card border border-border rounded-xl px-4 py-3 flex flex-wrap gap-6 text-xs items-start">
+            <div>
+              <div className="text-[10px] text-muted uppercase tracking-wide mb-1">Profit Zone (at expiry)</div>
+              <div className="font-bold text-white text-sm">{data.break_even_lower.toLocaleString('en-IN')} — {data.break_even_upper.toLocaleString('en-IN')}</div>
+              <div className="text-muted mt-0.5">{data.range_width_pts} pts wide · {data.range_width_pct}% of spot</div>
+            </div>
+            <div>
+              <div className="text-[10px] text-muted uppercase tracking-wide mb-1">θ Daily Decay (est.)</div>
+              <div className="font-bold text-score-green text-sm">+{data.theta_daily_pts} pts/day</div>
+              <div className="text-muted mt-0.5">≈ ₹{(data.theta_daily_pts*lot*qtyN).toLocaleString('en-IN',{maximumFractionDigits:0})}/day earned</div>
+            </div>
+            <div>
+              <div className="text-[10px] text-muted uppercase tracking-wide mb-1">Exit When Combined ≤</div>
+              <div className="font-bold text-score-amber text-sm">₹{(data.exit_credit_pts*lot*qtyN).toLocaleString('en-IN',{maximumFractionDigits:0})}</div>
+              <div className="text-muted mt-0.5">{data.exit_premium_pct}% of entry · {(100-data.exit_premium_pct).toFixed(0)}% profit locked</div>
+            </div>
+            <div>
+              <div className="text-[10px] text-muted uppercase tracking-wide mb-1">Expiry · DTE · IV</div>
+              <div className="font-bold text-white text-sm">{data.expiry}</div>
+              <div className="text-muted mt-0.5">{data.dte}d · ATM IV {data.atm_iv.toFixed(1)}%</div>
+            </div>
+          </div>
+
+          {/* Risk warning */}
+          <div className="bg-red-950/40 border border-red-800/50 rounded-xl px-4 py-2.5 text-xs text-red-300 flex items-start gap-2">
+            <span className="shrink-0">⚠</span>
+            <span>
+              <span className="font-semibold">Naked short strangle — unlimited risk outside break-evens.</span>{' '}
+              {data.is_index?'Index options are cash-settled — P&L only, no physical assignment.':'Stock assignment possible — ensure you have capital to take delivery at put strike.'}{' '}
+              Always keep a stop-loss plan. Consider buying far-OTM wings to cap max loss.
+            </span>
+          </div>
+
+          {/* Payoff chart */}
+          <div className="bg-card border border-border rounded-xl p-3">
+            <div className="text-xs font-semibold text-white mb-2">📊 Payoff Chart — Short Strangle</div>
+            <PayoffChart legs={chartLegs} spot={data.spot} lot={lot} qty={qtyN} currentDte={data.dte} atmIv={data.atm_iv}/>
+          </div>
+
+          {/* Position tracker */}
+          <div className="bg-card border border-border rounded-xl overflow-hidden">
+            <div className="px-4 py-3 border-b border-border flex items-center justify-between">
+              <div>
+                <div className="text-sm font-semibold text-white">📍 Position Tracker</div>
+                <div className="text-[10px] text-muted mt-0.5">Enter your actual fill prices, then update live prices to track P&L toward exit target</div>
+              </div>
+              {!posLocked?(
+                <button onClick={()=>setPosLocked(true)}
+                  className="bg-green-700 hover:bg-green-600 text-white text-xs font-semibold px-3 py-1.5 rounded-lg">
+                  Lock Fills & Track
+                </button>
+              ):(
+                <button onClick={()=>{setPosLocked(false);setCallCur('');setPutCur('')}}
+                  className="text-xs text-muted hover:text-score-red border border-border rounded px-2 py-1">↺ Reset</button>
+              )}
+            </div>
+            <div className="p-4 space-y-4">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div>
+                  <div className="text-[10px] text-score-red mb-1">Call sell price (fill)</div>
+                  <input type="number" value={callFill} onChange={e=>setCallFill(e.target.value)} readOnly={posLocked}
+                    className={`w-full bg-slate-800 border border-border rounded px-2 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500 ${posLocked?'opacity-60 cursor-not-allowed':''}`}/>
+                  <div className="text-[10px] text-muted mt-0.5">{data.short_call.strike} CE</div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-score-green mb-1">Put sell price (fill)</div>
+                  <input type="number" value={putFill} onChange={e=>setPutFill(e.target.value)} readOnly={posLocked}
+                    className={`w-full bg-slate-800 border border-border rounded px-2 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500 ${posLocked?'opacity-60 cursor-not-allowed':''}`}/>
+                  <div className="text-[10px] text-muted mt-0.5">{data.short_put.strike} PE</div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-muted mb-1">Call current price</div>
+                  <input type="number" value={callCur} onChange={e=>setCallCur(e.target.value)} disabled={!posLocked}
+                    placeholder={posLocked?'Enter live CE price':'lock first'}
+                    className="w-full bg-slate-800 border border-border rounded px-2 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500 disabled:opacity-40 disabled:cursor-not-allowed"/>
+                  {posLocked&&cCur>0&&<div className={`text-[10px] mt-0.5 ${cFill-cCur>=0?'text-score-green':'text-score-red'}`}>P&L: {cFill-cCur>=0?'+':''}₹{((cFill-cCur)*lot*qtyN).toLocaleString('en-IN',{maximumFractionDigits:0})}</div>}
+                </div>
+                <div>
+                  <div className="text-[10px] text-muted mb-1">Put current price</div>
+                  <input type="number" value={putCur} onChange={e=>setPutCur(e.target.value)} disabled={!posLocked}
+                    placeholder={posLocked?'Enter live PE price':'lock first'}
+                    className="w-full bg-slate-800 border border-border rounded px-2 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500 disabled:opacity-40 disabled:cursor-not-allowed"/>
+                  {posLocked&&pCur>0&&<div className={`text-[10px] mt-0.5 ${pFill-pCur>=0?'text-score-green':'text-score-red'}`}>P&L: {pFill-pCur>=0?'+':''}₹{((pFill-pCur)*lot*qtyN).toLocaleString('en-IN',{maximumFractionDigits:0})}</div>}
+                </div>
+              </div>
+
+              {posLocked&&(cCur>0||pCur>0)&&(
+                <div className={`rounded-xl border px-4 py-3 space-y-2 ${exitHit?'bg-green-950 border-green-700':'bg-slate-900/60 border-border'}`}>
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm font-semibold text-white">
+                      {exitHit?'🎯 Exit target reached — close both legs now!':`Progress: ₹${trackingPnl.toLocaleString('en-IN',{maximumFractionDigits:0})} of ₹${targetRs.toLocaleString('en-IN',{maximumFractionDigits:0})} target`}
+                    </div>
+                    <div className={`text-lg font-bold ${trackingPnl>=0?'text-score-green':'text-score-red'}`}>
+                      {trackingPnl>=0?'+':''}₹{trackingPnl.toLocaleString('en-IN',{maximumFractionDigits:0})}
+                    </div>
+                  </div>
+                  <div className="w-full h-2.5 bg-slate-800 rounded-full overflow-hidden">
+                    <div className={`h-full rounded-full transition-all duration-500 ${exitHit?'bg-score-green':pnlPct>60?'bg-score-amber':'bg-blue-500'}`}
+                      style={{width:`${Math.max(0,Math.min(100,pnlPct))}%`}}/>
+                  </div>
+                  <div className="flex justify-between text-[10px] text-muted">
+                    <span>0%</span>
+                    <span className={exitHit?'text-score-green font-semibold':''}>{Math.max(0,pnlPct).toFixed(0)}% of {data.target_yield_pct}% target</span>
+                    <span>Target ✓</span>
+                  </div>
+                  {!exitHit&&(
+                    <div className="text-[10px] text-muted">
+                      Exit when combined premium ≤ ₹{(data.exit_credit_pts*lot*qtyN).toLocaleString('en-IN',{maximumFractionDigits:0})} (currently ₹{((cCur+pCur)*lot*qtyN).toLocaleString('en-IN',{maximumFractionDigits:0})})
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ═══════════════════════════════════════════════════════════════
 // MAIN PAGE
 // ═══════════════════════════════════════════════════════════════
@@ -2300,7 +2751,8 @@ export default function Strategies() {
     { key: 'breakout', label: '📈 Breakout Scanner',  desc: 'Volume-confirmed price breakouts' },
     { key: 'collar',   label: '🛡 Collar Optimizer',  desc: 'Protect stock gains with options' },
     { key: 'ironfly',   label: '🦋 Iron Fly',   desc: 'Wide wing iron fly — earn time decay in sideways markets' },
-    { key: 'customfly', label: '🎯 Custom Fly', desc: 'Staged iron fly — enter each spread when that side\'s premium is elevated' },
+    { key: 'customfly',   label: '🎯 Custom Fly',    desc: 'Staged iron fly — enter each spread when that side\'s premium is elevated' },
+    { key: 'customwheel', label: '🎡 Custom Wheel',  desc: 'Short OTM Call + Put (strangle) — collect premium on both sides, exit at 3–4% yield, roll into wheel if assigned' },
   ]
 
   return (
@@ -2327,7 +2779,8 @@ export default function Strategies() {
       {tab === 'breakout'  && <BreakoutTab />}
       {tab === 'collar'    && <CollarTab />}
       {tab === 'ironfly'   && <IronFlyTab />}
-      {tab === 'customfly' && <CustomFlyTab />}
+      {tab === 'customfly'   && <CustomFlyTab />}
+      {tab === 'customwheel' && <CustomWheelTab />}
     </div>
   )
 }

@@ -6,14 +6,17 @@ const BASE_NAV = [
   { path: '/',          label: 'Dashboard',     icon: '⬡' },
   { path: '/discover',  label: 'Discover',       icon: '⬢' },
   { path: '/portfolio', label: 'Portfolio',      icon: '⬣' },
+  { path: '/holdings',  label: 'Holdings',       icon: '💼' },
   { path: '/settings',  label: 'Settings',       icon: '⚙' },
 ]
 
 const GATED_NAV = [
   { path: '/trade',         label: 'Paper Trade',    icon: '◈', perm: 'paper_trade' },
   { path: '/covered-calls', label: 'Covered Calls',  icon: '◉', perm: 'covered_calls' },
-  { path: '/wheel',         label: 'Wheel Strategy', icon: '🎡', perm: 'wheel' },
-  { path: '/strategies',    label: 'Strategies',     icon: '⚡', perm: 'market' },
+  { path: '/wheel',             label: 'Wheel Strategy',    icon: '🎡', perm: 'wheel' },
+  { path: '/cushion-strangle',  label: 'Cushion Strangle',  icon: '🛡️', perm: 'wheel' },
+  { path: '/custom-strangle',   label: 'Custom Builder',     icon: '🔧', perm: 'wheel' },
+  { path: '/strategies',        label: 'Strategies',        icon: '⚡', perm: 'market' },
   { path: '/market',        label: 'Market',         icon: '◊', perm: 'market' },
   { path: '/ai-insights',   label: 'AI Insights',    icon: '◇', perm: 'ai_insights' },
 ]

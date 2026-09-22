@@ -31,8 +31,9 @@ def convert_numpy(obj):
         return None if (math.isnan(obj) or math.isinf(obj)) else obj
     return obj
 
-from api.routes import analyze, discover, portfolio, covered_calls, market, ai_advisor, settings, validate, etf, paper_trade, global_stocks, nse_search, cc_strategy, predict, predict_constituents, monitor, strategies
+from api.routes import analyze, discover, portfolio, covered_calls, market, ai_advisor, settings, validate, etf, paper_trade, global_stocks, nse_search, cc_strategy, predict, predict_constituents, monitor, strategies, holdings as holdings_routes
 from api.routes import auth as auth_routes
+from api.routes import cushion_strangle as cushion_strangle_routes
 
 app = FastAPI(
     title="AegisAI",
@@ -65,7 +66,9 @@ app.include_router(nse_search.router, prefix="/api", tags=["nse-search"])
 app.include_router(predict.router, prefix="/api", tags=["predict"])
 app.include_router(predict_constituents.router, prefix="/api", tags=["predict-constituents"])
 app.include_router(monitor.router, prefix="/api", tags=["monitor"])
+app.include_router(holdings_routes.router, prefix="/api", tags=["holdings"])
 app.include_router(strategies.router, prefix="/api", tags=["strategies"])
+app.include_router(cushion_strangle_routes.router, prefix="/api", tags=["cushion-strangle"])
 
 
 # ── Auto-fill actuals scheduler ───────────────────────────────────────────────

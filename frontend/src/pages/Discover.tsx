@@ -663,7 +663,7 @@ function EtfTab({ onViewDetails }: { onViewDetails: (s: string) => void }) {
   })
 
   // Top 6 featured ETFs always shown first
-  const TOP_ETF_SYMBOLS = ['NIFTYBEES.NS', 'BANKBEES.NS', 'GOLDBEES.NS', 'MOM100.NS', 'ITBEES.NS', 'PHARMABEES.NS']
+  const TOP_ETF_SYMBOLS = ['NIFTYBEES.NS', 'BANKBEES.NS', 'GOLDBEES.NS', 'MON100.NS', 'ITBEES.NS', 'PHARMABEES.NS']
   const topEtfs = TOP_ETF_SYMBOLS.map(s => etfs.find(e => e.symbol === s)).filter(Boolean) as EtfEntry[]
 
   return (

@@ -1253,7 +1253,202 @@ async def customfly_endpoint(
     return JSONResponse(content=result)
 
 
-@router.get("/strategies/collar")
+# ── Custom Wheel (Short Strangle + Wheel Overlay) ─────────────────────────────
+
+def _customwheel_analyze(
+    underlying_type: str, symbol: str,
+    call_otm_pct: float, put_otm_pct: float,
+    expiry_days: int, target_yield_pct: float,
+) -> dict:
+    import math
+
+    def _ncdf(x: float) -> float:
+        return 0.5 * (1.0 + math.erf(x / math.sqrt(2)))
+
+    chain_data = _fetch_collar_chain(underlying_type, symbol, expiry_days, monthly_only=True)
+    if chain_data.get("error"):
+        return {"error": chain_data["error"]}
+
+    spot       = chain_data["spot"]
+    dte        = chain_data["dte"]
+    rows       = chain_data["rows"]
+    lot_size   = chain_data["lot_size"]
+    round_step = chain_data.get("round_step", 100)
+    expiry     = chain_data["expiry"]
+    is_index   = chain_data["is_index"]
+
+    if not rows:
+        return {"error": "No option data available for this underlying"}
+
+    # Round targets to nearest liquid strike
+    call_target = round(spot * (1 + call_otm_pct / 100) / round_step) * round_step
+    put_target  = round(spot * (1 - put_otm_pct  / 100) / round_step) * round_step
+
+    def find_best_row(opt_type: str, target_strike: float):
+        best_row, best_d = None, 1e9
+        for row in rows:
+            try:
+                strike = float(row.get("strikePrice", 0))
+                opt    = row.get(opt_type, {})
+                if not opt:
+                    continue
+                if float(opt.get("lastPrice", 0) or 0) <= 0:
+                    continue
+                d = abs(strike - target_strike)
+                if d < best_d:
+                    best_d, best_row = d, row
+            except Exception:
+                continue
+        return best_row
+
+    sc_row = find_best_row("CE", call_target)
+    sp_row = find_best_row("PE", put_target)
+
+    if not sc_row or not sp_row:
+        return {"error": "Could not find suitable OTM strikes in chain. Market may be closed."}
+
+    sc = _enrich_strike(sc_row, spot, dte, "CE")
+    sp = _enrich_strike(sp_row, spot, dte, "PE")
+
+    # ATM IV for SD/probability calculations
+    atm_strike = round(spot / round_step) * round_step
+    atm_row    = find_best_row("CE", atm_strike)
+    atm_ce     = _enrich_strike(atm_row, spot, dte, "CE") if atm_row else None
+    atm_iv     = float(atm_ce["iv"]) if atm_ce and atm_ce.get("iv", 0) > 0 else 15.0
+
+    call_strike = sc["strike"]
+    put_strike  = sp["strike"]
+
+    # Combined premium
+    combined_pts = round(sc["ltp"] + sp["ltp"], 2)
+    combined_rs  = round(combined_pts * lot_size, 2)
+
+    # Break-evens (profit as long as spot stays inside)
+    upper_be        = round(call_strike + combined_pts, 0)
+    lower_be        = round(put_strike  - combined_pts, 0)
+    range_width_pts = int(upper_be - lower_be)
+    range_width_pct = round((upper_be - lower_be) / spot * 100, 2)
+
+    # P(profit at expiry) — lognormal probability spot stays in [put_strike, call_strike]
+    sigmaT = (atm_iv / 100) * math.sqrt(max(dte, 1) / 252)
+    d_call = (math.log(call_strike / spot) + 0.5 * sigmaT ** 2) / sigmaT
+    d_put  = (math.log(put_strike  / spot) + 0.5 * sigmaT ** 2) / sigmaT
+    pop    = round(_ncdf(d_call) - _ncdf(d_put), 4)
+
+    # Margin estimate (simplified SPAN for short strangle):
+    # Larger side full margin + smaller side × 30%
+    call_dist   = call_strike - spot
+    put_dist    = spot - put_strike
+    larger_dist = max(call_dist, put_dist)
+    smaller_dist = min(call_dist, put_dist)
+    span_pts    = larger_dist + smaller_dist * 0.30
+    margin_est  = round(max(span_pts, spot * 0.08) * lot_size, 0)
+
+    # Yield and exit targets
+    yield_pct        = round(combined_rs / margin_est * 100, 2) if margin_est > 0 else 0
+    target_profit_rs = round(margin_est * target_yield_pct / 100, 0)
+    # Exit when remaining combined value drops to exit_credit_pts (i.e., profit > target)
+    exit_credit_pts  = round(combined_pts - target_profit_rs / lot_size, 2)
+    exit_credit_pts  = max(exit_credit_pts, round(combined_pts * 0.20, 2))  # floor: always close at 80% max profit
+    exit_prem_pct    = round(exit_credit_pts / combined_pts * 100, 1) if combined_pts > 0 else 20
+
+    # Daily theta estimate (options decay ~1.2× faster near expiry)
+    theta_daily_pts  = round(combined_pts / max(dte, 1) * 1.2, 2)
+    days_to_target   = round(target_profit_rs / (theta_daily_pts * lot_size), 1) if theta_daily_pts * lot_size > 0 else dte
+
+    # Nearby strikes list for both legs (for the user to compare alternatives)
+    def nearby_strikes(opt_type: str, center: float, n: int = 3):
+        opts = []
+        for row in rows:
+            try:
+                s   = float(row.get("strikePrice", 0))
+                if abs(s - center) / max(spot, 1) > 0.12:
+                    continue
+                opt = row.get(opt_type, {})
+                ltp = float(opt.get("lastPrice", 0) or 0)
+                iv  = float(opt.get("impliedVolatility", 0) or 0)
+                oi  = int(opt.get("openInterest", 0) or 0)
+                if ltp > 0:
+                    opts.append({"strike": s, "ltp": round(ltp, 2), "iv": round(iv, 2), "oi": oi})
+            except Exception:
+                continue
+        opts.sort(key=lambda x: x["strike"])
+        below = [o for o in opts if o["strike"] <= center][-n:]
+        above = [o for o in opts if o["strike"] >  center][:n]
+        return below + above
+
+    return {
+        "underlying_type": underlying_type,
+        "symbol": symbol or underlying_type.upper(),
+        "is_index": is_index,
+        "spot": round(spot, 2),
+        "expiry": expiry,
+        "dte": dte,
+        "lot_size": lot_size,
+        "atm_iv": round(atm_iv, 2),
+
+        "short_call": {
+            "strike": call_strike, "ltp": round(sc["ltp"], 2),
+            "iv": round(sc["iv"], 2) if sc.get("iv") else None,
+            "oi": sc.get("oi"), "bid": sc.get("bid"), "ask": sc.get("ask"),
+            "otm_pct": round((call_strike - spot) / spot * 100, 2),
+        },
+        "short_put": {
+            "strike": put_strike, "ltp": round(sp["ltp"], 2),
+            "iv": round(sp["iv"], 2) if sp.get("iv") else None,
+            "oi": sp.get("oi"), "bid": sp.get("bid"), "ask": sp.get("ask"),
+            "otm_pct": round((spot - put_strike) / spot * 100, 2),
+        },
+
+        "combined_credit_pts": combined_pts,
+        "combined_credit_rs": int(combined_rs),
+        "break_even_upper": int(upper_be),
+        "break_even_lower": int(lower_be),
+        "range_width_pts": range_width_pts,
+        "range_width_pct": range_width_pct,
+        "pop": pop,
+
+        "margin_estimate": int(margin_est),
+        "yield_on_margin_pct": yield_pct,
+        "target_yield_pct": target_yield_pct,
+        "target_profit_rs": int(target_profit_rs),
+        "exit_credit_pts": exit_credit_pts,
+        "exit_premium_pct": exit_prem_pct,
+
+        "theta_daily_pts": theta_daily_pts,
+        "days_to_target": days_to_target,
+
+        "nearby_calls": nearby_strikes("CE", call_strike),
+        "nearby_puts":  nearby_strikes("PE", put_strike),
+    }
+
+
+@router.get("/strategies/customwheel")
+async def customwheel_endpoint(
+    underlying_type:  str   = Query(default="nifty"),
+    symbol:           str   = Query(default=""),
+    call_otm_pct:     float = Query(default=5.0),
+    put_otm_pct:      float = Query(default=5.0),
+    expiry_days:      int   = Query(default=14),
+    target_yield_pct: float = Query(default=3.5),
+):
+    """Short Strangle with wheel overlay — short OTM Call + OTM Put for combined premium income."""
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    if underlying_type == "stock" and not symbol:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="symbol required when underlying_type=stock")
+    loop   = asyncio.get_running_loop()
+    result = await loop.run_in_executor(
+        ThreadPoolExecutor(max_workers=1),
+        lambda: _customwheel_analyze(
+            underlying_type, symbol, call_otm_pct, put_otm_pct, expiry_days, target_yield_pct
+        )
+    )
+    return JSONResponse(content=result)
+
+
+
 async def collar_optimizer(
     underlying_type: str   = Query(default="stock",
                                    description="nifty | banknifty | finnifty | sensex | stock"),

@@ -1,12 +1,46 @@
 """Covered Call Strategy Scanner and Trade Planner."""
 
 import math
+import calendar
+from datetime import date, timedelta
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 from api.utils import clean_for_json
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
+
+# ─── NSE monthly expiry helpers ──────────────────────────────────────────────
+
+def _last_thursday(year: int, month: int) -> date:
+    last_day = calendar.monthrange(year, month)[1]
+    d = date(year, month, last_day)
+    while d.weekday() != 3:
+        d -= timedelta(1)
+    return d
+
+def _expiry_cycle_move(hist_df):
+    """Return (inr_move, pct_move) between the last two NSE monthly expiries."""
+    try:
+        today = date.today()
+        pm  = today.month - 1 if today.month > 1 else 12
+        py  = today.year      if today.month > 1 else today.year - 1
+        p2m = pm - 1 if pm > 1 else 12
+        p2y = py     if pm > 1 else py - 1
+        recent_exp = _last_thursday(py, pm)
+        prev_exp   = _last_thursday(p2y, p2m)
+        idx_dates  = [ts.date() for ts in hist_df.index]
+        recent_sub = hist_df[[d <= recent_exp for d in idx_dates]]
+        prev_sub   = hist_df[[d <= prev_exp   for d in idx_dates]]
+        if recent_sub.empty or prev_sub.empty:
+            return None, None
+        p_recent = float(recent_sub["Close"].iloc[-1])
+        p_prev   = float(prev_sub["Close"].iloc[-1])
+        inr_move = round(p_recent - p_prev, 2)
+        pct_move = round((p_recent / p_prev - 1) * 100, 2) if p_prev else None
+        return inr_move, pct_move
+    except Exception:
+        return None, None
 
 # ─── Black-Scholes Greeks + probability helpers ───────────────────────────────
 
@@ -341,6 +375,7 @@ def _scan_one(symbol: str) -> dict | None:
         hist1y = t.history(period="1y")
         above_200dma = False
         score_adj    = 50
+        expiry_chg_inr, expiry_chg_pct = None, None
         if not hist1y.empty and len(hist1y) >= 50:
             close    = hist1y["Close"]
             sma50    = float(close.rolling(50).mean().iloc[-1])
@@ -352,6 +387,7 @@ def _scan_one(symbol: str) -> dict | None:
             if above_200dma:   score_adj += 15
             if cmp > sma50:    score_adj += 10
             if change_5d >= -1:score_adj += 5
+            expiry_chg_inr, expiry_chg_pct = _expiry_cycle_move(hist1y)
 
         phase1_qty   = lot_size // 2
         phase1_cost  = round(phase1_qty * cmp, 0)
@@ -373,13 +409,9 @@ def _scan_one(symbol: str) -> dict | None:
             "pct_from_high":       pct_from_high,
             "pct_from_low":        pct_from_low,
             "change_5d":           change_5d,
+            "expiry_chg_inr":      expiry_chg_inr,
+            "expiry_chg_pct":      expiry_chg_pct,
             "above_200dma":        above_200dma,
-            "lot_size":            lot_size,
-            "phase1_qty":          phase1_qty,
-            "phase1_cost":         int(phase1_cost),
-            "total_funds_required":total_funds,
-            "margin_estimate":     int(margin_est),
-            "strike_8pct":         round(cmp * 1.08 / 5) * 5,
             "strike_10pct":        round(cmp * 1.10 / 5) * 5,
             "score":               min(100, score_adj),
         }
@@ -769,6 +801,7 @@ async def assess_stocks(body: dict):
             above_200dma = False
             sma50_val    = None
             score_adj    = 50
+            expiry_chg_inr, expiry_chg_pct = None, None
             hist3m = t.history(period="3mo")
             if not hist3m.empty and len(hist3m) >= 50:
                 close        = hist3m["Close"]
@@ -777,6 +810,7 @@ async def assess_stocks(body: dict):
                 score_adj    = 60
                 if cmp > sma50_val:  score_adj += 10
                 if change_5d >= -1:  score_adj += 5
+                expiry_chg_inr, expiry_chg_pct = _expiry_cycle_move(hist3m)
 
             lot_size = _get_lot_size(sym)
 
@@ -820,6 +854,8 @@ async def assess_stocks(body: dict):
                 "pct_from_high":       pct_from_high,
                 "pct_from_low":        pct_from_low,
                 "change_5d":           change_5d,
+                "expiry_chg_inr":      expiry_chg_inr,
+                "expiry_chg_pct":      expiry_chg_pct,
                 "change_1d":           change_1d,
                 "opportunity_score":   opp["score"],
                 "opportunity_label":   opp["label"],
@@ -899,6 +935,7 @@ def _scan_one_with_criteria(symbol: str, criteria: dict) -> dict | None:
         hist3m = t.history(period="3mo")
         above_200dma = False
         score_adj    = 50
+        expiry_chg_inr, expiry_chg_pct = None, None
         if not hist3m.empty and len(hist3m) >= 50:
             close    = hist3m["Close"]
             sma50    = float(close.rolling(50).mean().iloc[-1])
@@ -908,6 +945,7 @@ def _scan_one_with_criteria(symbol: str, criteria: dict) -> dict | None:
             score_adj = 60
             if cmp > sma50:     score_adj += 10
             if change_5d >= -1: score_adj += 5
+            expiry_chg_inr, expiry_chg_pct = _expiry_cycle_move(hist3m)
 
         # Fetch name/sector only after all quick filters passed
         info   = t.info
@@ -953,6 +991,8 @@ def _scan_one_with_criteria(symbol: str, criteria: dict) -> dict | None:
             "pct_from_high":       pct_from_high,
             "pct_from_low":        pct_from_low,
             "change_5d":           change_5d,
+            "expiry_chg_inr":      expiry_chg_inr,
+            "expiry_chg_pct":      expiry_chg_pct,
             "change_1d":           change_1d,
             "opportunity_score":   opp["score"],
             "opportunity_label":   opp["label"],

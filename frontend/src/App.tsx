@@ -7,6 +7,7 @@ import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Discover from './pages/Discover'
 import Portfolio from './pages/Portfolio'
+import Holdings from './pages/Holdings'
 import Trade from './pages/Trade'
 import CoveredCalls from './pages/CoveredCalls'
 import Wheel from './pages/Wheel'
@@ -15,6 +16,8 @@ import AIInsights from './pages/AIInsights'
 import Settings from './pages/Settings'
 import Users from './pages/Users'
 import Strategies from './pages/Strategies'
+import CushionStrangle from './pages/CushionStrangle'
+import CustomStrangle from './pages/CustomStrangle'
 import client from './api/client'
 
 function ProtectedLayout() {
@@ -37,6 +40,7 @@ function ProtectedLayout() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/discover" element={<Discover />} />
             <Route path="/portfolio" element={<Portfolio />} />
+            <Route path="/holdings" element={<Holdings />} />
             <Route path="/trade" element={
               hasPermission(user, 'paper_trade') ? <Trade /> : <AccessDenied />
             } />
@@ -48,6 +52,12 @@ function ProtectedLayout() {
             } />
             <Route path="/strategies" element={
               hasPermission(user, 'market') ? <Strategies /> : <AccessDenied />
+            } />
+            <Route path="/cushion-strangle" element={
+              hasPermission(user, 'wheel') ? <CushionStrangle /> : <AccessDenied />
+            } />
+            <Route path="/custom-strangle" element={
+              hasPermission(user, 'wheel') ? <CustomStrangle /> : <AccessDenied />
             } />
             <Route path="/market" element={
               hasPermission(user, 'market') ? <Market /> : <AccessDenied />

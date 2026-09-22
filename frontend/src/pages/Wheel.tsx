@@ -17,6 +17,21 @@ import VolatilityPanel from '../components/VolatilityPanel'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+function _erf(x: number): number {
+  const sign = x < 0 ? -1 : 1
+  x = Math.abs(x)
+  const t = 1 / (1 + 0.3275911 * x)
+  const p = t * (0.254829592 + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))))
+  return sign * (1 - p * Math.exp(-x * x))
+}
+function _normCDF(x: number) { return (1 + _erf(x / Math.sqrt(2))) / 2 }
+function probPutWorthless(spot: number, strike: number, ivPct: number, days = 30, rf = 0.065): number {
+  const T = days / 365, s = ivPct / 100
+  if (T <= 0 || s <= 0 || spot <= 0 || strike <= 0) return 50
+  const d2 = (Math.log(spot / strike) + (rf - 0.5 * s * s) * T) / (s * Math.sqrt(T))
+  return Math.round(_normCDF(d2) * 100)
+}
+
 interface WheelScanResult {
   symbol: string
   name: string
@@ -41,6 +56,14 @@ interface WheelScanResult {
   effective_buy_otm5: number
   effective_buy_otm8: number
   total_funds_required: number
+  // Computed columns
+  put_premium_5pct: number | null   // est. income from selling 5% OTM PE, 1 lot
+  put_premium_8pct: number | null   // est. income from selling 8% OTM PE, 1 lot
+  max_1sd_move: number | null       // 1σ expected move over 30d in ₹
+  expiry_chg_inr: number | null     // ₹ move between last two monthly expiries
+  expiry_chg_pct: number | null     // % move between last two monthly expiries
+  risk_score_5pct: number | null    // % prob 5% OTM put expires worthless
+  risk_score_8pct: number | null    // % prob 8% OTM put expires worthless
 }
 
 interface PutPlan {
@@ -614,13 +637,25 @@ export default function Wheel() {
       })
       const r = await client.get(`/covered-calls/scan/strategy?${params}`)
       // Adapt results to WheelScanResult — add put strike estimates
-      const stocks = (r.data.stocks || []).map((s: WheelScanResult) => ({
-        ...s,
-        put_strike_otm5:      Math.round(s.cmp * 0.95 / 5) * 5,
-        put_strike_otm8:      Math.round(s.cmp * 0.92 / 5) * 5,
-        effective_buy_otm5:   Math.round((s.cmp * 0.95 - s.cmp * 0.025) * 100) / 100,
-        effective_buy_otm8:   Math.round((s.cmp * 0.92 - s.cmp * 0.02) * 100) / 100,
-      }))
+      const stocks = (r.data.stocks || []).map((s: WheelScanResult) => {
+        const iv = s.atm_iv || 20
+        const sigma = iv / 100 * Math.sqrt(30 / 365)
+        const z5 = 0.05 / sigma; const phi5 = Math.exp(-z5*z5/2) / Math.sqrt(2*Math.PI)
+        const z8 = 0.08 / sigma; const phi8 = Math.exp(-z8*z8/2) / Math.sqrt(2*Math.PI)
+        const si = s.cmp < 100 ? 2.5 : s.cmp < 250 ? 5 : s.cmp < 500 ? 10 : s.cmp < 1000 ? 20 : s.cmp < 2000 ? 50 : 100
+        return {
+          ...s,
+          put_strike_otm5:      Math.round(s.cmp * 0.95 / si) * si,
+          put_strike_otm8:      Math.round(s.cmp * 0.92 / si) * si,
+          effective_buy_otm5:   Math.round((s.cmp * 0.95 - s.cmp * 0.025) * 100) / 100,
+          effective_buy_otm8:   Math.round((s.cmp * 0.92 - s.cmp * 0.02) * 100) / 100,
+          put_premium_5pct:     Math.round(s.cmp * sigma * phi5 * (s.lot_size || 1)),
+          put_premium_8pct:     Math.round(s.cmp * sigma * phi8 * (s.lot_size || 1)),
+          max_1sd_move:         Math.round(s.cmp * sigma),
+          risk_score_5pct:      probPutWorthless(s.cmp, Math.round(s.cmp * 0.95 / si) * si, s.atm_iv || 20),
+          risk_score_8pct:      probPutWorthless(s.cmp, Math.round(s.cmp * 0.92 / si) * si, s.atm_iv || 20),
+        }
+      })
       setResults(stocks)
       setScanned(r.data.scanned)
       setWhyEmpty(r.data.why_empty || null)
@@ -873,13 +908,25 @@ export default function Wheel() {
                 opp_score1: oppScore1 !== '' ? parseFloat(oppScore1) : -5,
                 opp_score2: oppScore2 !== '' ? parseFloat(oppScore2) : -2,
               })
-              const all = (r.data.results || []).map((s: WheelScanResult) => ({
-                ...s,
-                put_strike_otm5:    Math.round((s.cmp || 0) * 0.95 / 5) * 5,
-                put_strike_otm8:    Math.round((s.cmp || 0) * 0.92 / 5) * 5,
-                effective_buy_otm5: Math.round(((s.cmp || 0) * 0.95 - (s.cmp || 0) * 0.025) * 100) / 100,
-                effective_buy_otm8: Math.round(((s.cmp || 0) * 0.92 - (s.cmp || 0) * 0.020) * 100) / 100,
-              }))
+              const all = (r.data.results || []).map((s: WheelScanResult) => {
+                const iv = s.atm_iv || 20
+                const sigma = iv / 100 * Math.sqrt(30 / 365)
+                const z5 = 0.05 / sigma; const phi5 = Math.exp(-z5*z5/2) / Math.sqrt(2*Math.PI)
+                const z8 = 0.08 / sigma; const phi8 = Math.exp(-z8*z8/2) / Math.sqrt(2*Math.PI)
+                const si = (s.cmp||0) < 100 ? 2.5 : (s.cmp||0) < 250 ? 5 : (s.cmp||0) < 500 ? 10 : (s.cmp||0) < 1000 ? 20 : (s.cmp||0) < 2000 ? 50 : 100
+                return {
+                  ...s,
+                  put_strike_otm5:    Math.round((s.cmp || 0) * 0.95 / si) * si,
+                  put_strike_otm8:    Math.round((s.cmp || 0) * 0.92 / si) * si,
+                  effective_buy_otm5: Math.round(((s.cmp || 0) * 0.95 - (s.cmp || 0) * 0.025) * 100) / 100,
+                  effective_buy_otm8: Math.round(((s.cmp || 0) * 0.92 - (s.cmp || 0) * 0.020) * 100) / 100,
+                  put_premium_5pct:   Math.round((s.cmp || 0) * sigma * phi5 * (s.lot_size || 1)),
+                  put_premium_8pct:   Math.round((s.cmp || 0) * sigma * phi8 * (s.lot_size || 1)),
+                  max_1sd_move:       Math.round((s.cmp || 0) * sigma),
+                  risk_score_5pct:    probPutWorthless(s.cmp || 0, Math.round((s.cmp || 0) * 0.95 / si) * si, s.atm_iv || 20),
+                  risk_score_8pct:    probPutWorthless(s.cmp || 0, Math.round((s.cmp || 0) * 0.92 / si) * si, s.atm_iv || 20),
+                }
+              })
               setAssessResults(all)
             } catch { /* ignore */ }
             finally { setAssessLoading(false) }
@@ -927,11 +974,13 @@ export default function Wheel() {
                   <th className="text-right px-3 py-2.5" title="5-day % change">5d %</th>
                   <th className="text-center px-3 py-2.5" title="Opportunity score (1=best)">Opp</th>
                   <th className="text-right px-3 py-2.5">ATM IV</th>
-                  <th className="text-right px-3 py-2.5">5% OTM Put</th>
-                  <th className="text-right px-3 py-2.5">8% OTM Put</th>
+                  <th className="text-right px-3 py-2.5" title="5% OTM put strike + est. premium income (1 lot)">5% OTM</th>
+                  <th className="text-right px-3 py-2.5" title="8% OTM put strike + est. premium income (1 lot)">8% OTM</th>
+                  <th className="text-right px-3 py-2.5" title="1σ expected move over 30 days">1σ Move</th>
+                  <th className="text-right px-3 py-2.5" title="Actual price change over last ~30 trading days">30d Move</th>
                   <th className="text-right px-3 py-2.5">Eff. Buy @5%</th>
                   <th className="text-right px-3 py-2.5">From High</th>
-                  <th className="text-center px-3 py-2.5">200DMA</th>
+                  <th className="text-center px-3 py-2.5" title="Probability 5%/8% OTM put expires worthless">Risk Score</th>
                   <th className="text-right px-3 py-2.5">Lot</th>
                   <th className="text-center px-3 py-2.5">Score</th>
                   <th className="px-3 py-2.5"></th>
@@ -984,12 +1033,34 @@ export default function Wheel() {
                             ? <span className={r.atm_iv >= parseFloat(criteria.min_iv) ? 'text-score-green' : 'text-score-red'}>{r.atm_iv}%</span>
                             : <span className="text-muted">—</span>}
                         </td>
-                        <td className="px-3 py-3 text-right text-score-blue text-xs font-medium">₹{r.put_strike_otm5}</td>
-                        <td className="px-3 py-3 text-right text-muted text-xs">₹{r.put_strike_otm8}</td>
+                        <td className="px-3 py-3 text-right text-xs">
+                          <div className="font-medium text-score-green">{r.put_premium_5pct != null ? `₹${r.put_premium_5pct.toLocaleString('en-IN')}` : '—'}</div>
+                          {r.put_premium_5pct != null && r.lot_size > 0 && <div className="text-muted">₹{(r.put_premium_5pct / r.lot_size).toFixed(1)}/sh</div>}
+                        </td>
+                        <td className="px-3 py-3 text-right text-xs">
+                          <div className="font-medium text-score-green">{r.put_premium_8pct != null ? `₹${r.put_premium_8pct.toLocaleString('en-IN')}` : '—'}</div>
+                          {r.put_premium_8pct != null && r.lot_size > 0 && <div className="text-muted">₹{(r.put_premium_8pct / r.lot_size).toFixed(1)}/sh</div>}
+                        </td>
+                        <td className="px-3 py-3 text-right text-score-amber text-xs">{r.max_1sd_move != null ? `₹${r.max_1sd_move.toLocaleString('en-IN')}` : '—'}</td>
+                        <td className={`px-3 py-3 text-right text-xs ${r.expiry_chg_inr == null ? 'text-muted' : r.expiry_chg_inr >= 0 ? 'text-score-green' : 'text-score-red'}`}>
+                          {r.expiry_chg_inr != null ? (
+                            <>
+                              <div className="font-medium">{r.expiry_chg_inr >= 0 ? '+' : ''}₹{Math.abs(r.expiry_chg_inr).toLocaleString('en-IN')}</div>
+                              <div className="opacity-70">{r.expiry_chg_pct != null ? `${r.expiry_chg_pct >= 0 ? '+' : ''}${r.expiry_chg_pct.toFixed(1)}%` : ''}</div>
+                            </>
+                          ) : '—'}
+                        </td>
                         <td className="px-3 py-3 text-right text-score-amber text-xs font-medium">₹{r.effective_buy_otm5}</td>
                         <td className="px-3 py-3 text-right text-xs text-score-red">{r.pct_from_high}%</td>
                         <td className="px-3 py-3 text-center text-xs">
-                          <span className={r.above_200dma ? 'text-score-green' : 'text-score-red'}>{r.above_200dma ? '✓' : '✗'}</span>
+                          {r.risk_score_5pct != null ? (
+                            <div>
+                              <span className={`font-bold ${r.risk_score_5pct >= 75 ? 'text-score-green' : r.risk_score_5pct >= 60 ? 'text-score-amber' : 'text-score-red'}`}>
+                                {r.risk_score_5pct}%
+                              </span>
+                              <div className="text-muted text-[10px]">{r.risk_score_8pct}% @8%</div>
+                            </div>
+                          ) : '—'}
                         </td>
                         <td className="px-3 py-3 text-right text-muted text-xs">{r.lot_size.toLocaleString('en-IN')}</td>
                         <td className="px-3 py-3 text-center">
@@ -1004,7 +1075,7 @@ export default function Wheel() {
                       </tr>
                       {hasWarnings && (
                         <tr key={`${r.symbol}-warn`} className={`border-b border-border/40 ${rowBg}`}>
-                          <td colSpan={12} className="px-5 pb-3 pt-0">
+                          <td colSpan={14} className="px-5 pb-3 pt-0">
                             <div className="space-y-1">
                               {ar.warnings!.map((w: {level:string; category:string; message:string}, wi: number) => (
                                 <div key={wi} className={`flex items-start gap-2 text-xs rounded-lg px-3 py-1.5 ${
