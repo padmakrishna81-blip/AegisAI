@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+import re
 import time
 from dotenv import load_dotenv
 
@@ -9,6 +10,11 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env"))
 
 _response_cache: dict[str, dict] = {}
 LLM_CACHE_TTL = 3600  # 1 hour
+
+
+def _strip_thinking(text: str) -> str:
+    """Remove <think>...</think> blocks produced by reasoning models (Qwen 3, etc.)."""
+    return re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
 
 
 def _cache_key(prompt: str, provider: str) -> str:
@@ -85,7 +91,7 @@ def _call_claude(prompt: str, system: str, max_tokens: int) -> str:
     if system:
         kwargs["system"] = system
     msg = client.messages.create(**kwargs)
-    return msg.content[0].text if msg.content else ""
+    return _strip_thinking(msg.content[0].text if msg.content else "")
 
 
 def _call_openai(prompt: str, system: str, max_tokens: int) -> str:
@@ -103,7 +109,7 @@ def _call_openai(prompt: str, system: str, max_tokens: int) -> str:
         max_tokens=max_tokens,
         messages=messages,
     )
-    return resp.choices[0].message.content or ""
+    return _strip_thinking(resp.choices[0].message.content or "")
 
 
 def _call_groq(prompt: str, system: str, max_tokens: int) -> str:
@@ -126,7 +132,7 @@ def _call_groq(prompt: str, system: str, max_tokens: int) -> str:
         max_tokens=max_tokens,
         messages=messages,
     )
-    return resp.choices[0].message.content or ""
+    return _strip_thinking(resp.choices[0].message.content or "")
 
 
 def classify_sentiment(text: str) -> str:
