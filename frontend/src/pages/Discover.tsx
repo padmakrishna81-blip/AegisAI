@@ -1139,7 +1139,7 @@ function EtfDetailPanel({ data }: { data: Record<string, unknown> }) {
       )}
 
       {/* AI Justification */}
-      {aiJustification ? (
+      {aiJustification !== null && (
         <div className="bg-slate-800/60 border border-border rounded-xl p-4">
           <div className="text-xs text-muted mb-2 flex items-center gap-1.5">
             <span>AI Analysis</span>
@@ -1147,7 +1147,7 @@ function EtfDetailPanel({ data }: { data: Record<string, unknown> }) {
           </div>
           <div className="text-sm text-slate-200 leading-relaxed">{aiJustification}</div>
         </div>
-      ) : null}
+      )}
 
       {/* Returns table */}
       {(() => {
@@ -1217,7 +1217,7 @@ function EtfDetailPanel({ data }: { data: Record<string, unknown> }) {
       )}
 
       {/* ETF info */}
-      {data.etf_symbol && (
+      {!!data.etf_symbol && (
         <div className="bg-blue-950 border border-blue-800 rounded-xl p-3 text-xs text-blue-300">
           Tradeable ETF: <span className="font-semibold text-white">{String(data.etf_symbol)}</span>
         </div>
