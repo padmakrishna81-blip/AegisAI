@@ -160,6 +160,10 @@ def _ai_analyze_etfs(bounce: list[dict], momentum: list[dict], market_context: s
     if not bounce and not momentum:
         return []
 
+    # Cap to stay within token-per-minute limits for reasoning models
+    bounce   = bounce[:8]
+    momentum = momentum[:8]
+
     def fmt(lst: list[dict]) -> str:
         return "\n".join([
             f"- {m['symbol']}: ₹{m['current_price']} | "

@@ -149,6 +149,9 @@ def _ai_analyze(candidates: list[dict], market_context: str) -> list[dict]:
     if not candidates:
         return []
 
+    # Cap at 15 to stay within token-per-minute limits for Qwen/reasoning models
+    candidates = candidates[:15]
+
     cand_lines = "\n".join([
         f"- {c['symbol']}: ₹{c['current_price']} | "
         f"52w-high drawdown: {c['pct_from_52w_high']}% | "
