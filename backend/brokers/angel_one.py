@@ -167,8 +167,11 @@ class AngelOneClient(BrokerClient):
             "total_margin":   _f(d.get("totaltradingpower")),
         }
 
-    def _get_token(self, symbol: str, exchange: str = "NSE") -> str:
-        """Look up Angel One numeric symbol token for an EQ scrip, cached in memory."""
+    def _get_token(self, symbol: str, exchange: str = "NSE", is_etf: bool = False) -> str:
+        """Look up Angel One numeric symbol token, cached in memory.
+        For stocks: matches tradingsymbol = SYMBOL-EQ.
+        For ETFs: matches tradingsymbol = SYMBOL (no -EQ).
+        """
         global _last_scrip_call
         cache_key = f"{exchange}:{symbol}"
         if cache_key in _token_cache:
@@ -182,12 +185,23 @@ class AngelOneClient(BrokerClient):
             resp = self._obj.searchScrip(exchange, symbol)
             _last_scrip_call = time.time()
             if resp and resp.get("data"):
-                target = symbol.upper() + "-EQ"
+                target_eq  = symbol.upper() + "-EQ"
+                target_raw = symbol.upper()
                 for item in resp["data"]:
-                    if item.get("tradingsymbol", "").upper() == target:
+                    ts = item.get("tradingsymbol", "").upper()
+                    # ETF: match raw symbol; stock: match SYMBOL-EQ
+                    if (is_etf and ts == target_raw) or (not is_etf and ts == target_eq):
                         token = str(item["symboltoken"])
                         _token_cache[cache_key] = token
                         return token
+                # Fallback: if is_etf and no raw match, try -EQ (some ETFs might use it)
+                if is_etf:
+                    for item in resp["data"]:
+                        ts = item.get("tradingsymbol", "").upper()
+                        if ts == target_eq:
+                            token = str(item["symboltoken"])
+                            _token_cache[cache_key] = token
+                            return token
         except Exception as e:
             logger.warning("searchScrip failed for %s: %s", symbol, e)
         return ""
@@ -229,21 +243,24 @@ class AngelOneClient(BrokerClient):
     def place_order(self, params: dict) -> dict:
         """
         params: symbol, token, exchange, side (BUY/SELL), qty, price (0=market),
-                order_type (MARKET/LIMIT), product (INTRADAY/DELIVERY/MARGIN)
+                order_type (MARKET/LIMIT), product (INTRADAY/DELIVERY/MARGIN),
+                asset_type ("stock"|"etf") — ETFs don't get -EQ suffix
         """
         self._ensure_connected()
         if not self._obj:
             raise RuntimeError("Angel One not connected")
-        exchange = params.get("exchange", "NSE")
-        # Resolve symbol token if not provided — Angel One requires it for order placement
+        exchange   = params.get("exchange", "NSE")
+        is_etf     = params.get("asset_type") == "etf"
         raw_symbol = params["symbol"].replace("-EQ", "").replace("-eq", "")
-        symbol_token = params.get("token") or self._get_token(raw_symbol, exchange)
+        # Stocks: tradingsymbol = RELIANCE-EQ; ETFs: tradingsymbol = NIFTYBEES (no -EQ)
+        tradingsymbol = raw_symbol if is_etf else raw_symbol + "-EQ"
+        symbol_token  = params.get("token") or self._get_token(raw_symbol, exchange, is_etf=is_etf)
         order_params = {
             "variety":         _ORDER_VARIETY_NORMAL,
-            "tradingsymbol":   raw_symbol + "-EQ",
+            "tradingsymbol":   tradingsymbol,
             "symboltoken":     symbol_token,
             "transactiontype": params["side"].upper(),
-            "exchange":        params.get("exchange", "NSE"),
+            "exchange":        exchange,
             "ordertype":       params.get("order_type", _ORDER_MARKET),
             "producttype":     params.get("product", _PRODUCT_DELIVERY),
             "duration":        "DAY",

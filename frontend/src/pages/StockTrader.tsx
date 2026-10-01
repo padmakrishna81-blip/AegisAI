@@ -27,6 +27,22 @@ interface AIPick {
   prob_reasoning?: string
 }
 
+interface ETFPick {
+  symbol: string
+  etf_type?: string
+  theme?: string
+  screen_type: 'bounce' | 'momentum'
+  conviction: 'HIGH' | 'MEDIUM' | 'LOW'
+  current_price: number
+  consecutive_down_days?: number
+  ret_5d?: number
+  ret_10d?: number
+  rsi?: number
+  reason?: string
+  justification: string
+  hold_horizon?: string
+}
+
 interface StockPosition {
   symbol: string
   display: string
@@ -34,6 +50,7 @@ interface StockPosition {
   allocation_pct: number
   conviction: string
   justification: string
+  asset_type?: 'stock' | 'etf'
   status: 'watching' | 'chunk1_placed' | 'chunk2_placed' | 'trailing_sl' | 'exited' | 'error'
   chunk1_qty: number
   chunk1_price: number
@@ -83,6 +100,7 @@ interface Campaign {
   entry_condition: EntryCondition
   chunk_config?: ChunkConfig
   exit_config?: ExitConfig
+  split_config?: { stocks_pct: number; etfs_pct: number }
   stocks: StockPosition[]
   cycle: number
   chunk1_deployed: number
@@ -158,17 +176,16 @@ function convBadge(c: string) {
 // ── Picks Tab ─────────────────────────────────────────────────────────────────
 
 interface PicksTabProps {
-  onCreateCampaign: (stocks: { pick: AIPick; allocation: number }[]) => void
+  onBuildCampaign: (stocks: { pick: AIPick; allocation: number }[]) => void
 }
 
-function PicksTab({ onCreateCampaign }: PicksTabProps) {
+function PicksTab({ onBuildCampaign }: PicksTabProps) {
   const [loading, setLoading]   = useState(false)
   const [error, setError]       = useState('')
   const [picks, setPicks]       = useState<AIPick[]>([])
   const [meta, setMeta]         = useState<{ fetched_at?: string; total_screened?: number; candidates_shortlisted?: number }>({})
   const [selected, setSelected] = useState<Map<string, number>>(new Map())
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
-  const [building, setBuilding] = useState(false)
 
   const load = useCallback(async (refresh = false) => {
     setLoading(true); setError('')
@@ -211,7 +228,7 @@ function PicksTab({ onCreateCampaign }: PicksTabProps) {
       const pick = picks.find(p => p.symbol === sym)!
       return { pick, allocation: alloc }
     })
-    onCreateCampaign(list)
+    onBuildCampaign(list)
   }
 
   if (loading && !picks.length) return (
@@ -357,7 +374,7 @@ function PicksTab({ onCreateCampaign }: PicksTabProps) {
               </span>
             </div>
             <button
-              onClick={() => setBuilding(true)}
+              onClick={handleBuild}
               disabled={totalAlloc !== 100}
               className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-sm rounded-lg font-semibold transition"
             >
@@ -366,17 +383,195 @@ function PicksTab({ onCreateCampaign }: PicksTabProps) {
           </div>
         </div>
       )}
+    </div>
+  )
+}
 
-      {/* Campaign builder modal */}
-      {building && (
-        <CampaignBuilderModal
-          selectedPicks={Array.from(selected.entries()).map(([sym, alloc]) => ({
-            pick: picks.find(p => p.symbol === sym)!,
-            allocation: alloc,
-          }))}
-          onClose={() => setBuilding(false)}
-          onCreated={() => { setBuilding(false); setSelected(new Map()); onCreateCampaign([]) }}
-        />
+// ── ETF Picks Tab ─────────────────────────────────────────────────────────────
+
+interface ETFPicksTabProps {
+  onBuildCampaign: (etfs: { pick: ETFPick; allocation: number }[]) => void
+}
+
+function ETFPicksTab({ onBuildCampaign }: ETFPicksTabProps) {
+  const [loading, setLoading]   = useState(false)
+  const [error, setError]       = useState('')
+  const [picks, setPicks]       = useState<ETFPick[]>([])
+  const [meta, setMeta]         = useState<{ fetched_at?: string; total_screened?: number; bounce_candidates_count?: number; momentum_etfs_count?: number }>({})
+  const [selected, setSelected] = useState<Map<string, number>>(new Map())
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+
+  const load = useCallback(async (refresh = false) => {
+    setLoading(true); setError('')
+    try {
+      const url = refresh ? '/stock-trader/etf-picks/refresh' : '/stock-trader/etf-picks'
+      const r = refresh ? await api.post(url, {}) : await api.get(url)
+      setPicks(r.picks || [])
+      setMeta({ fetched_at: r.fetched_at, total_screened: r.total_screened, bounce_candidates_count: r.bounce_candidates_count, momentum_etfs_count: r.momentum_etfs_count })
+    } catch (e: any) { setError(e.message) }
+    setLoading(false)
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  const toggleSelect = (sym: string) => {
+    setSelected(prev => {
+      const m = new Map(prev)
+      if (m.has(sym)) m.delete(sym)
+      else m.set(sym, 0)
+      const total = m.size
+      if (total > 0) {
+        const eq = Math.floor(100 / total)
+        let rem = 100 - eq * total
+        let i = 0
+        m.forEach((_, k) => { m.set(k, eq + (i++ < rem ? 1 : 0)) })
+      }
+      return m
+    })
+  }
+
+  const setAlloc = (sym: string, val: number) => {
+    setSelected(prev => { const m = new Map(prev); m.set(sym, val); return m })
+  }
+
+  const totalAlloc = Array.from(selected.values()).reduce((a, b) => a + b, 0)
+
+  const handleBuild = () => {
+    const list = Array.from(selected.entries()).map(([sym, alloc]) => {
+      const pick = picks.find(p => p.symbol === sym)!
+      return { pick, allocation: alloc }
+    })
+    onBuildCampaign(list)
+  }
+
+  if (loading && !picks.length) return (
+    <div className="flex flex-col gap-3 mt-4">
+      {[1, 2, 3].map(i => <div key={i} className="h-28 bg-slate-800/60 rounded-xl animate-pulse" />)}
+      <p className="text-center text-sm text-muted mt-2">Screening ETFs, analyzing momentum & bounce signals…</p>
+    </div>
+  )
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+        <div>
+          <div className="text-sm font-semibold text-white">AI ETF Picks</div>
+          {meta.fetched_at && (
+            <div className="text-[10px] text-muted mt-0.5">
+              Updated {new Date(meta.fetched_at).toLocaleString('en-IN')} ·
+              {meta.total_screened} screened · {meta.bounce_candidates_count} bounce · {meta.momentum_etfs_count} momentum
+            </div>
+          )}
+        </div>
+        <button onClick={() => load(true)} disabled={loading}
+          className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-xs rounded-lg border border-border transition disabled:opacity-50">
+          {loading ? '⟳ Scanning…' : '⟳ Refresh'}
+        </button>
+      </div>
+
+      {error && <div className="text-red-400 text-sm mb-3 bg-red-900/20 rounded-lg p-3">{error}</div>}
+
+      {!picks.length && !loading && (
+        <div className="text-center text-muted text-sm py-12">
+          No ETF picks available. Click Refresh to run the ETF screen.
+        </div>
+      )}
+
+      <div className="flex flex-col gap-3">
+        {picks.map(pick => {
+          const isSel = selected.has(pick.symbol)
+          const isExp = expanded.has(pick.symbol)
+          const alloc = selected.get(pick.symbol) ?? 0
+          const isBounce = pick.screen_type === 'bounce'
+          return (
+            <div key={pick.symbol}
+              className={`rounded-xl border transition-all ${isSel ? 'border-purple-500/50 bg-purple-950/20' : 'border-border bg-slate-800/40'}`}>
+              <div className="p-4">
+                <div className="flex items-start gap-3">
+                  <input type="checkbox" checked={isSel} onChange={() => toggleSelect(pick.symbol)}
+                    className="mt-1 w-4 h-4 accent-purple-500 cursor-pointer flex-shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap mb-1">
+                      <span className="text-white font-bold text-sm">{pick.symbol}</span>
+                      <span className={`text-[9px] px-1.5 py-0.5 rounded font-semibold border ${isBounce ? 'bg-amber-900/50 text-amber-300 border-amber-700/50' : 'bg-emerald-900/50 text-emerald-300 border-emerald-700/50'}`}>
+                        {isBounce ? 'BOUNCE' : 'MOMENTUM'}
+                      </span>
+                      <span className={`text-[9px] px-1.5 py-0.5 rounded font-semibold ${convBadge(pick.conviction)}`}>
+                        {pick.conviction}
+                      </span>
+                      {pick.etf_type && <span className="text-[9px] px-1.5 py-0.5 bg-slate-700 text-slate-300 rounded">{pick.etf_type}</span>}
+                    </div>
+                    <div className="flex items-center gap-4 flex-wrap text-xs">
+                      <span className="text-white font-mono">₹{fmt(pick.current_price)}</span>
+                      {pick.consecutive_down_days !== undefined && pick.consecutive_down_days > 0 && (
+                        <span className="text-amber-400">{pick.consecutive_down_days}d down</span>
+                      )}
+                      {pick.ret_5d !== undefined && (
+                        <span className={pick.ret_5d >= 0 ? 'text-emerald-400' : 'text-red-400'}>
+                          5d: {pick.ret_5d >= 0 ? '+' : ''}{fmt(pick.ret_5d)}%
+                        </span>
+                      )}
+                      {pick.ret_10d !== undefined && (
+                        <span className={pick.ret_10d >= 0 ? 'text-emerald-400' : 'text-red-400'}>
+                          10d: {pick.ret_10d >= 0 ? '+' : ''}{fmt(pick.ret_10d)}%
+                        </span>
+                      )}
+                      {pick.rsi !== undefined && <span className="text-slate-400">RSI {fmt(pick.rsi, 0)}</span>}
+                      {pick.hold_horizon && <span className="text-slate-400">{pick.hold_horizon}</span>}
+                    </div>
+                    {pick.reason && (
+                      <div className="mt-1.5 text-[11px] text-slate-400">{pick.reason}</div>
+                    )}
+                  </div>
+                  {isSel && (
+                    <div className="flex items-center gap-1 flex-shrink-0">
+                      <input type="number" min={1} max={99} value={alloc}
+                        onChange={e => setAlloc(pick.symbol, Number(e.target.value))}
+                        className="w-14 text-center text-xs bg-slate-700 border border-border rounded px-1 py-1 text-white" />
+                      <span className="text-xs text-muted">%</span>
+                    </div>
+                  )}
+                  <button
+                    onClick={() => setExpanded(prev => { const s = new Set(prev); s.has(pick.symbol) ? s.delete(pick.symbol) : s.add(pick.symbol); return s })}
+                    className="text-muted hover:text-white text-xs flex-shrink-0 ml-1">
+                    {isExp ? '▲' : '▼'}
+                  </button>
+                </div>
+                {isExp && (
+                  <div className="mt-3 pt-3 border-t border-border/40 space-y-2 text-[11px]">
+                    <div>
+                      <span className="text-muted uppercase tracking-wider text-[9px]">AI Justification</span>
+                      <p className="text-slate-300 mt-1 leading-relaxed">{pick.justification}</p>
+                    </div>
+                    {pick.theme && (
+                      <div className="text-[10px] text-slate-400">
+                        <span className="text-muted">Theme: </span>{pick.theme}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      {selected.size > 0 && (
+        <div className={`sticky bottom-4 mt-4 bg-slate-900 border rounded-xl p-4 shadow-2xl
+          ${totalAlloc === 100 ? 'border-purple-600/50' : 'border-amber-600/50'}`}>
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="text-sm">
+              <span className="text-white font-semibold">{selected.size} ETF{selected.size > 1 ? 's' : ''} selected</span>
+              <span className={`ml-2 text-xs font-mono ${totalAlloc === 100 ? 'text-purple-400' : 'text-amber-400'}`}>
+                Allocation: {totalAlloc}%{totalAlloc !== 100 && ' (must be 100%)'}
+              </span>
+            </div>
+            <button onClick={handleBuild} disabled={totalAlloc !== 100}
+              className="px-4 py-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white text-sm rounded-lg font-semibold transition">
+              Build Campaign →
+            </button>
+          </div>
+        </div>
       )}
     </div>
   )
@@ -386,11 +581,12 @@ function PicksTab({ onCreateCampaign }: PicksTabProps) {
 
 interface BuilderProps {
   selectedPicks: { pick: AIPick; allocation: number }[]
+  selectedEtfs: { pick: ETFPick; allocation: number }[]
   onClose: () => void
   onCreated: () => void
 }
 
-function CampaignBuilderModal({ selectedPicks, onClose, onCreated }: BuilderProps) {
+function CampaignBuilderModal({ selectedPicks, selectedEtfs, onClose, onCreated }: BuilderProps) {
   const [name, setName]       = useState(`AI Campaign ${new Date().toLocaleDateString('en-IN')}`)
   const [fund, setFund]       = useState('')
   const [broker, setBroker]   = useState('angelone')
@@ -398,6 +594,11 @@ function CampaignBuilderModal({ selectedPicks, onClose, onCreated }: BuilderProp
   const [entry, setEntry]     = useState<'immediately' | 'market_open' | 'manual'>('market_open')
   const [saving, setSaving]   = useState(false)
   const [err, setErr]         = useState('')
+
+  // Split config (only relevant when both stocks and ETFs are present)
+  const hasMixed = selectedPicks.length > 0 && selectedEtfs.length > 0
+  const [splitEnabled, setSplitEnabled] = useState(hasMixed)
+  const [stocksPct, setStocksPct] = useState(50)
 
   // Broker & fund validation
   const [brokerInfo, setBrokerInfo] = useState<{ connected: boolean; balance: number | null; error: string }>({ connected: false, balance: null, error: '' })
@@ -458,6 +659,7 @@ function CampaignBuilderModal({ selectedPicks, onClose, onCreated }: BuilderProp
     if (!fund || isNaN(Number(fund)) || Number(fund) <= 0) { setErr('Enter a valid fund amount'); return }
     if (fundErr) { setErr(fundErr); return }
     if (totalChunkPct > 100) { setErr(`Chunk percentages sum to ${totalChunkPct}%, must be ≤ 100%`); return }
+    if (hasMixed && splitEnabled && (stocksPct < 10 || stocksPct > 90)) { setErr('Split must be between 10-90%'); return }
     setSaving(true); setErr('')
     try {
       const chunks: ChunkDef[] = Array.from({ length: numChunks }, (_, i) => ({
@@ -465,11 +667,24 @@ function CampaignBuilderModal({ selectedPicks, onClose, onCreated }: BuilderProp
         fund_pct: chunkPcts[i],
         ...(i > 0 ? { averaging_trigger_pct: avgTriggers[i - 1], min_hold_days: avgDays[i - 1] } : {}),
       }))
-      const stocks = selectedPicks.map(({ pick, allocation }) => ({
-        symbol: pick.symbol, display: pick.symbol, sector: pick.sector,
-        cap_type: pick.cap_type, allocation_pct: allocation,
-        justification: pick.justification, conviction: pick.conviction,
-      }))
+      const stocks = [
+        ...selectedPicks.map(({ pick, allocation }) => ({
+          symbol: pick.symbol, display: pick.symbol, sector: pick.sector,
+          cap_type: pick.cap_type, allocation_pct: allocation,
+          justification: pick.justification, conviction: pick.conviction,
+          asset_type: 'stock',
+        })),
+        ...selectedEtfs.map(({ pick, allocation }) => ({
+          symbol: pick.symbol, display: pick.symbol,
+          sector: pick.etf_type || pick.theme || 'ETF',
+          cap_type: 'ETF', allocation_pct: allocation,
+          justification: pick.justification, conviction: pick.conviction,
+          asset_type: 'etf',
+        })),
+      ]
+      const split_config = (hasMixed && splitEnabled)
+        ? { stocks_pct: stocksPct, etfs_pct: 100 - stocksPct }
+        : {}
       await api.post('/stock-trader/campaign', {
         name, broker,
         reserved_fund:   Number(fund),
@@ -477,6 +692,7 @@ function CampaignBuilderModal({ selectedPicks, onClose, onCreated }: BuilderProp
         entry_condition: { type: entry },
         chunk_config:    { chunks },
         exit_config:     { profit_target_pct: profitTarget, trailing_sl_gap_pct: trailGap },
+        split_config,
         stocks,
       })
       onCreated()
@@ -500,14 +716,76 @@ function CampaignBuilderModal({ selectedPicks, onClose, onCreated }: BuilderProp
             <div className="text-[10px] text-muted uppercase tracking-wider mb-2">Selected Stocks</div>
             <div className="flex flex-wrap gap-2">
               {selectedPicks.map(({ pick, allocation }) => (
-                <div key={pick.symbol} className="flex items-center gap-1 bg-slate-700 rounded px-2 py-0.5 text-xs">
+                <div key={pick.symbol} className="flex items-center gap-1 bg-blue-950/60 border border-blue-700/30 rounded px-2 py-0.5 text-xs">
                   <span className="text-white">{pick.symbol}</span>
                   <span className="text-muted">{allocation}%</span>
                   {pick.prob_2pct_1w !== undefined && probBadge(pick.prob_2pct_1w)}
                 </div>
               ))}
+              {selectedPicks.length === 0 && <span className="text-muted text-xs">None selected</span>}
             </div>
           </div>
+
+          {/* Selected ETFs */}
+          {selectedEtfs.length > 0 && (
+            <div className="bg-slate-800/60 rounded-lg p-3">
+              <div className="text-[10px] text-muted uppercase tracking-wider mb-2">Selected ETFs</div>
+              <div className="flex flex-wrap gap-2">
+                {selectedEtfs.map(({ pick, allocation }) => (
+                  <div key={pick.symbol} className="flex items-center gap-1 bg-purple-950/60 border border-purple-700/30 rounded px-2 py-0.5 text-xs">
+                    <span className="text-white">{pick.symbol}</span>
+                    <span className={`text-[9px] px-1 py-0 rounded ${pick.screen_type === 'bounce' ? 'bg-amber-900/60 text-amber-300' : 'bg-emerald-900/60 text-emerald-300'}`}>
+                      {pick.screen_type?.toUpperCase()}
+                    </span>
+                    <span className="text-muted">{allocation}%</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Split config — shown when both asset classes present */}
+          {hasMixed && (
+            <div className="border border-purple-700/40 bg-purple-950/20 rounded-xl p-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <input type="checkbox" id="splitEn" checked={splitEnabled} onChange={e => setSplitEnabled(e.target.checked)}
+                  className="w-4 h-4 accent-purple-500" />
+                <label htmlFor="splitEn" className="text-xs font-semibold text-purple-300 cursor-pointer">
+                  Mixed Portfolio — set stock/ETF fund split
+                </label>
+              </div>
+              {splitEnabled && (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs text-blue-300 w-20">Stocks: {stocksPct}%</span>
+                    <input type="range" min={10} max={90} step={5} value={stocksPct}
+                      onChange={e => setStocksPct(Number(e.target.value))}
+                      className="flex-1 accent-blue-500" />
+                    <span className="text-xs text-purple-300 w-20 text-right">ETFs: {100 - stocksPct}%</span>
+                  </div>
+                  {fund && Number(fund) > 0 && (
+                    <div className="grid grid-cols-2 gap-2 text-[10px]">
+                      <div className="bg-blue-950/40 rounded p-2 text-center">
+                        <div className="text-muted">Stocks Fund</div>
+                        <div className="text-blue-300 font-mono font-semibold mt-0.5">
+                          ₹{(Number(fund) * stocksPct / 100).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                        </div>
+                      </div>
+                      <div className="bg-purple-950/40 rounded p-2 text-center">
+                        <div className="text-muted">ETFs Fund</div>
+                        <div className="text-purple-300 font-mono font-semibold mt-0.5">
+                          ₹{(Number(fund) * (100 - stocksPct) / 100).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+              {!splitEnabled && (
+                <p className="text-[10px] text-slate-400">Without split config, all items share the same fund pool. Enable above to set separate envelopes.</p>
+              )}
+            </div>
+          )}
 
           {/* Campaign name */}
           <div>
@@ -1688,10 +1966,28 @@ function ReportsTab() {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function StockTrader() {
-  const [tab, setTab] = useState<'picks' | 'campaigns' | 'positions' | 'reports'>('picks')
+  const [tab, setTab] = useState<'picks' | 'etf-picks' | 'campaigns' | 'positions' | 'reports'>('picks')
+
+  // Shared state for campaign builder — selected from both AI Picks and ETF Picks tabs
+  const [pendingStocks, setPendingStocks] = useState<{ pick: AIPick; allocation: number }[]>([])
+  const [pendingEtfs,   setPendingEtfs]   = useState<{ pick: ETFPick; allocation: number }[]>([])
+  const [showModal, setShowModal] = useState(false)
+
+  const openModal = () => setShowModal(true)
+
+  const handleStocksBuild = (stocks: { pick: AIPick; allocation: number }[]) => {
+    setPendingStocks(stocks)
+    openModal()
+  }
+
+  const handleEtfsBuild = (etfs: { pick: ETFPick; allocation: number }[]) => {
+    setPendingEtfs(etfs)
+    openModal()
+  }
 
   const tabs = [
     { key: 'picks',     label: 'AI Picks' },
+    { key: 'etf-picks', label: 'ETF Picks' },
     { key: 'campaigns', label: 'Campaigns' },
     { key: 'positions', label: 'Positions' },
     { key: 'reports',   label: 'Reports' },
@@ -1703,17 +1999,17 @@ export default function StockTrader() {
       <div className="mb-6">
         <h1 className="text-xl font-bold text-white">AI Stock Trader</h1>
         <p className="text-sm text-muted mt-1">
-          AI screens quality large/mid-cap dips → you select stocks → agent buys in chunks, averages on further falls, exits with trailing stop.
+          AI screens quality large/mid-cap dips + momentum ETFs → you select → agent buys in chunks, averages on falls, exits with trailing stop.
         </p>
       </div>
 
       {/* How it works strip */}
       <div className="flex gap-2 mb-6 flex-wrap text-[10px]">
         {[
-          { step: '1', label: 'AI screens 80+ stocks', color: 'bg-blue-900/40 text-blue-300 border-blue-700/40' },
-          { step: '2', label: 'You pick stocks + allocate %', color: 'bg-slate-700 text-slate-300 border-border' },
+          { step: '1', label: 'AI screens 80+ stocks & ETFs', color: 'bg-blue-900/40 text-blue-300 border-blue-700/40' },
+          { step: '2', label: 'You pick stocks + ETFs + allocate %', color: 'bg-slate-700 text-slate-300 border-border' },
           { step: '3', label: 'Chunk 1: 40% deployed', color: 'bg-purple-900/40 text-purple-300 border-purple-700/40' },
-          { step: '4', label: 'Average if stock falls >3% in 3d', color: 'bg-amber-900/40 text-amber-300 border-amber-700/40' },
+          { step: '4', label: 'Average if falls >3% in 3d', color: 'bg-amber-900/40 text-amber-300 border-amber-700/40' },
           { step: '5', label: 'Trailing SL after 2% profit', color: 'bg-emerald-900/40 text-emerald-300 border-emerald-700/40' },
           { step: '6', label: 'Cycle restarts after portfolio exits', color: 'bg-slate-700 text-slate-300 border-border' },
         ].map(({ step, label, color }) => (
@@ -1740,10 +2036,26 @@ export default function StockTrader() {
         ))}
       </div>
 
-      {tab === 'picks'     && <PicksTab onCreateCampaign={() => setTab('campaigns')} />}
+      {tab === 'picks'     && <PicksTab onBuildCampaign={handleStocksBuild} />}
+      {tab === 'etf-picks' && <ETFPicksTab onBuildCampaign={handleEtfsBuild} />}
       {tab === 'campaigns' && <CampaignsTab />}
       {tab === 'positions' && <PositionsTab />}
       {tab === 'reports'   && <ReportsTab />}
+
+      {/* Campaign builder modal — lifted to root so both tabs can trigger it */}
+      {showModal && (
+        <CampaignBuilderModal
+          selectedPicks={pendingStocks}
+          selectedEtfs={pendingEtfs}
+          onClose={() => setShowModal(false)}
+          onCreated={() => {
+            setShowModal(false)
+            setPendingStocks([])
+            setPendingEtfs([])
+            setTab('campaigns')
+          }}
+        />
+      )}
     </div>
   )
 }

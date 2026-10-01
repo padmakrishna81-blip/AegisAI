@@ -38,6 +38,7 @@ class StockItem(BaseModel):
     allocation_pct: float
     justification: str = ""
     conviction: str = "MEDIUM"
+    asset_type: str = "stock"   # "stock" | "etf"
 
 
 class CampaignCreate(BaseModel):
@@ -48,6 +49,7 @@ class CampaignCreate(BaseModel):
     entry_condition: dict = {"type": "manual"}
     chunk_config: dict = {}
     exit_config: dict = {}
+    split_config: dict = {}     # {} = 100% stocks; {"stocks_pct": 50, "etfs_pct": 50}
     stocks: list[StockItem]
 
 
@@ -97,6 +99,28 @@ async def refresh_picks(user=Depends(get_current_user)):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# ── AI ETF Picks ──────────────────────────────────────────────────────────────
+
+@router.get("/stock-trader/etf-picks")
+async def get_etf_picks_route(user=Depends(get_current_user)):
+    try:
+        from ai.etf_screener import get_etf_picks
+        result = await _in_thread(get_etf_picks)
+        return JSONResponse(_clean_nan(result))
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.post("/stock-trader/etf-picks/refresh")
+async def refresh_etf_picks(user=Depends(get_current_user)):
+    try:
+        from ai.etf_screener import get_etf_picks
+        result = await _in_thread(lambda: get_etf_picks(force_refresh=True))
+        return JSONResponse(_clean_nan(result))
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # ── Campaigns ─────────────────────────────────────────────────────────────────
 
 @router.post("/stock-trader/campaign")
@@ -104,9 +128,25 @@ async def create_campaign_route(body: CampaignCreate, user=Depends(get_current_u
     try:
         from data.stock_trader_store import create_campaign
 
-        total = sum(s.allocation_pct for s in body.stocks)
-        if not (99 <= total <= 101):
-            return JSONResponse({"error": f"Allocation must sum to 100%. Got {total:.1f}%"}, status_code=400)
+        # Validate allocation per asset class: stocks sum to 100, ETFs sum to 100
+        stock_allocs = [s.allocation_pct for s in body.stocks if s.asset_type != "etf"]
+        etf_allocs   = [s.allocation_pct for s in body.stocks if s.asset_type == "etf"]
+        if stock_allocs:
+            total = sum(stock_allocs)
+            if not (99 <= total <= 101):
+                return JSONResponse({"error": f"Stock allocations must sum to 100%. Got {total:.1f}%"}, status_code=400)
+        if etf_allocs:
+            total = sum(etf_allocs)
+            if not (99 <= total <= 101):
+                return JSONResponse({"error": f"ETF allocations must sum to 100%. Got {total:.1f}%"}, status_code=400)
+        if not stock_allocs and not etf_allocs:
+            return JSONResponse({"error": "No stocks or ETFs provided"}, status_code=400)
+        # Validate split_config when both classes are present
+        split = body.split_config
+        if stock_allocs and etf_allocs and split:
+            sp, ep = float(split.get("stocks_pct", 0)), float(split.get("etfs_pct", 0))
+            if abs(sp + ep - 100) > 1:
+                return JSONResponse({"error": f"split_config stocks_pct + etfs_pct must equal 100. Got {sp}+{ep}"}, status_code=400)
 
         stocks = [
             {
@@ -129,6 +169,7 @@ async def create_campaign_route(body: CampaignCreate, user=Depends(get_current_u
             "entry_condition": body.entry_condition,
             "chunk_config":    body.chunk_config,
             "exit_config":     body.exit_config,
+            "split_config":    body.split_config,
             "stocks":          stocks,
             "status":          "active",
             "cycle":           1,

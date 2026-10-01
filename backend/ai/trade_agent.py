@@ -158,7 +158,7 @@ def get_broker_balance(username: str, broker: str) -> dict:
 
 
 def _place_order(campaign: dict, symbol: str, qty: int, side: str = "BUY",
-                 limit_price: float = 0.0) -> dict:
+                 limit_price: float = 0.0, asset_type: str = "stock") -> dict:
     if not campaign.get("auto_trade", False):
         return {"success": True, "order_id": f"PAPER-{side}-{symbol}-{qty}", "paper": True}
     try:
@@ -169,12 +169,14 @@ def _place_order(campaign: dict, symbol: str, qty: int, side: str = "BUY",
         if not session:
             return {"success": False, "error": f"Not connected to {broker}"}
         # Always use LIMIT at CMP — never MARKET
+        # ETFs don't use -EQ suffix; stocks do (handled inside broker client)
         params = {
-            "symbol": symbol + "-EQ", "token": "", "exchange": "NSE",
+            "symbol": symbol, "token": "", "exchange": "NSE",
             "side": side, "qty": qty,
             "price": round(limit_price, 2) if limit_price > 0 else 0,
             "order_type": "LIMIT" if limit_price > 0 else "MARKET",
             "product": "DELIVERY",
+            "asset_type": asset_type,
         }
         r = get_broker(broker, session, f"{campaign['username']}:{broker}").place_order(params)
         return {"success": True, "order_id": r.get("order_id", "")}
@@ -234,7 +236,14 @@ def preview_chunk_orders(campaign_id: str) -> dict:
 
     chunk_def  = chunks[chunk_n - 1]
     fund_pct   = float(chunk_def.get("fund_pct", 40)) / 100
-    chunk_val  = float(campaign["reserved_fund"]) * fund_pct
+
+    # Split fund pool by asset class (backward compat: no split_config = 100% stocks)
+    split        = campaign.get("split_config") or {}
+    stocks_pct   = float(split.get("stocks_pct", 100)) / 100
+    etfs_pct     = float(split.get("etfs_pct", 0)) / 100
+    reserved     = float(campaign["reserved_fund"])
+    stocks_chunk = reserved * stocks_pct * fund_pct
+    etfs_chunk   = reserved * etfs_pct   * fund_pct
 
     watching = [s for s in campaign.get("stocks", []) if s.get("status") == "watching"]
     if not watching:
@@ -269,7 +278,9 @@ def preview_chunk_orders(campaign_id: str) -> dict:
     orders = []
     total_value = 0.0
     for stock in watching:
-        sym   = stock["symbol"]
+        sym        = stock["symbol"]
+        asset_type = stock.get("asset_type", "stock")
+        chunk_val  = stocks_chunk if asset_type != "etf" else etfs_chunk
         alloc = float(stock.get("allocation_pct", 0)) / 100
         val   = chunk_val * alloc
         price = live_prices.get(sym)
@@ -281,6 +292,7 @@ def preview_chunk_orders(campaign_id: str) -> dict:
         total_value += order_val
         orders.append({
             "symbol":      sym,
+            "asset_type":  asset_type,
             "allocation":  f"{int(alloc * 100)}%",
             "fund":        round(val, 2),
             "ltp":         round(price, 2),
@@ -293,7 +305,9 @@ def preview_chunk_orders(campaign_id: str) -> dict:
 
     return {
         "chunk":       chunk_n,
-        "chunk_fund":  round(chunk_val, 2),
+        "stocks_fund": round(stocks_chunk, 2),
+        "etfs_fund":   round(etfs_chunk, 2),
+        "chunk_fund":  round(stocks_chunk + etfs_chunk, 2),
         "orders":      orders,
         "total_value": round(total_value, 2),
         "note":        "Limit price = LTP at preview time. Actual order uses LTP at execution time.",
@@ -328,7 +342,14 @@ def deploy_chunk(campaign: dict, chunk_n: int = 1,
 
     chunk_def  = chunks[chunk_n - 1]
     fund_pct   = float(chunk_def.get("fund_pct", 40)) / 100
-    chunk_val  = float(campaign["reserved_fund"]) * fund_pct
+
+    # Split fund pool by asset class (backward compat: no split_config = 100% stocks)
+    split        = campaign.get("split_config") or {}
+    stocks_pct   = float(split.get("stocks_pct", 100)) / 100
+    etfs_pct     = float(split.get("etfs_pct", 0)) / 100
+    reserved     = float(campaign["reserved_fund"])
+    stocks_chunk = reserved * stocks_pct * fund_pct
+    etfs_chunk   = reserved * etfs_pct   * fund_pct
 
     stocks  = campaign.get("stocks", [])
     # For chunk 1: all watching stocks; for chunk N>1: only target_symbols
@@ -372,7 +393,9 @@ def deploy_chunk(campaign: dict, chunk_n: int = 1,
     # Build order preview (qty + limit price per stock)
     preview: list[dict] = []
     for stock in to_deploy:
-        sym   = stock["symbol"]
+        sym        = stock["symbol"]
+        asset_type = stock.get("asset_type", "stock")
+        chunk_val  = stocks_chunk if asset_type != "etf" else etfs_chunk
         alloc = float(stock.get("allocation_pct", 0)) / 100
         val   = chunk_val * alloc
         price = live_prices.get(sym)
@@ -380,6 +403,7 @@ def deploy_chunk(campaign: dict, chunk_n: int = 1,
             qty = max(1, int(val / price))
             preview.append({
                 "symbol":      sym,
+                "asset_type":  asset_type,
                 "allocation":  f"{int(alloc * 100)}%",
                 "fund":        round(val, 2),
                 "ltp":         round(price, 2),
@@ -395,7 +419,9 @@ def deploy_chunk(campaign: dict, chunk_n: int = 1,
     for i, stock in enumerate(stocks):
         if stock["symbol"] not in symbols:
             continue
-        sym   = stock["symbol"]
+        sym        = stock["symbol"]
+        asset_type = stock.get("asset_type", "stock")
+        chunk_val  = stocks_chunk if asset_type != "etf" else etfs_chunk
         alloc = float(stock.get("allocation_pct", 0)) / 100
         val   = chunk_val * alloc
         price = live_prices.get(sym)
@@ -403,7 +429,7 @@ def deploy_chunk(campaign: dict, chunk_n: int = 1,
             continue
         qty = max(1, int(val / price))
 
-        order = _place_order(campaign, sym, qty, limit_price=price)
+        order = _place_order(campaign, sym, qty, limit_price=price, asset_type=asset_type)
         if order["success"]:
             total_deployed  += qty * price
             status_label     = f"c{chunk_n}_placed"
@@ -580,6 +606,7 @@ def monitor_and_act(campaign: dict) -> list[dict]:
             "symbol":       s["symbol"], "display": s.get("display", s["symbol"]),
             "sector":       s.get("sector", ""), "allocation_pct": s.get("allocation_pct", 0),
             "justification": s.get("justification", ""), "conviction": s.get("conviction", ""),
+            "asset_type":   s.get("asset_type", "stock"),
             "status":       "watching",
             "chunks_placed": [], "total_qty": 0, "avg_price": 0.0,
             "chunk1_qty": 0, "chunk1_price": 0.0,
