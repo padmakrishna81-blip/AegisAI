@@ -1,6 +1,8 @@
 import { NavLink } from 'react-router-dom'
+import { useState, useEffect } from 'react'
 import type { AuthUser } from '../../store/authStore'
 import { hasPermission } from '../../store/authStore'
+import client from '../../api/client'
 
 const BASE_NAV = [
   { path: '/',          label: 'Dashboard',     icon: '⬡' },
@@ -16,6 +18,11 @@ const GATED_NAV = [
   { path: '/wheel',             label: 'Wheel Strategy',    icon: '🎡', perm: 'wheel' },
   { path: '/cushion-strangle',  label: 'Cushion Strangle',  icon: '🛡️', perm: 'wheel' },
   { path: '/custom-strangle',   label: 'Custom Builder',     icon: '🔧', perm: 'wheel' },
+  { path: '/multi-builder',     label: 'Multi-Asset Builder', icon: '🧩', perm: 'wheel' },
+  { path: '/strategy-monitor',  label: 'Strategy Monitor',    icon: '📡', perm: 'wheel' },
+  { path: '/market-brain',      label: 'Market Brain',         icon: '🧠', perm: 'wheel' },
+  { path: '/stock-trader',      label: 'AI Stock Trader',      icon: '📈', perm: 'wheel' },
+  { path: '/broker-portfolio',  label: 'Broker Portfolio',    icon: '🏦', perm: 'broker_connect' },
   { path: '/strategies',        label: 'Strategies',        icon: '⚡', perm: 'market' },
   { path: '/market',        label: 'Market',         icon: '◊', perm: 'market' },
   { path: '/ai-insights',   label: 'AI Insights',    icon: '◇', perm: 'ai_insights' },
@@ -27,8 +34,20 @@ interface SidebarProps {
 }
 
 export default function Sidebar({ user, onLogout }: SidebarProps) {
+  const [alertCount, setAlertCount] = useState(0)
+
+  useEffect(() => {
+    const fetch = () => {
+      client.get('/wheel/agent/monitor/alerts')
+        .then(r => setAlertCount(r.data.count ?? 0))
+        .catch(() => {})
+    }
+    fetch()
+    const id = setInterval(fetch, 5 * 60 * 1000)
+    return () => clearInterval(id)
+  }, [])
   return (
-    <aside className="w-56 min-h-screen bg-card border-r border-border flex flex-col py-6 px-3 shrink-0">
+    <aside className="w-56 h-screen bg-card border-r border-border flex flex-col py-6 px-3 shrink-0">
       {/* Logo */}
       <div className="px-3 mb-8">
         <div className="flex items-center gap-2">
@@ -41,7 +60,7 @@ export default function Sidebar({ user, onLogout }: SidebarProps) {
       </div>
 
       {/* Nav */}
-      <nav className="flex flex-col gap-1 flex-1">
+      <nav className="flex flex-col gap-1 flex-1 overflow-y-auto min-h-0">
         {BASE_NAV.map(({ path, label, icon }) => (
           <NavLink
             key={path}
@@ -88,6 +107,9 @@ export default function Sidebar({ user, onLogout }: SidebarProps) {
             >
               <span className="text-base">{icon}</span>
               {label}
+              {path === '/strategy-monitor' && alertCount > 0 && (
+                <span className="ml-auto text-[9px] px-1.5 py-0.5 bg-amber-600 text-white rounded-full font-bold">{alertCount}</span>
+              )}
             </NavLink>
           )
         })}

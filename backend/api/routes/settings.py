@@ -12,6 +12,7 @@ class SettingsInput(BaseModel):
     llm_provider: str = ""
     anthropic_api_key: str = ""
     openai_api_key: str = ""
+    groq_api_key: str = ""
 
 
 @router.get("/settings")
@@ -20,41 +21,50 @@ async def get_settings():
         "llm_provider": get_provider(),
         "anthropic_configured": bool(os.getenv("ANTHROPIC_API_KEY", "").strip()),
         "openai_configured": bool(os.getenv("OPENAI_API_KEY", "").strip()),
+        "groq_configured": bool(os.getenv("GROQ_API_KEY", "").strip()),
         "llm_ready": is_configured(),
     }
 
 
 @router.post("/settings")
-async def save_settings(settings: SettingsInput):
-    # Handle __CLEAR__ sentinel — explicitly wipe the key
-    anthropic_val = settings.anthropic_api_key
-    openai_val    = settings.openai_api_key
+async def save_settings(body: SettingsInput):
+    anthropic_val = body.anthropic_api_key
+    openai_val    = body.openai_api_key
+    groq_val      = body.groq_api_key
 
+    # __CLEAR__ sentinel — explicitly wipe the key
     if anthropic_val == "__CLEAR__":
         os.environ["ANTHROPIC_API_KEY"] = ""
         anthropic_val = ""
     if openai_val == "__CLEAR__":
         os.environ["OPENAI_API_KEY"] = ""
         openai_val = ""
+    if groq_val == "__CLEAR__":
+        os.environ["GROQ_API_KEY"] = ""
+        groq_val = ""
 
-    # Blank = "keep existing" unless we explicitly cleared above
-    anthropic = anthropic_val if anthropic_val else None
-    openai_k  = openai_val    if openai_val    else None
+    any_explicit = bool(
+        body.anthropic_api_key == "__CLEAR__" or
+        body.openai_api_key    == "__CLEAR__" or
+        body.groq_api_key      == "__CLEAR__" or
+        anthropic_val or openai_val or groq_val
+    )
 
     update_settings(
-        provider=settings.llm_provider,
-        anthropic_key=anthropic or "",
-        openai_key=openai_k or "",
-        overwrite_keys=bool(anthropic is not None or openai_k is not None
-                            or settings.anthropic_api_key == "__CLEAR__"
-                            or settings.openai_api_key == "__CLEAR__"),
+        provider=body.llm_provider,
+        anthropic_key=anthropic_val,
+        openai_key=openai_val,
+        groq_key=groq_val,
+        overwrite_keys=any_explicit,
     )
-    if settings.llm_provider:
-        os.environ["LLM_PROVIDER"] = settings.llm_provider
+    if body.llm_provider:
+        os.environ["LLM_PROVIDER"] = body.llm_provider
+
     return {
         "message": "Settings saved",
         "llm_provider": get_provider(),
         "anthropic_configured": bool(os.getenv("ANTHROPIC_API_KEY", "").strip()),
         "openai_configured": bool(os.getenv("OPENAI_API_KEY", "").strip()),
+        "groq_configured": bool(os.getenv("GROQ_API_KEY", "").strip()),
         "llm_ready": is_configured(),
     }

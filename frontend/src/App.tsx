@@ -18,6 +18,11 @@ import Users from './pages/Users'
 import Strategies from './pages/Strategies'
 import CushionStrangle from './pages/CushionStrangle'
 import CustomStrangle from './pages/CustomStrangle'
+import MultiBuilder from './pages/MultiBuilder'
+import StrategyMonitor from './pages/StrategyMonitor'
+import BrokerPortfolio from './pages/BrokerPortfolio'
+import MarketBrain from './pages/MarketBrain'
+import StockTrader from './pages/StockTrader'
 import client from './api/client'
 
 function ProtectedLayout() {
@@ -59,6 +64,21 @@ function ProtectedLayout() {
             <Route path="/custom-strangle" element={
               hasPermission(user, 'wheel') ? <CustomStrangle /> : <AccessDenied />
             } />
+            <Route path="/multi-builder" element={
+              hasPermission(user, 'wheel') ? <MultiBuilder /> : <AccessDenied />
+            } />
+            <Route path="/strategy-monitor" element={
+              hasPermission(user, 'wheel') ? <StrategyMonitor /> : <AccessDenied />
+            } />
+            <Route path="/broker-portfolio" element={
+              hasPermission(user, 'broker_connect') ? <BrokerPortfolio /> : <AccessDenied />
+            } />
+            <Route path="/market-brain" element={
+              hasPermission(user, 'wheel') ? <MarketBrain /> : <AccessDenied />
+            } />
+            <Route path="/stock-trader" element={
+              hasPermission(user, 'wheel') ? <StockTrader /> : <AccessDenied />
+            } />
             <Route path="/market" element={
               hasPermission(user, 'market') ? <Market /> : <AccessDenied />
             } />
@@ -78,7 +98,8 @@ function ProtectedLayout() {
 }
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated } = useAuthStore()
+  const { isAuthenticated, _hasHydrated } = useAuthStore()
+  if (!_hasHydrated) return <div className="min-h-screen bg-background" />
   if (!isAuthenticated) return <Navigate to="/login" replace />
   return <>{children}</>
 }
@@ -99,7 +120,8 @@ export default function App() {
 }
 
 function LoginGuard() {
-  const { isAuthenticated } = useAuthStore()
+  const { isAuthenticated, _hasHydrated } = useAuthStore()
+  if (!_hasHydrated) return <div className="min-h-screen bg-background" />
   if (isAuthenticated) return <Navigate to="/" replace />
   return <Login />
 }

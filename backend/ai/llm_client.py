@@ -1,4 +1,4 @@
-"""Unified LLM client supporting Claude (Anthropic) and OpenAI."""
+"""Unified LLM client supporting Claude (Anthropic), OpenAI, and Groq."""
 
 import hashlib
 import os
@@ -36,6 +36,8 @@ def is_configured() -> bool:
         return bool(os.getenv("ANTHROPIC_API_KEY", "").strip())
     elif provider == "openai":
         return bool(os.getenv("OPENAI_API_KEY", "").strip())
+    elif provider == "groq":
+        return bool(os.getenv("GROQ_API_KEY", "").strip())
     return False
 
 
@@ -52,12 +54,14 @@ def call_llm(prompt: str, system: str = "", max_tokens: int = 1024) -> str:
             result = _call_claude(prompt, system, max_tokens)
         elif provider == "openai":
             result = _call_openai(prompt, system, max_tokens)
+        elif provider == "groq":
+            result = _call_groq(prompt, system, max_tokens)
         else:
             result = f"[LLM not configured: unknown provider '{provider}']"
     except Exception as e:
         err = str(e)
-        if "429" in err or "quota" in err.lower() or "billing" in err.lower():
-            result = f"[LLM quota exceeded: Your {provider.upper()} account has run out of credits. Add billing at platform.openai.com or switch to Claude in Settings.]"
+        if "429" in err or "quota" in err.lower() or "billing" in err.lower() or "rate_limit" in err.lower():
+            result = f"[LLM quota exceeded: Your {provider.upper()} account has run out of credits or hit rate limits.]"
         elif "401" in err or "invalid" in err.lower() or "authentication" in err.lower():
             result = f"[LLM auth failed: API key is invalid or expired. Re-enter your {provider.upper()} key in Settings.]"
         else:
@@ -102,6 +106,29 @@ def _call_openai(prompt: str, system: str, max_tokens: int) -> str:
     return resp.choices[0].message.content or ""
 
 
+def _call_groq(prompt: str, system: str, max_tokens: int) -> str:
+    """Call Groq API (OpenAI-compatible). Uses llama-3.3-70b-versatile by default."""
+    import openai as oai
+    api_key = os.getenv("GROQ_API_KEY", "")
+    if not api_key:
+        return "[Groq API key not configured]"
+    client = oai.OpenAI(
+        api_key=api_key,
+        base_url="https://api.groq.com/openai/v1",
+    )
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+    model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    resp = client.chat.completions.create(
+        model=model,
+        max_tokens=max_tokens,
+        messages=messages,
+    )
+    return resp.choices[0].message.content or ""
+
+
 def classify_sentiment(text: str) -> str:
     """Returns POSITIVE, NEUTRAL, or NEGATIVE."""
     if not text or not is_configured():
@@ -119,7 +146,7 @@ def classify_sentiment(text: str) -> str:
     return "NEUTRAL"
 
 
-def update_settings(provider: str, anthropic_key: str = "", openai_key: str = "", overwrite_keys: bool = False) -> None:
+def update_settings(provider: str, anthropic_key: str = "", openai_key: str = "", groq_key: str = "", overwrite_keys: bool = False) -> None:
     """Update .env and os.environ. Only overwrites keys when overwrite_keys=True."""
     env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
 
@@ -139,19 +166,22 @@ def update_settings(provider: str, anthropic_key: str = "", openai_key: str = ""
         os.environ["LLM_PROVIDER"] = provider
 
     if overwrite_keys:
-        # User explicitly typed new keys — update them (even if empty = clear)
         existing["ANTHROPIC_API_KEY"] = anthropic_key
         os.environ["ANTHROPIC_API_KEY"] = anthropic_key
         existing["OPENAI_API_KEY"] = openai_key
         os.environ["OPENAI_API_KEY"] = openai_key
+        existing["GROQ_API_KEY"] = groq_key
+        os.environ["GROQ_API_KEY"] = groq_key
     else:
-        # Only update if non-empty (keep old keys if user left fields blank)
         if anthropic_key:
             existing["ANTHROPIC_API_KEY"] = anthropic_key
             os.environ["ANTHROPIC_API_KEY"] = anthropic_key
         if openai_key:
             existing["OPENAI_API_KEY"] = openai_key
             os.environ["OPENAI_API_KEY"] = openai_key
+        if groq_key:
+            existing["GROQ_API_KEY"] = groq_key
+            os.environ["GROQ_API_KEY"] = groq_key
 
     with open(env_path, "w") as f:
         for k, v in existing.items():

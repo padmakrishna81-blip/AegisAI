@@ -1,7 +1,9 @@
 import axios from 'axios'
 
+const API_BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8001/api'
+
 const client = axios.create({
-  baseURL: 'http://localhost:8001/api',
+  baseURL: API_BASE,
   timeout: 60000,
   headers: { 'Content-Type': 'application/json' },
 })

@@ -149,7 +149,127 @@ export interface AppSettings {
   llm_provider: string
   anthropic_configured: boolean
   openai_configured: boolean
+  groq_configured: boolean
   llm_ready: boolean
 }
 
+export interface StrategyLeg {
+  id: string
+  type: 'short_put' | 'short_call' | 'long_put' | 'long_call' | 'long_share'
+  symbol: string
+  strike?: number
+  expiry?: string
+  dte?: number
+  entry_price: number
+  current_price: number
+  underlying_cmp: number
+  lots?: number
+  lot_size?: number
+  qty?: number
+  pnl: number
+  is_short: boolean
+}
+
+export interface LegAction {
+  id: string
+  type: string
+  symbol: string
+  strike: number | null
+  action: 'hold' | 'close' | 'roll'
+  pnl: number
+  pnl_pct: number
+  reason: string
+}
+
+export interface StrategyReviewResult {
+  mode: 'strategy_review'
+  strategy_name: string
+  overall_action: 'hold' | 'partial_close' | 'close_all' | 'roll' | 'add_hedge'
+  confidence: 'high' | 'medium' | 'low'
+  total_pnl: number
+  pct_of_max: number | null
+  leg_actions: LegAction[]
+  risk_flags: string[]
+  next_trigger: string
+  reasoning: string[]
+}
+
+export interface MonitoredStrategy {
+  id: string
+  name: string
+  legs: StrategyLeg[]
+  saved_at: string
+  updated_at: string
+  last_checked: string | null
+  last_alert: StrategyReviewResult | null
+}
+
 export type MarketMode = 'STRONG BULL' | 'BULLISH' | 'NEUTRAL' | 'DEFENSIVE' | 'CAPITAL PRESERVATION'
+
+export interface BrokerHolding {
+  broker: string
+  symbol: string
+  token: string
+  exchange: string
+  qty: number
+  avg_price: number
+  ltp: number
+  pnl: number
+  pnl_pct: number
+  product: string
+  isin: string
+}
+
+export interface BrokerFunds {
+  broker: string
+  available_cash: number
+  used_margin: number
+  net: number
+  total_margin: number
+}
+
+export interface BrokerOrder {
+  order_id: string
+  broker: string
+  symbol: string
+  exchange: string
+  side: string
+  qty: number
+  price: number
+  order_type: string
+  status: string
+  time?: string
+  timestamp?: string
+}
+
+export interface BrokerPosition {
+  broker: string
+  symbol: string
+  token: string
+  exchange: string
+  instrument: string    // OPTIDX, OPTSTK, FUTIDX, "" for equity intraday
+  strike: string
+  option_type: string   // CE / PE / ""
+  expiry: string
+  lot_size: number
+  net_qty: number       // positive = long, negative = short
+  avg_price: number
+  ltp: number
+  unrealised: number
+  realised: number
+  product: string
+  side: 'LONG' | 'SHORT'
+  close_side: 'BUY' | 'SELL'
+  close_qty: number
+}
+
+export interface BrokerConnectionStatus {
+  configured: boolean
+  connected: boolean
+  expires_at: string | null
+}
+
+export type BrokerStatus = {
+  angelone?: BrokerConnectionStatus
+  kotak?: BrokerConnectionStatus
+}

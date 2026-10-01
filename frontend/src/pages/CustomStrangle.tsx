@@ -5,6 +5,8 @@ import {
 } from 'recharts'
 import NseStockSearch from '../components/NseStockSearch'
 import client from '../api/client'
+import AgentStrategyReview from '../components/AgentStrategyReview'
+import type { StrategyLeg } from '../types'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -2083,6 +2085,44 @@ export default function CustomStrangle() {
           )}
         </div>
       )}
+
+      {/* ── Agent Strategy Review ──────────────────────────────────────────── */}
+      {hasPositions && (() => {
+        const cmp  = cmpStr !== '' ? parseFloat(cmpStr) : 0
+        const iv   = parseFloat(ivStr) || 22
+        const dte  = parseInt(dteStr) || 37
+        const T    = Math.max(0, dte) / 365
+        const sym  = symbolDisplay || symbol || 'Unknown'
+        const agentLegs: StrategyLeg[] = [
+          ...options.map(o => ({
+            id:            o.id,
+            type:          (o.type === 'PE' ? 'short_put' : 'short_call') as StrategyLeg['type'],
+            symbol:        sym,
+            strike:        o.strike,
+            dte,
+            entry_price:   o.premium,
+            current_price: bsPrice(cmp, o.strike, iv, T, o.type === 'CE'),
+            underlying_cmp: cmp,
+            lots:          o.lots,
+            lot_size:      o.lotSize,
+            pnl:           legOptionMidPnl(o, cmp, T, iv),
+            is_short:      true,
+          } satisfies StrategyLeg)),
+          ...shares.map(s => ({
+            id:            s.id,
+            type:          'long_share' as const,
+            symbol:        sym,
+            entry_price:   s.buyPrice,
+            current_price: cmp,
+            underlying_cmp: cmp,
+            qty:           s.qty,
+            pnl:           legSharePnl(s, cmp),
+            is_short:      false,
+          } satisfies StrategyLeg)),
+        ]
+        const totalPnl = agentLegs.reduce((s, l) => s + l.pnl, 0)
+        return <AgentStrategyReview legs={agentLegs} strategyName={`${sym} Strangle`} totalPnl={totalPnl} />
+      })()}
 
     </div>
   )

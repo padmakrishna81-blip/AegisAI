@@ -16,7 +16,11 @@ paper_trades*.json
 backend/users.json
 backend/portfolio_data.json
 backend/holdings_data.json
+backend/broker_creds.json
+backend/strategy_monitor.json
 backend/predictions.json
+backend/ai_trades.json
+backend/stock_trader.json
 backend/global_stocks.json
 
 # Node / frontend build

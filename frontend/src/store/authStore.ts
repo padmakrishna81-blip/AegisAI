@@ -12,6 +12,8 @@ interface AuthState {
   user: AuthUser | null
   token: string | null
   isAuthenticated: boolean
+  _hasHydrated: boolean
+  setHasHydrated: (v: boolean) => void
   login: (token: string, user: AuthUser) => void
   logout: () => void
 }
@@ -22,6 +24,8 @@ export const useAuthStore = create<AuthState>()(
       user: null,
       token: null,
       isAuthenticated: false,
+      _hasHydrated: false,
+      setHasHydrated: (v) => set({ _hasHydrated: v }),
 
       login: (token, user) => {
         localStorage.setItem('aegis_token', token)
@@ -35,7 +39,12 @@ export const useAuthStore = create<AuthState>()(
         set({ token: null, user: null, isAuthenticated: false })
       },
     }),
-    { name: 'aegisai-auth' }
+    {
+      name: 'aegisai-auth',
+      onRehydrateStorage: () => (state) => {
+        state?.setHasHydrated(true)
+      },
+    }
   )
 )
 

@@ -15,6 +15,63 @@ import { shortSymbol, scoreToColor } from '../utils/formatters'
 import NseStockSearch from '../components/NseStockSearch'
 import VolatilityPanel from '../components/VolatilityPanel'
 
+// ─── Agent types ──────────────────────────────────────────────────────────────
+
+interface AgentRanking {
+  symbol: string
+  name: string
+  cmp: number
+  iv: number
+  rsi: number
+  above_200dma: boolean | null
+  wheel_score: number
+  lot_size: number
+  est_strike: number
+  est_premium: number
+  reasons: string[]
+}
+
+interface AgentScoutResult {
+  mode: 'scout'
+  rankings: AgentRanking[]
+  summary: string
+}
+
+interface AgentPlanStrike {
+  strike: number
+  ltp: number
+  delta: number
+  prob_worthless: number
+  income: number
+  eff_buy: number
+  margin: number
+  yield_pct: number
+  pct_otm: number
+  theta_day: number
+  expiry: string
+  dte: number
+}
+
+interface AgentPlanResult {
+  mode: 'plan'
+  symbol: string
+  name: string
+  cmp: number
+  iv: number
+  rsi: number | null
+  above_200dma: boolean | null
+  expiry: string
+  dte: number
+  lots: number
+  lot_size: number
+  primary: AgentPlanStrike
+  alternatives: AgentPlanStrike[]
+  risk_flags: string[]
+  next_trigger: string
+  reasoning: string[]
+  action: string
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 function _erf(x: number): number {
@@ -123,6 +180,249 @@ interface OrderOptions {
 function fmt(n: number) { return n.toLocaleString('en-IN') }
 function fmtPnl(n: number) { return `${n >= 0 ? '+' : ''}₹${Math.abs(n).toLocaleString('en-IN')}` }
 
+// ─── Agent Scout Panel ────────────────────────────────────────────────────────
+
+function AgentScoutPanel({ candidates, onPlan }: {
+  candidates: WheelScanResult[]
+  onPlan: (symbol: string) => void
+}) {
+  const [open, setOpen]       = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [result, setResult]   = useState<AgentScoutResult | null>(null)
+  const [error, setError]     = useState<string | null>(null)
+
+  const run = async () => {
+    setLoading(true); setError(null)
+    try {
+      const r = await client.post('/wheel/agent/scout', {
+        candidates: candidates.slice(0, 8).map(c => ({
+          symbol:       c.symbol,
+          name:         c.name,
+          cmp:          c.cmp,
+          atm_iv:       c.atm_iv,
+          score:        c.score,
+          above_200dma: c.above_200dma,
+          low_52w:      c.low_52w,
+          high_52w:     c.high_52w,
+          lot_size:     c.lot_size,
+        })),
+      })
+      setResult(r.data); setOpen(true)
+    } catch {
+      setError('Agent unavailable — try again or check backend logs')
+    } finally { setLoading(false) }
+  }
+
+  const confidenceBadge = (score: number) => {
+    const cls = score >= 70 ? 'bg-green-900 border-green-700 text-score-green'
+              : score >= 50 ? 'bg-amber-900 border-amber-700 text-score-amber'
+              : 'bg-red-900 border-red-800 text-score-red'
+    return <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${cls}`}>{score}/100</span>
+  }
+
+  return (
+    <div className="bg-slate-900/60 border border-blue-800/40 rounded-xl overflow-hidden">
+      <button
+        onClick={result ? () => setOpen(!open) : run}
+        disabled={loading}
+        className="w-full flex items-center justify-between px-4 py-3 hover:bg-slate-800/40 transition-colors"
+      >
+        <div className="flex items-center gap-2 text-sm font-semibold text-blue-300">
+          <span>🤖</span>
+          <span>Ask Agent — Scout Top Picks</span>
+          {result && <span className="text-[10px] text-muted font-normal">({result.rankings.length} ranked)</span>}
+        </div>
+        {loading
+          ? <span className="text-xs text-blue-400 animate-pulse">Analysing {candidates.length} candidates…</span>
+          : result
+            ? <span className="text-muted text-sm">{open ? '▲' : '▼'}</span>
+            : <span className="text-xs text-blue-400 hover:text-blue-300">Run →</span>}
+      </button>
+
+      {error && (
+        <div className="px-4 pb-3 text-xs text-score-red">{error}</div>
+      )}
+
+      {open && result && (
+        <div className="border-t border-blue-800/30 p-4 space-y-4">
+          {/* Summary */}
+          <div className="bg-blue-950/30 border border-blue-800/30 rounded-lg px-4 py-3 text-xs text-slate-300 leading-relaxed">
+            {result.summary}
+          </div>
+
+          {/* Top 3 ranked cards */}
+          <div className="grid grid-cols-3 gap-3">
+            {result.rankings.map((r, i) => (
+              <div key={r.symbol} className="bg-card border border-border rounded-xl p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs text-muted">#{i+1}</span>
+                    <span className="text-sm font-bold text-white">{shortSymbol(r.symbol)}</span>
+                  </div>
+                  {confidenceBadge(r.wheel_score)}
+                </div>
+                <div className="text-xs text-muted">{r.name}</div>
+                <div className="grid grid-cols-2 gap-1 text-[11px]">
+                  <div><span className="text-muted">IV </span><span className="text-score-amber">{r.iv}%</span></div>
+                  <div><span className="text-muted">RSI </span><span className="text-slate-300">{r.rsi || '—'}</span></div>
+                  <div><span className="text-muted">Strike </span><span className="text-white">₹{r.est_strike}</span></div>
+                  <div><span className="text-muted">Income </span><span className="text-score-green">₹{r.est_premium.toLocaleString('en-IN')}</span></div>
+                </div>
+                <div className="space-y-0.5">
+                  {r.reasons.slice(0, 3).map((reason, ri) => (
+                    <div key={ri} className="text-[10px] text-blue-400 leading-tight">• {reason}</div>
+                  ))}
+                </div>
+                <button
+                  onClick={() => onPlan(r.symbol)}
+                  className="w-full py-1.5 bg-score-amber hover:bg-amber-600 text-white rounded-lg text-xs font-medium mt-1"
+                >
+                  Plan →
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Agent Plan Panel ─────────────────────────────────────────────────────────
+
+function AgentPlanPanel({ symbol, lots }: { symbol: string; lots: number }) {
+  const [open, setOpen]       = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [result, setResult]   = useState<AgentPlanResult | null>(null)
+  const [error, setError]     = useState<string | null>(null)
+
+  const run = async () => {
+    setLoading(true); setError(null)
+    try {
+      const r = await client.post('/wheel/agent/plan', { symbol, lots })
+      setResult(r.data); setOpen(true)
+    } catch {
+      setError('Agent unavailable')
+    } finally { setLoading(false) }
+  }
+
+  const confidenceBadge = (pct: number) => {
+    const cls = pct >= 75 ? 'bg-green-900 border-green-700 text-score-green'
+              : pct >= 60 ? 'bg-amber-900 border-amber-700 text-score-amber'
+              : 'bg-red-900 border-red-800 text-score-red'
+    return <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${cls}`}>P(safe) {pct}%</span>
+  }
+
+  return (
+    <div className="bg-slate-900/60 border border-purple-800/40 rounded-xl overflow-hidden">
+      <button
+        onClick={result ? () => setOpen(!open) : run}
+        disabled={loading}
+        className="w-full flex items-center justify-between px-4 py-3 hover:bg-slate-800/40 transition-colors"
+      >
+        <div className="flex items-center gap-2 text-sm font-semibold text-purple-300">
+          <span>🤖</span>
+          <span>Ask Agent — Strike Recommendation</span>
+          {result && <span className="text-[10px] text-muted font-normal">{result.expiry} · {result.dte}d</span>}
+        </div>
+        {loading
+          ? <span className="text-xs text-purple-400 animate-pulse">Analysing {symbol}…</span>
+          : result
+            ? <span className="text-muted text-sm">{open ? '▲' : '▼'}</span>
+            : <span className="text-xs text-purple-400 hover:text-purple-300">Run →</span>}
+      </button>
+
+      {error && <div className="px-4 pb-3 text-xs text-score-red">{error}</div>}
+
+      {open && result && (
+        <div className="border-t border-purple-800/30 p-4 space-y-4">
+          {/* Primary recommendation */}
+          <div className="bg-purple-950/20 border border-purple-800/30 rounded-xl p-4">
+            <div className="flex items-center justify-between mb-3">
+              <div className="text-xs font-semibold text-purple-300 uppercase tracking-wide">Primary Recommendation</div>
+              {confidenceBadge(result.primary.prob_worthless)}
+            </div>
+            <div className="text-base font-bold text-white mb-1">
+              Sell ₹{result.primary.strike} PE — {result.expiry}
+            </div>
+            <div className="grid grid-cols-4 gap-2 text-xs mb-3">
+              <div><span className="text-muted">Premium </span><span className="text-score-green font-bold">₹{result.primary.ltp}</span></div>
+              <div><span className="text-muted">Income </span><span className="text-score-green font-bold">₹{result.primary.income.toLocaleString('en-IN')}</span></div>
+              <div><span className="text-muted">Delta </span><span className="text-score-amber">{result.primary.delta}</span></div>
+              <div><span className="text-muted">Yield </span><span className="text-score-green">{result.primary.yield_pct}%</span></div>
+              <div><span className="text-muted">Margin </span><span className="text-slate-300">₹{result.primary.margin.toLocaleString('en-IN')}</span></div>
+              <div><span className="text-muted">Eff. Buy </span><span className="text-score-amber">₹{result.primary.eff_buy}</span></div>
+              <div><span className="text-muted">OTM </span><span className="text-slate-300">{result.primary.pct_otm}%</span></div>
+              <div><span className="text-muted">θ/day </span><span className="text-score-green">+₹{Math.abs(result.primary.theta_day)}</span></div>
+            </div>
+
+            {/* Reasoning bullets */}
+            <div className="space-y-1">
+              {result.reasoning.map((r, i) => (
+                <div key={i} className="text-xs text-blue-300 flex gap-2">
+                  <span className="text-blue-500 shrink-0">→</span>
+                  <span>{r}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Alternatives table */}
+          {result.alternatives.length > 0 && (
+            <div>
+              <div className="text-[10px] font-semibold text-muted uppercase tracking-wide mb-2">Alternatives</div>
+              <div className="bg-card border border-border rounded-lg overflow-hidden">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-[10px] text-muted border-b border-border bg-slate-800/40">
+                      <th className="text-left px-3 py-2">Strike</th>
+                      <th className="text-right px-3 py-2">Premium</th>
+                      <th className="text-right px-3 py-2">Income</th>
+                      <th className="text-right px-3 py-2">Delta</th>
+                      <th className="text-right px-3 py-2">P(safe)</th>
+                      <th className="text-right px-3 py-2">Yield</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {result.alternatives.map((alt, i) => (
+                      <tr key={i} className="border-b border-border/40">
+                        <td className="px-3 py-2 font-medium text-white">₹{alt.strike} PE</td>
+                        <td className="px-3 py-2 text-right text-score-green">₹{alt.ltp}</td>
+                        <td className="px-3 py-2 text-right text-score-green">₹{alt.income.toLocaleString('en-IN')}</td>
+                        <td className="px-3 py-2 text-right text-score-amber">{alt.delta}</td>
+                        <td className="px-3 py-2 text-right text-slate-300">{alt.prob_worthless}%</td>
+                        <td className="px-3 py-2 text-right text-score-green">{alt.yield_pct}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Risk flags */}
+          {result.risk_flags.length > 0 && (
+            <div className="space-y-1">
+              {result.risk_flags.map((flag, i) => (
+                <div key={i} className="flex items-start gap-2 text-xs bg-amber-950/30 border border-amber-800/30 rounded-lg px-3 py-2 text-amber-300">
+                  <span className="shrink-0">⚠</span>
+                  <span>{flag}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Next trigger */}
+          <div className="bg-green-950/20 border border-green-800/30 rounded-lg px-3 py-2 text-xs text-score-green flex gap-2">
+            <span className="shrink-0">🎯</span>
+            <span>{result.next_trigger}</span>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Put Plan Panel ───────────────────────────────────────────────────────────
 
 function PutPlanPanel({ plan, onClose, onPaperTrade, onRefetch }: {
@@ -184,6 +484,9 @@ function PutPlanPanel({ plan, onClose, onPaperTrade, onRefetch }: {
             </div>
           ))}
         </div>
+
+        {/* AI Agent Panel */}
+        <AgentPlanPanel symbol={plan.symbol} lots={localLots} />
 
         {/* ── INTERACTIVE CONFIGURATION ── */}
         <div className="bg-blue-950/30 border border-blue-800/50 rounded-xl p-4 space-y-4">
@@ -965,6 +1268,10 @@ export default function Wheel() {
             </div>
             <div className="text-xs text-muted">Click "Plan" to see full Wheel setup</div>
           </div>
+
+          {/* Agent Scout */}
+          <AgentScoutPanel candidates={displayResults} onPlan={fetchPlan} />
+
           <div className="bg-card border border-border rounded-xl overflow-hidden">
             <table className="w-full text-sm">
               <thead>

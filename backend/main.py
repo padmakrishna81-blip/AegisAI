@@ -34,6 +34,10 @@ def convert_numpy(obj):
 from api.routes import analyze, discover, portfolio, covered_calls, market, ai_advisor, settings, validate, etf, paper_trade, global_stocks, nse_search, cc_strategy, predict, predict_constituents, monitor, strategies, holdings as holdings_routes
 from api.routes import auth as auth_routes
 from api.routes import cushion_strangle as cushion_strangle_routes
+from api.routes import wheel_agent as wheel_agent_routes
+from api.routes import broker as broker_routes
+from api.routes import market_brain as market_brain_routes
+from api.routes import stock_trader as stock_trader_routes
 
 app = FastAPI(
     title="AegisAI",
@@ -69,6 +73,10 @@ app.include_router(monitor.router, prefix="/api", tags=["monitor"])
 app.include_router(holdings_routes.router, prefix="/api", tags=["holdings"])
 app.include_router(strategies.router, prefix="/api", tags=["strategies"])
 app.include_router(cushion_strangle_routes.router, prefix="/api", tags=["cushion-strangle"])
+app.include_router(wheel_agent_routes.router, prefix="/api", tags=["wheel-agent"])
+app.include_router(broker_routes.router, prefix="/api", tags=["broker"])
+app.include_router(market_brain_routes.router, prefix="/api", tags=["market-brain"])
+app.include_router(stock_trader_routes.router, prefix="/api", tags=["stock-trader"])
 
 
 # ── Auto-fill actuals scheduler ───────────────────────────────────────────────
@@ -101,6 +109,26 @@ def _auto_fill_loop():
 
 _scheduler_thread = threading.Thread(target=_auto_fill_loop, daemon=True)
 _scheduler_thread.start()
+
+
+def _monitor_loop():
+    """Check saved strategies every 30 min during NSE market hours (9:15–15:30 IST)."""
+    while True:
+        try:
+            now = datetime.now(IST)
+            if now.weekday() < 5:
+                h, m = now.hour, now.minute
+                if (9 <= h < 15 or (h == 15 and m <= 30)) and m in (0, 30):
+                    from data.strategy_monitor import run_monitor_checks
+                    results = run_monitor_checks()
+                    if results:
+                        print(f"[monitor] checked {len(results)} strategies")
+        except Exception as e:
+            print(f"[monitor] error: {e}")
+        time.sleep(60)
+
+
+threading.Thread(target=_monitor_loop, daemon=True).start()
 
 
 @app.get("/")
