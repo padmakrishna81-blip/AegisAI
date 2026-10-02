@@ -204,19 +204,33 @@ def _is_session_error(msg: str) -> bool:
     return any(p in low for p in _BROKER_SESSION_PHRASES)
 
 
-def _check_broker_session(campaign: dict) -> str | None:
-    """Returns error string if broker session is invalid, else None."""
+def _ensure_broker_session(campaign: dict) -> str | None:
+    """Verify broker session; auto-reconnect using stored TOTP seed if expired.
+    Returns error string only if reconnect also fails, else None."""
     if not campaign.get("auto_trade", False):
-        return None  # paper mode — no session needed
+        return None
     try:
-        from data.broker_creds import get_session
+        from data.broker_creds import get_session, auto_reconnect, save_session
         from brokers import get_broker
-        broker  = campaign.get("broker", "angelone")
-        session = get_session(campaign["username"], broker)
+        broker   = campaign.get("broker", "angelone")
+        username = campaign["username"]
+        session  = get_session(username, broker)
+
         if not session:
-            return f"Not connected to {broker}. Reconnect in Settings."
-        # Lightweight call to verify the session is still alive
-        get_broker(broker, session, f"{campaign['username']}:{broker}").get_funds()
+            session = auto_reconnect(username, broker)
+            if not session:
+                return f"Session expired and auto-reconnect failed — re-enter credentials in Settings."
+
+        # Lightweight live verify
+        try:
+            get_broker(broker, session, f"{username}:{broker}").get_funds()
+        except Exception as e:
+            if _is_session_error(str(e)):
+                session = auto_reconnect(username, broker)
+                if not session:
+                    return f"Session invalid and auto-reconnect failed — re-enter credentials in Settings."
+            else:
+                raise
         return None
     except Exception as e:
         return str(e)
@@ -336,7 +350,7 @@ def deploy_chunk(campaign: dict, chunk_n: int = 1,
         return {"error": f"Campaign only has {len(chunks)} chunk(s) configured"}
 
     # Pre-check broker session before touching any stock status
-    session_err = _check_broker_session(campaign)
+    session_err = _ensure_broker_session(campaign)
     if session_err:
         return {"error": "broker_session_expired", "message": session_err}
 
@@ -727,6 +741,12 @@ def run_campaign(campaign_id: str) -> dict:
     campaign = get_campaign(campaign_id)
     if not campaign:
         return {"error": "Campaign not found"}
+
+    # Refresh broker session once per cycle — auto-reconnects with stored TOTP seed if expired
+    if campaign.get("auto_trade", False):
+        session_err = _ensure_broker_session(campaign)
+        if session_err:
+            return {"error": "broker_session_expired", "message": session_err}
 
     stocks   = campaign.get("stocks", [])
     watching = [s for s in stocks if s.get("status") == "watching"]

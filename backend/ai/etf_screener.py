@@ -217,9 +217,11 @@ Respond with JSON array ONLY."""
     try:
         import json, re
         raw = call_llm(prompt, system=system, max_tokens=2500)
+        if raw.startswith('[LLM'):
+            return _rule_based_etf_picks(bounce, momentum)
         m = re.search(r'\[.*\]', raw, re.DOTALL)
         if not m:
-            return []
+            return _rule_based_etf_picks(bounce, momentum)
         picks = json.loads(m.group())
         seen: set[str] = set()
         result = []
@@ -233,9 +235,67 @@ Respond with JSON array ONLY."""
                 continue
             seen.add(sym)
             result.append(p)
-        return result
+        return result if result else _rule_based_etf_picks(bounce, momentum)
     except Exception:
-        return []
+        return _rule_based_etf_picks(bounce, momentum)
+
+
+def _rule_based_etf_picks(bounce: list[dict], momentum: list[dict]) -> list[dict]:
+    """Fallback when LLM is unavailable: return scored bounce + momentum ETF picks."""
+    result = []
+
+    # Bounce picks — sorted by consecutive_down_days desc, RSI asc
+    for m in sorted(bounce, key=lambda x: (-(x.get("consecutive_down_days") or 0), x.get("rsi") or 99)):
+        cd   = m.get("consecutive_down_days", 0)
+        drop = m.get("drop_pct_streak", 0) or 0
+        rsi  = m.get("rsi")
+        r5   = m.get("ret_5d")
+        r10  = m.get("ret_10d")
+        signals = [f"{cd}d consecutive dip ({drop:.1f}%)"]
+        if rsi is not None and rsi < 45: signals.append(f"RSI {rsi:.0f}")
+        conviction = "HIGH" if cd >= 3 and (rsi or 99) < 45 else "MEDIUM"
+        result.append({
+            "symbol":               m["symbol"],
+            "etf_type":             "ETF",
+            "theme":                m["symbol"],
+            "screen_type":          "bounce",
+            "conviction":           conviction,
+            "current_price":        m["current_price"],
+            "consecutive_down_days": cd,
+            "ret_5d":               r5,
+            "ret_10d":              r10,
+            "rsi":                  rsi,
+            "reason":               f"{cd}-day dip, potential mean reversion",
+            "justification":        f"Rule-based bounce pick: {', '.join(signals)}. Short-term mean reversion candidate.",
+            "hold_horizon":         "3-5 trading days",
+        })
+        if len(result) >= 4:
+            break
+
+    # Momentum picks
+    for m in sorted(momentum, key=lambda x: -(x.get("ret_5d") or 0)):
+        r5  = m.get("ret_5d")
+        r10 = m.get("ret_10d")
+        rsi = m.get("rsi")
+        result.append({
+            "symbol":               m["symbol"],
+            "etf_type":             "ETF",
+            "theme":                m["symbol"],
+            "screen_type":          "momentum",
+            "conviction":           "MEDIUM",
+            "current_price":        m["current_price"],
+            "consecutive_down_days": 0,
+            "ret_5d":               r5,
+            "ret_10d":              r10,
+            "rsi":                  rsi,
+            "reason":               f"Positive 5d ({r5}%) and 10d ({r10}%) momentum",
+            "justification":        f"Rule-based momentum pick: 5d {r5}%, 10d {r10}%, RSI {rsi}. Trend continuation candidate.",
+            "hold_horizon":         "1-2 weeks",
+        })
+        if len(result) >= 8:
+            break
+
+    return result
 
 
 def get_etf_picks(force_refresh: bool = False) -> dict:
@@ -278,7 +338,7 @@ def get_etf_picks(force_refresh: bool = False) -> dict:
             return None
         return obj
 
-    _picks_cache = {
+    result = {
         "_ts":                    now,
         "fetched_at":             datetime.now(timezone.utc).isoformat(),
         "market_context":         market_context,
@@ -287,4 +347,9 @@ def get_etf_picks(force_refresh: bool = False) -> dict:
         "bounce_candidates_count": len(bounce),
         "momentum_etfs_count":    len(momentum),
     }
+    # Only write to cache if LLM returned picks — don't overwrite good cache with empty LLM failure
+    if picks:
+        _picks_cache = result
+    elif not _picks_cache.get("_ts"):
+        _picks_cache = result
     return _clean({k: v for k, v in _picks_cache.items() if k != "_ts"})

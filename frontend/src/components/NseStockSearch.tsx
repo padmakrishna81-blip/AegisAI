@@ -9,7 +9,7 @@ interface NseResult {
 }
 
 interface Props {
-  onSelect: (symbol: string, name: string) => void
+  onSelect: (symbol: string, name: string, sector?: string) => void
   placeholder?: string
   autoFocus?: boolean
   className?: string
@@ -94,7 +94,7 @@ export default function NseStockSearch({ onSelect, placeholder, autoFocus, class
     if (r.type === 'stock' && !sym.includes('.') && !sym.startsWith('^')) {
       sym = sym + '.NS'
     }
-    onSelect(sym, r.name)
+    onSelect(sym, r.name, r.sector)
     setQuery('')
     setResults([])
     setOpen(false)

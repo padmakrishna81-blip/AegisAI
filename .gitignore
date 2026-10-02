@@ -22,6 +22,12 @@ backend/predictions.json
 backend/ai_trades.json
 backend/stock_trader.json
 backend/global_stocks.json
+backend/wheel_v2_positions.json
+backend/wheel_v2_config.json
+backend/aegisai.db
+
+# TypeScript build artifacts
+frontend/tsconfig.tsbuildinfo
 
 # Node / frontend build
 frontend/node_modules/

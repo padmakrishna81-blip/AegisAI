@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from api.routes.auth import get_current_user
+from auth.auth_utils import require_role
 
 router = APIRouter()
 
@@ -64,11 +65,15 @@ class CampaignPatch(BaseModel):
     exit_config: dict | None = None
 
 
+class ScreenRequest(BaseModel):
+    chips: list[str] = []
+
+
 # ── Broker balance check ──────────────────────────────────────────────────────
 
 @router.get("/stock-trader/broker-balance")
-async def broker_balance_check(broker: str = "angelone", user=Depends(get_current_user)):
-    """Check available balance in the specified connected broker account."""
+async def broker_balance_check(broker: str = "angelone", user=Depends(require_role('live_trader'))):
+    """Check available balance — live_trader role required."""
     try:
         from ai.trade_agent import get_broker_balance
         result = await _in_thread(lambda: get_broker_balance(user["username"], broker))
@@ -116,6 +121,18 @@ async def refresh_etf_picks(user=Depends(get_current_user)):
     try:
         from ai.etf_screener import get_etf_picks
         result = await _in_thread(lambda: get_etf_picks(force_refresh=True))
+        return JSONResponse(_clean_nan(result))
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# ── Rule-based Stock Screener ─────────────────────────────────────────────────
+
+@router.post("/stock-trader/screen")
+async def screen_stocks(body: ScreenRequest, user=Depends(get_current_user)):
+    try:
+        from ai.stock_picker import screen_by_chips
+        result = await _in_thread(lambda: screen_by_chips(body.chips))
         return JSONResponse(_clean_nan(result))
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
@@ -325,7 +342,8 @@ async def order_preview(cid: str, user=Depends(get_current_user)):
 
 
 @router.post("/stock-trader/campaign/{cid}/run")
-async def run_campaign_cycle(cid: str, user=Depends(get_current_user)):
+async def run_campaign_cycle(cid: str, user=Depends(require_role('live_trader'))):
+    """Execute a live campaign cycle — live_trader role required."""
     try:
         from data.stock_trader_store import get_campaign
         from ai.trade_agent import run_campaign

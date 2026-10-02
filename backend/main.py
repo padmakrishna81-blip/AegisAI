@@ -38,6 +38,7 @@ from api.routes import wheel_agent as wheel_agent_routes
 from api.routes import broker as broker_routes
 from api.routes import market_brain as market_brain_routes
 from api.routes import stock_trader as stock_trader_routes
+from api.routes import wheel_v2 as wheel_v2_routes
 
 app = FastAPI(
     title="AegisAI",
@@ -77,6 +78,19 @@ app.include_router(wheel_agent_routes.router, prefix="/api", tags=["wheel-agent"
 app.include_router(broker_routes.router, prefix="/api", tags=["broker"])
 app.include_router(market_brain_routes.router, prefix="/api", tags=["market-brain"])
 app.include_router(stock_trader_routes.router, prefix="/api", tags=["stock-trader"])
+app.include_router(wheel_v2_routes.router,    prefix="/api", tags=["wheel-v2"])
+
+
+# ── Database initialisation ───────────────────────────────────────────────────
+
+@app.on_event("startup")
+async def _startup():
+    try:
+        from data.db import init_db
+        init_db()
+    except Exception as e:
+        import logging
+        logging.getLogger("aegisai").warning(f"DB init skipped: {e}")
 
 
 # ── Auto-fill actuals scheduler ───────────────────────────────────────────────
@@ -129,6 +143,37 @@ def _monitor_loop():
 
 
 threading.Thread(target=_monitor_loop, daemon=True).start()
+
+
+def _wheel_v2_monitor_loop():
+    """Check Smart Wheel V2 positions every 15 min during NSE market hours (9:15–15:30 IST)."""
+    import time as _time
+    _last_wheel_check = ""
+    while True:
+        try:
+            now = datetime.now(IST)
+            if now.weekday() < 5:
+                h, m = now.hour, now.minute
+                in_market = (9 < h < 15) or (h == 9 and m >= 15) or (h == 15 and m <= 30)
+                slot = f"{now.date()}_{h}_{(m // 15) * 15}"
+                if in_market and slot != _last_wheel_check:
+                    _last_wheel_check = slot
+                    from data.wheel_positions import _load_pos
+                    data = _load_pos()
+                    for username in data:
+                        try:
+                            from ai.wheel_v2_agent import monitor_all
+                            results = monitor_all(username)
+                            if results:
+                                print(f"[wheel-v2] {username}: {len(results)} position(s) checked")
+                        except Exception as ue:
+                            print(f"[wheel-v2] {username} error: {ue}")
+        except Exception as e:
+            print(f"[wheel-v2-monitor] error: {e}")
+        _time.sleep(60)
+
+
+threading.Thread(target=_wheel_v2_monitor_loop, daemon=True).start()
 
 
 @app.get("/")

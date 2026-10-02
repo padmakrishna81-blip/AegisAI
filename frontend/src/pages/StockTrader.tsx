@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import client from '../api/client'
+import NseStockSearch from '../components/NseStockSearch'
 
 // axios convenience wrappers that return .data directly
 const api = {
@@ -41,6 +42,24 @@ interface ETFPick {
   reason?: string
   justification: string
   hold_horizon?: string
+}
+
+interface ScreenResult {
+  symbol: string
+  sector: string
+  current_price: number
+  rsi?: number
+  ret_5d?: number
+  sma_50?: number
+  sma_200?: number
+  above_50_dma?: boolean | null
+  above_200_dma?: boolean | null
+  macd_bullish?: boolean | null
+  consecutive_down_days?: number
+  avg_vol_ratio?: number
+  pct_from_52w_high?: number
+  pct_from_52w_low?: number
+  ret_20d?: number
 }
 
 interface StockPosition {
@@ -364,18 +383,17 @@ function PicksTab({ onBuildCampaign }: PicksTabProps) {
 
       {/* Build campaign bar */}
       {selected.size > 0 && (
-        <div className={`sticky bottom-4 mt-4 bg-slate-900 border rounded-xl p-4 shadow-2xl
-          ${totalAlloc === 100 ? 'border-emerald-600/50' : 'border-amber-600/50'}`}>
+        <div className="sticky bottom-4 mt-4 bg-slate-900 border border-blue-600/50 rounded-xl p-4 shadow-2xl">
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <div className="text-sm">
               <span className="text-white font-semibold">{selected.size} stock{selected.size > 1 ? 's' : ''} selected</span>
               <span className={`ml-2 text-xs font-mono ${totalAlloc === 100 ? 'text-emerald-400' : 'text-amber-400'}`}>
-                Allocation: {totalAlloc}%{totalAlloc !== 100 && ' (must be 100%)'}
+                Allocation: {totalAlloc}%{totalAlloc !== 100 && ' — adjust in campaign modal'}
               </span>
             </div>
             <button
               onClick={handleBuild}
-              disabled={totalAlloc !== 100}
+              disabled={selected.size === 0}
               className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-sm rounded-lg font-semibold transition"
             >
               Build Campaign →
@@ -557,20 +575,266 @@ function ETFPicksTab({ onBuildCampaign }: ETFPicksTabProps) {
       </div>
 
       {selected.size > 0 && (
-        <div className={`sticky bottom-4 mt-4 bg-slate-900 border rounded-xl p-4 shadow-2xl
-          ${totalAlloc === 100 ? 'border-purple-600/50' : 'border-amber-600/50'}`}>
+        <div className="sticky bottom-4 mt-4 bg-slate-900 border border-purple-600/50 rounded-xl p-4 shadow-2xl">
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <div className="text-sm">
               <span className="text-white font-semibold">{selected.size} ETF{selected.size > 1 ? 's' : ''} selected</span>
               <span className={`ml-2 text-xs font-mono ${totalAlloc === 100 ? 'text-purple-400' : 'text-amber-400'}`}>
-                Allocation: {totalAlloc}%{totalAlloc !== 100 && ' (must be 100%)'}
+                Allocation: {totalAlloc}%{totalAlloc !== 100 && ' — adjust in campaign modal'}
               </span>
             </div>
-            <button onClick={handleBuild} disabled={totalAlloc !== 100}
+            <button onClick={handleBuild} disabled={selected.size === 0}
               className="px-4 py-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white text-sm rounded-lg font-semibold transition">
               Build Campaign →
             </button>
           </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Screener Tab ──────────────────────────────────────────────────────────────
+
+const CHIP_GROUPS = [
+  { label: 'Momentum', color: 'blue', chips: ['RSI Oversold', 'RSI Overbought', 'MACD Bullish', 'MACD Bearish'] },
+  { label: 'Short-term Return', color: 'amber', chips: ['Recent Rally >3%', 'Recent Dip <-3%', '2+ Down Days'] },
+  { label: 'Trend (DMA)', color: 'purple', chips: ['Above 50 DMA', 'Below 50 DMA', 'Above 200 DMA', 'Below 200 DMA'] },
+  { label: 'Price Levels', color: 'emerald', chips: ['Near 52W High', 'Near 52W Low', 'Big Dip >15%'] },
+  { label: 'Volume', color: 'slate', chips: ['Volume Surge'] },
+] as const
+
+const CHIP_COLOR: Record<string, string> = {
+  blue:    'bg-blue-900/40 border-blue-700/40 text-blue-300',
+  amber:   'bg-amber-900/40 border-amber-700/40 text-amber-300',
+  purple:  'bg-purple-900/40 border-purple-700/40 text-purple-300',
+  emerald: 'bg-emerald-900/40 border-emerald-700/40 text-emerald-300',
+  slate:   'bg-slate-700/60 border-border text-slate-300',
+}
+const CHIP_ACTIVE: Record<string, string> = {
+  blue:    'bg-blue-600 border-blue-500 text-white',
+  amber:   'bg-amber-600 border-amber-500 text-white',
+  purple:  'bg-purple-600 border-purple-500 text-white',
+  emerald: 'bg-emerald-600 border-emerald-500 text-white',
+  slate:   'bg-slate-500 border-slate-400 text-white',
+}
+
+function dmaCell(above: boolean | null | undefined) {
+  if (above === true)  return <span className="text-emerald-400 text-[10px]">▲ Above</span>
+  if (above === false) return <span className="text-red-400 text-[10px]">▼ Below</span>
+  return <span className="text-slate-500 text-[10px]">—</span>
+}
+function macdCell(bullish: boolean | null | undefined) {
+  if (bullish === true)  return <span className="text-emerald-400 text-[10px]">↑ Bull</span>
+  if (bullish === false) return <span className="text-red-400 text-[10px]">↓ Bear</span>
+  return <span className="text-slate-500 text-[10px]">—</span>
+}
+
+interface ScreenerTabProps {
+  onBuildCampaign: (stocks: { pick: AIPick; allocation: number }[]) => void
+}
+
+function ScreenerTab({ onBuildCampaign }: ScreenerTabProps) {
+  const [activeChips, setActiveChips] = useState<string[]>([])
+  const [results, setResults]         = useState<ScreenResult[]>([])
+  const [loading, setLoading]         = useState(false)
+  const [error, setError]             = useState<string | null>(null)
+  const [selected, setSelected]       = useState<Set<string>>(new Set())
+  const [screened, setScreened]       = useState(false)
+
+  const toggleChip = (chip: string) =>
+    setActiveChips(prev => prev.includes(chip) ? prev.filter(c => c !== chip) : [...prev, chip])
+
+  const screen = async () => {
+    setLoading(true); setError(null); setSelected(new Set())
+    try {
+      const data = await api.post('/stock-trader/screen', { chips: activeChips })
+      setResults(data.results || [])
+      setScreened(true)
+    } catch (e: any) {
+      setError(e.message || 'Screener failed')
+    }
+    setLoading(false)
+  }
+
+  const toggleSelect = (sym: string) => {
+    setSelected(prev => {
+      const s = new Set(prev)
+      s.has(sym) ? s.delete(sym) : s.add(sym)
+      return s
+    })
+  }
+
+  const handleBuild = () => {
+    const picks = results.filter(r => selected.has(r.symbol))
+    if (!picks.length) return
+    const base = Math.floor(100 / picks.length)
+    const rem  = 100 - base * picks.length
+    const campaignPicks = picks.map((r, i) => ({
+      pick: {
+        symbol:            r.symbol,
+        sector:            r.sector || '',
+        cap_type:          '',
+        conviction:        'MEDIUM' as const,
+        current_price:     r.current_price,
+        pct_from_52w_high: r.pct_from_52w_high || 0,
+        decline_reason:    '',
+        recovery_catalyst: '',
+        risks:             '',
+        justification:     `Screened: ${activeChips.join(' + ') || 'All stocks'}`,
+        hold_horizon:      '1 week',
+      },
+      allocation: i < picks.length - 1 ? base : base + rem,
+    }))
+    onBuildCampaign(campaignPicks)
+  }
+
+  const groupColor = (chip: string) => {
+    for (const g of CHIP_GROUPS) {
+      if ((g.chips as readonly string[]).includes(chip)) return g.color
+    }
+    return 'slate'
+  }
+
+  return (
+    <div className="space-y-5">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-white font-semibold">Rule-based Stock Screener</h2>
+          <p className="text-xs text-muted mt-0.5">Toggle filters (AND logic) to find stocks likely to move in the next 1 week</p>
+        </div>
+        <button onClick={screen} disabled={loading}
+          className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm rounded-lg font-semibold transition">
+          {loading ? 'Screening…' : 'Screen ▶'}
+        </button>
+      </div>
+
+      {/* Filter chips */}
+      <div className="space-y-3">
+        {CHIP_GROUPS.map(group => (
+          <div key={group.label}>
+            <div className="text-[10px] text-muted uppercase tracking-wider mb-1.5">{group.label}</div>
+            <div className="flex flex-wrap gap-2">
+              {group.chips.map(chip => {
+                const isActive = activeChips.includes(chip)
+                return (
+                  <button key={chip} onClick={() => toggleChip(chip)}
+                    className={`px-3 py-1 rounded-full text-xs border font-medium transition
+                      ${isActive ? CHIP_ACTIVE[group.color] : CHIP_COLOR[group.color]}`}>
+                    {chip}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Active filters summary */}
+      {activeChips.length > 0 && (
+        <div className="flex items-center gap-2 text-xs text-slate-400">
+          <span>Filters:</span>
+          {activeChips.map(c => (
+            <span key={c} className={`px-2 py-0.5 rounded text-[10px] border ${CHIP_COLOR[groupColor(c)]}`}>{c}</span>
+          ))}
+          <button onClick={() => setActiveChips([])} className="text-slate-500 hover:text-slate-300 text-[10px] ml-1">clear all</button>
+        </div>
+      )}
+
+      {error && <div className="bg-red-900/20 border border-red-700/30 rounded-lg p-3 text-sm text-red-400">{error}</div>}
+
+      {/* Results */}
+      {screened && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="text-sm text-white font-medium">
+              {results.length} match{results.length !== 1 ? 'es' : ''}
+              {activeChips.length === 0 && <span className="text-muted text-xs ml-2">(all stocks, no filters)</span>}
+            </div>
+            {selected.size > 0 && (
+              <button onClick={handleBuild}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg font-semibold transition">
+                Build Campaign ({selected.size} stock{selected.size > 1 ? 's' : ''}) →
+              </button>
+            )}
+          </div>
+
+          {results.length === 0 ? (
+            <div className="text-center py-12 text-muted text-sm">
+              No stocks match the selected filters. Try fewer or different filters.
+            </div>
+          ) : (
+            <div className="overflow-x-auto rounded-xl border border-border">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="bg-slate-800/60 text-muted">
+                    <th className="px-3 py-2 text-left w-8"></th>
+                    <th className="px-3 py-2 text-left">Symbol</th>
+                    <th className="px-3 py-2 text-left hidden sm:table-cell">Sector</th>
+                    <th className="px-3 py-2 text-right">Price</th>
+                    <th className="px-3 py-2 text-right">RSI</th>
+                    <th className="px-3 py-2 text-right">5d Ret</th>
+                    <th className="px-3 py-2 text-center">vs 50 DMA</th>
+                    <th className="px-3 py-2 text-center">vs 200 DMA</th>
+                    <th className="px-3 py-2 text-center">MACD</th>
+                    <th className="px-3 py-2 text-center">↓ Days</th>
+                    <th className="px-3 py-2 text-right hidden md:table-cell">52W Draw</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {results.map(r => {
+                    const isSel = selected.has(r.symbol)
+                    return (
+                      <tr key={r.symbol}
+                        onClick={() => toggleSelect(r.symbol)}
+                        className={`border-t border-border/40 cursor-pointer transition
+                          ${isSel ? 'bg-blue-950/30' : 'hover:bg-slate-800/40'}`}>
+                        <td className="px-3 py-2">
+                          <input type="checkbox" readOnly checked={isSel}
+                            className="w-3 h-3 accent-blue-500 pointer-events-none" />
+                        </td>
+                        <td className="px-3 py-2">
+                          <div className="font-semibold text-white">{r.symbol}</div>
+                        </td>
+                        <td className="px-3 py-2 text-slate-400 hidden sm:table-cell">{r.sector || '—'}</td>
+                        <td className="px-3 py-2 text-right text-white font-mono">₹{fmt(r.current_price, 1)}</td>
+                        <td className="px-3 py-2 text-right">
+                          <span className={`font-mono ${(r.rsi || 50) < 35 ? 'text-emerald-400' : (r.rsi || 50) > 65 ? 'text-red-400' : 'text-slate-300'}`}>
+                            {r.rsi != null ? r.rsi : '—'}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          <span className={`font-mono ${(r.ret_5d || 0) > 0 ? 'text-emerald-400' : (r.ret_5d || 0) < 0 ? 'text-red-400' : 'text-slate-300'}`}>
+                            {r.ret_5d != null ? `${r.ret_5d > 0 ? '+' : ''}${r.ret_5d}%` : '—'}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 text-center">{dmaCell(r.above_50_dma)}</td>
+                        <td className="px-3 py-2 text-center">{dmaCell(r.above_200_dma)}</td>
+                        <td className="px-3 py-2 text-center">{macdCell(r.macd_bullish)}</td>
+                        <td className="px-3 py-2 text-center">
+                          <span className={`font-mono ${(r.consecutive_down_days || 0) >= 2 ? 'text-amber-400' : 'text-slate-400'}`}>
+                            {r.consecutive_down_days ?? 0}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 text-right font-mono hidden md:table-cell">
+                          <span className={(r.pct_from_52w_high || 0) < -15 ? 'text-red-400' : 'text-slate-400'}>
+                            {r.pct_from_52w_high != null ? `${r.pct_from_52w_high}%` : '—'}
+                          </span>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {!screened && !loading && (
+        <div className="text-center py-16 text-muted text-sm">
+          Select filters above and click <span className="text-white font-medium">Screen ▶</span> to find stocks
         </div>
       )}
     </div>
@@ -595,8 +859,41 @@ function CampaignBuilderModal({ selectedPicks, selectedEtfs, onClose, onCreated 
   const [saving, setSaving]   = useState(false)
   const [err, setErr]         = useState('')
 
-  // Split config (only relevant when both stocks and ETFs are present)
-  const hasMixed = selectedPicks.length > 0 && selectedEtfs.length > 0
+  // Manual stock/ETF addition (tab: 'stock' | 'etf')
+  const [manualStocks, setManualStocks] = useState<Array<{ symbol: string; name: string; sector: string; allocation: number }>>([])
+  const [manualEtfs,   setManualEtfs]   = useState<Array<{ symbol: string; name: string; allocation: number }>>([])
+  const [manualSelected, setManualSelected] = useState<{ symbol: string; name: string; sector: string } | null>(null)
+  const [manualAlloc, setManualAlloc] = useState<string>('10')
+  const [addType, setAddType] = useState<'stock' | 'etf'>('stock')
+  const [manualOpen, setManualOpen] = useState(true)
+
+  const handleAddManual = () => {
+    if (!manualSelected) return
+    const alloc = Math.max(1, Math.min(99, parseInt(manualAlloc, 10) || 10))
+    if (addType === 'etf') {
+      setManualEtfs(prev => {
+        if (prev.find(s => s.symbol === manualSelected.symbol)) return prev
+        return [...prev, { symbol: manualSelected.symbol, name: manualSelected.name, allocation: alloc }]
+      })
+    } else {
+      setManualStocks(prev => {
+        if (prev.find(s => s.symbol === manualSelected.symbol)) return prev
+        return [...prev, { ...manualSelected, allocation: alloc }]
+      })
+    }
+    setManualSelected(null)
+    setManualAlloc('10')
+  }
+
+  const removeManual = (sym: string) =>
+    setManualStocks(prev => prev.filter(s => s.symbol !== sym))
+  const removeManualEtf = (sym: string) =>
+    setManualEtfs(prev => prev.filter(s => s.symbol !== sym))
+
+  // Split config — relevant when both stocks and ETFs are present (from any source)
+  const hasAnyStocks = selectedPicks.length > 0 || manualStocks.length > 0
+  const hasAnyEtfs   = selectedEtfs.length > 0  || manualEtfs.length > 0
+  const hasMixed     = hasAnyStocks && hasAnyEtfs
   const [splitEnabled, setSplitEnabled] = useState(hasMixed)
   const [stocksPct, setStocksPct] = useState(50)
 
@@ -655,10 +952,22 @@ function CampaignBuilderModal({ selectedPicks, selectedEtfs, onClose, onCreated 
   const totalChunkPct = chunkPcts.slice(0, numChunks).reduce((a, b) => a + b, 0)
   const bufferPct = 100 - totalChunkPct
 
+  // Live allocation totals for validation feedback
+  const stockAllocTotal = selectedPicks.reduce((a, { allocation }) => a + allocation, 0)
+                        + manualStocks.reduce((a, s) => a + s.allocation, 0)
+  const etfAllocTotal   = selectedEtfs.reduce((a, { allocation }) => a + allocation, 0)
+                        + manualEtfs.reduce((a, s) => a + s.allocation, 0)
+  const stockAllocOk = stockAllocTotal === 0 || (stockAllocTotal >= 99 && stockAllocTotal <= 101)
+  const etfAllocOk   = etfAllocTotal   === 0 || (etfAllocTotal   >= 99 && etfAllocTotal   <= 101)
+  const hasAnyItems  = stockAllocTotal > 0 || etfAllocTotal > 0
+
   const handleCreate = async () => {
     if (!fund || isNaN(Number(fund)) || Number(fund) <= 0) { setErr('Enter a valid fund amount'); return }
     if (fundErr) { setErr(fundErr); return }
     if (totalChunkPct > 100) { setErr(`Chunk percentages sum to ${totalChunkPct}%, must be ≤ 100%`); return }
+    if (!hasAnyItems) { setErr('Add at least one stock or ETF'); return }
+    if (!stockAllocOk) { setErr(`Stock allocations sum to ${stockAllocTotal}% — must be 100%`); return }
+    if (!etfAllocOk)   { setErr(`ETF allocations sum to ${etfAllocTotal}% — must be 100%`); return }
     if (hasMixed && splitEnabled && (stocksPct < 10 || stocksPct > 90)) { setErr('Split must be between 10-90%'); return }
     setSaving(true); setErr('')
     try {
@@ -681,6 +990,18 @@ function CampaignBuilderModal({ selectedPicks, selectedEtfs, onClose, onCreated 
           justification: pick.justification, conviction: pick.conviction,
           asset_type: 'etf',
         })),
+        ...manualStocks.map(s => ({
+          symbol: s.symbol, display: s.name || s.symbol, sector: s.sector,
+          cap_type: '', allocation_pct: s.allocation,
+          justification: 'Manually selected', conviction: 'MEDIUM',
+          asset_type: 'stock',
+        })),
+        ...manualEtfs.map(s => ({
+          symbol: s.symbol, display: s.name || s.symbol, sector: 'ETF',
+          cap_type: 'ETF', allocation_pct: s.allocation,
+          justification: 'Manually selected ETF', conviction: 'MEDIUM',
+          asset_type: 'etf',
+        })),
       ]
       const split_config = (hasMixed && splitEnabled)
         ? { stocks_pct: stocksPct, etfs_pct: 100 - stocksPct }
@@ -696,7 +1017,7 @@ function CampaignBuilderModal({ selectedPicks, selectedEtfs, onClose, onCreated 
         stocks,
       })
       onCreated()
-    } catch (e: any) { setErr(e.message) }
+    } catch (e: any) { setErr(e.response?.data?.error || e.message) }
     setSaving(false)
   }
 
@@ -741,6 +1062,30 @@ function CampaignBuilderModal({ selectedPicks, selectedEtfs, onClose, onCreated 
                   </div>
                 ))}
               </div>
+            </div>
+          )}
+
+          {/* Allocation balance indicator */}
+          {hasAnyItems && (
+            <div className={`flex gap-3 rounded-lg px-3 py-2 text-xs border ${
+              stockAllocOk && etfAllocOk
+                ? 'bg-emerald-900/20 border-emerald-700/30 text-emerald-300'
+                : 'bg-amber-900/20 border-amber-700/40 text-amber-300'
+            }`}>
+              {stockAllocTotal > 0 && (
+                <span>
+                  Stocks: <span className={`font-mono font-bold ${stockAllocOk ? 'text-emerald-400' : 'text-red-400'}`}>{stockAllocTotal}%</span>
+                  {!stockAllocOk && <span className="text-red-400"> ← must be 100%</span>}
+                </span>
+              )}
+              {stockAllocTotal > 0 && etfAllocTotal > 0 && <span className="text-slate-600">·</span>}
+              {etfAllocTotal > 0 && (
+                <span>
+                  ETFs: <span className={`font-mono font-bold ${etfAllocOk ? 'text-purple-400' : 'text-red-400'}`}>{etfAllocTotal}%</span>
+                  {!etfAllocOk && <span className="text-red-400"> ← must be 100%</span>}
+                </span>
+              )}
+              {stockAllocOk && etfAllocOk && <span className="ml-auto">✓ Allocations balanced</span>}
             </div>
           )}
 
@@ -968,9 +1313,79 @@ function CampaignBuilderModal({ selectedPicks, selectedEtfs, onClose, onCreated 
           {err && <div className="text-red-400 text-xs bg-red-900/20 rounded p-2">{err}</div>}
         </div>
 
+        {/* ── Manual Add Section — OUTSIDE overflow-y-auto so dropdown is not clipped ── */}
+        <div className="px-5 py-3 border-t border-border/60 bg-slate-900/80">
+          <button onClick={() => setManualOpen(o => !o)}
+            className="w-full flex items-center justify-between text-sm font-semibold text-blue-300 hover:text-blue-200 transition">
+            <span>+ Add Stocks / ETFs Manually</span>
+            <span className="text-blue-500/60 text-xs">{manualOpen ? '▲' : '▼'}</span>
+          </button>
+          {manualOpen && (
+            <div className="mt-3 space-y-3">
+              {/* Stock / ETF type tab */}
+              <div className="flex gap-1 bg-slate-800/60 rounded-lg p-1 w-fit">
+                {(['stock', 'etf'] as const).map(t => (
+                  <button key={t} onClick={() => { setAddType(t); setManualSelected(null) }}
+                    className={`px-3 py-1 text-xs rounded transition ${addType === t ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}>
+                    {t === 'stock' ? '📈 Stock' : '🏦 ETF'}
+                  </button>
+                ))}
+              </div>
+              <div className="flex gap-2 items-end">
+                <div className="flex-1 relative" style={{ zIndex: 200 }}>
+                  <NseStockSearch
+                    placeholder={addType === 'etf' ? 'Search ETF (e.g. NIFTYBEES, GOLDBEES…)' : 'Search NSE stock (e.g. HDFC, Reliance…)'}
+                    includeEtfIndex={addType === 'etf'}
+                    onSelect={(sym, name, sector) => setManualSelected({ symbol: sym.replace('.NS', ''), name, sector: sector || '' })}
+                  />
+                  {manualSelected && (
+                    <div className="text-[10px] text-emerald-400 mt-1">✓ {manualSelected.symbol} — {manualSelected.name}</div>
+                  )}
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] text-muted">Alloc %</label>
+                  <input type="number" min={1} max={99} value={manualAlloc}
+                    onChange={e => setManualAlloc(e.target.value)}
+                    className="w-20 text-center bg-slate-800 border border-border rounded-lg px-2 py-2 text-sm text-white" />
+                </div>
+                <button onClick={handleAddManual} disabled={!manualSelected}
+                  className="px-3 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-sm rounded-lg transition self-end">
+                  Add
+                </button>
+              </div>
+              {/* Added stocks chips */}
+              {manualStocks.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {manualStocks.map(s => (
+                    <div key={s.symbol} className="flex items-center gap-1 bg-blue-950/60 border border-blue-700/30 rounded px-2 py-0.5 text-xs">
+                      <span className="text-white font-semibold">{s.symbol}</span>
+                      <span className="text-blue-400 font-mono">{s.allocation}%</span>
+                      <button onClick={() => removeManual(s.symbol)} className="text-slate-500 hover:text-red-400 transition">✕</button>
+                    </div>
+                  ))}
+                  <span className="text-[10px] text-slate-500 self-center">Stocks total: {manualStocks.reduce((a, s) => a + s.allocation, 0)}%</span>
+                </div>
+              )}
+              {/* Added ETF chips */}
+              {manualEtfs.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {manualEtfs.map(s => (
+                    <div key={s.symbol} className="flex items-center gap-1 bg-purple-950/60 border border-purple-700/30 rounded px-2 py-0.5 text-xs">
+                      <span className="text-white font-semibold">{s.symbol}</span>
+                      <span className="text-purple-400 font-mono">{s.allocation}%</span>
+                      <button onClick={() => removeManualEtf(s.symbol)} className="text-slate-500 hover:text-red-400 transition">✕</button>
+                    </div>
+                  ))}
+                  <span className="text-[10px] text-slate-500 self-center">ETFs total: {manualEtfs.reduce((a, s) => a + s.allocation, 0)}%</span>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
         <div className="p-5 border-t border-border flex gap-3">
           <button onClick={onClose} className="flex-1 py-2 bg-slate-700 hover:bg-slate-600 text-sm text-white rounded-lg">Cancel</button>
-          <button onClick={handleCreate} disabled={saving || !!fundErr || totalChunkPct > 100}
+          <button onClick={handleCreate} disabled={saving || !!fundErr || totalChunkPct > 100 || !stockAllocOk || !etfAllocOk || !hasAnyItems}
             className="flex-1 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-sm text-white font-semibold rounded-lg">
             {saving ? 'Creating…' : 'Create Campaign'}
           </button>
@@ -1715,7 +2130,7 @@ function CampaignCard({ campaign, onRefresh }: { campaign: Campaign; onRefresh: 
 
 // ── Campaigns Tab ─────────────────────────────────────────────────────────────
 
-function CampaignsTab() {
+function CampaignsTab({ onNewCampaign }: { onNewCampaign?: () => void }) {
   const [campaigns, setCampaigns] = useState<Campaign[]>([])
   const [loading, setLoading]     = useState(false)
 
@@ -1740,14 +2155,23 @@ function CampaignsTab() {
     <div>
       <div className="flex items-center justify-between mb-4">
         <div className="text-sm font-semibold text-white">Active Campaigns</div>
-        <button onClick={load} disabled={loading}
-          className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-xs rounded-lg border border-border transition">
-          {loading ? '⟳' : '⟳ Refresh'}
-        </button>
+        <div className="flex gap-2">
+          {onNewCampaign && (
+            <button onClick={onNewCampaign}
+              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs rounded-lg border border-blue-500 transition font-medium">
+              + New Campaign
+            </button>
+          )}
+          <button onClick={load} disabled={loading}
+            className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-xs rounded-lg border border-border transition">
+            {loading ? '⟳' : '⟳ Refresh'}
+          </button>
+        </div>
       </div>
       {!loading && !campaigns.length && (
         <div className="text-center text-muted text-sm py-12">
-          No campaigns yet. Go to AI Picks → select stocks → Build Campaign.
+          No campaigns yet. Click <span className="text-blue-400 font-medium">+ New Campaign</span> to build one manually,
+          or go to AI Picks / Screener to select stocks first.
         </div>
       )}
       <div className="flex flex-col gap-4">
@@ -1966,7 +2390,7 @@ function ReportsTab() {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function StockTrader() {
-  const [tab, setTab] = useState<'picks' | 'etf-picks' | 'campaigns' | 'positions' | 'reports'>('picks')
+  const [tab, setTab] = useState<'picks' | 'etf-picks' | 'screener' | 'campaigns' | 'positions' | 'reports'>('picks')
 
   // Shared state for campaign builder — selected from both AI Picks and ETF Picks tabs
   const [pendingStocks, setPendingStocks] = useState<{ pick: AIPick; allocation: number }[]>([])
@@ -1988,6 +2412,7 @@ export default function StockTrader() {
   const tabs = [
     { key: 'picks',     label: 'AI Picks' },
     { key: 'etf-picks', label: 'ETF Picks' },
+    { key: 'screener',  label: 'Screener' },
     { key: 'campaigns', label: 'Campaigns' },
     { key: 'positions', label: 'Positions' },
     { key: 'reports',   label: 'Reports' },
@@ -2038,7 +2463,8 @@ export default function StockTrader() {
 
       {tab === 'picks'     && <PicksTab onBuildCampaign={handleStocksBuild} />}
       {tab === 'etf-picks' && <ETFPicksTab onBuildCampaign={handleEtfsBuild} />}
-      {tab === 'campaigns' && <CampaignsTab />}
+      {tab === 'screener'  && <ScreenerTab onBuildCampaign={handleStocksBuild} />}
+      {tab === 'campaigns' && <CampaignsTab onNewCampaign={() => { setPendingStocks([]); setPendingEtfs([]); setShowModal(true) }} />}
       {tab === 'positions' && <PositionsTab />}
       {tab === 'reports'   && <ReportsTab />}
 

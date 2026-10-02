@@ -117,6 +117,33 @@ def clear_session(username: str, broker: str) -> None:
             _save(data)
 
 
+def auto_reconnect(username: str, broker: str) -> dict | None:
+    """Re-login using stored credentials (totp_secret seed auto-generates TOTP).
+    Returns new session dict on success, None if creds missing or login fails."""
+    creds = get_raw_creds(username, broker)
+    required = {
+        "angelone": ("api_key", "client_id", "password", "totp_secret"),
+        "kotak":    ("consumer_key", "consumer_secret", "mobile", "mpin", "totp_secret"),
+    }
+    needed = required.get(broker, ())
+    if not all(creds.get(k) for k in needed):
+        return None
+    try:
+        if broker == "angelone":
+            from brokers.angel_one import AngelOneClient
+            c = AngelOneClient({}, cache_key=f"{username}:{broker}")
+        elif broker == "kotak":
+            from brokers.kotak_neo import KotakNeoClient
+            c = KotakNeoClient({}, cache_key=f"{username}:{broker}")
+        else:
+            return None
+        session = c.connect(creds)
+        save_session(username, broker, session)
+        return session
+    except Exception:
+        return None
+
+
 # ── Status helpers ────────────────────────────────────────────────────────────
 
 def get_status(username: str) -> dict:

@@ -425,11 +425,12 @@ function AgentPlanPanel({ symbol, lots }: { symbol: string; lots: number }) {
 
 // ─── Put Plan Panel ───────────────────────────────────────────────────────────
 
-function PutPlanPanel({ plan, onClose, onPaperTrade, onRefetch }: {
+function PutPlanPanel({ plan, onClose, onPaperTrade, onRefetch, onAddToSmartWheel }: {
   plan: PutPlan
   onClose: () => void
   onPaperTrade: (plan: PutPlan, opts: OrderOptions) => void
   onRefetch: (lots: number, strikeOverride: number) => void
+  onAddToSmartWheel?: (symbol: string) => void
 }) {
   const [localLots, setLocalLots]         = useState(plan.lots)
   const [selectedStrike, setSelectedStrike] = useState(plan.put_strike)
@@ -437,6 +438,7 @@ function PutPlanPanel({ plan, onClose, onPaperTrade, onRefetch }: {
   const [phase2Pct, setPhase2Pct]         = useState(3.0)
   const [callLimit, setCallLimit]         = useState(plan.planned_call_premium)
   const [applying, setApplying]           = useState(false)
+  const [addedToSW, setAddedToSW]         = useState(false)
 
   const apply = () => { setApplying(true); onRefetch(localLots, selectedStrike === plan.put_strike ? 0 : selectedStrike) }
 
@@ -865,8 +867,20 @@ function PutPlanPanel({ plan, onClose, onPaperTrade, onRefetch }: {
             className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-semibold">
             📋 Add to Paper Trade — Wheel ({localLots} lot{localLots > 1 ? 's' : ''})
           </button>
-          <button className="flex-1 py-3 bg-slate-700 border border-border text-muted rounded-xl text-sm font-medium cursor-not-allowed opacity-60">
-            🔗 Live Trade (After Angel One)
+          {onAddToSmartWheel && (
+            <button
+              onClick={() => { onAddToSmartWheel(plan.symbol); setAddedToSW(true) }}
+              disabled={addedToSW}
+              className={`py-3 px-4 rounded-xl text-sm font-semibold transition whitespace-nowrap ${
+                addedToSW
+                  ? 'bg-emerald-800 text-emerald-200 cursor-default'
+                  : 'bg-slate-700 hover:bg-blue-700 border border-blue-600/50 text-blue-300 hover:text-white'
+              }`}>
+              {addedToSW ? '✓ In Smart Wheel' : '⚙ Smart Wheel'}
+            </button>
+          )}
+          <button className="py-3 px-4 bg-slate-700 border border-border text-muted rounded-xl text-sm font-medium cursor-not-allowed opacity-60">
+            🔗 Live
           </button>
         </div>
         <div className="text-[10px] text-blue-400 text-center">
@@ -891,12 +905,29 @@ const DEFAULT_WHEEL_CRITERIA = {
   results_days: '7',
 }
 
-export default function Wheel() {
+interface WheelProps {
+  onAddToWheelV2?: (symbol: string) => void
+}
+
+export default function Wheel({ onAddToWheelV2 }: WheelProps = {}) {
   const [results, setResults]           = useState<WheelScanResult[]>([])
   const [loading, setLoading]           = useState(false)
   const [scanned, setScanned]           = useState<number | null>(null)
   const [whyEmpty, setWhyEmpty]         = useState<string | null>(null)
   const [lastUpdated, setLastUpdated]   = useState<Date | null>(null)
+  const [smartWheelAdded, setSmartWheelAdded] = useState<Set<string>>(new Set())
+
+  const addToSmartWheel = async (symbol: string) => {
+    try {
+      const cfg = await client.get('/wheel-v2/config')
+      const wl: string[] = cfg.data.watchlist || []
+      if (!wl.includes(symbol)) {
+        await client.post('/wheel-v2/config', { ...cfg.data, watchlist: [...wl, symbol] })
+      }
+      setSmartWheelAdded(prev => new Set([...prev, symbol]))
+      onAddToWheelV2?.(symbol)
+    } catch { /* silent */ }
+  }
   const [criteria, setCriteria]         = useState(() => {
     try {
       const s = localStorage.getItem(WHEEL_STORAGE_KEY)
@@ -1166,40 +1197,42 @@ export default function Wheel() {
       {/* Assess section */}
       <div className="bg-card border border-border rounded-xl p-4">
         <div className="text-xs font-semibold text-slate-400 mb-2 uppercase tracking-wider">Assess Specific Stocks</div>
-        <div className="flex gap-3 items-start">
-          <div className="flex-1 relative">
-            <NseStockSearch
-              onSelect={(sym, _name) => {
-                const bare = sym.replace('.NS','')
-                if (!assessInput.split(/[\s,]+/).map(s => s.trim().toUpperCase()).includes(bare))
-                  setAssessInput(prev => prev ? prev + ', ' + bare : bare)
-              }}
-              placeholder="Search and add stocks (e.g. VEDL, SBIN, TATASTEEL)"
-            />
-            {assessInput && (
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {assessInput.split(/[\s,]+/).filter(Boolean).map(s => (
-                  <span key={s} className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-950 border border-amber-800 text-score-amber rounded text-xs font-medium">
-                    {s}
-                    <button onClick={() => setAssessInput(assessInput.split(/[\s,]+/).filter(x => x.trim() !== s).join(', '))}
-                      className="text-muted hover:text-score-red ml-0.5">×</button>
-                  </span>
-                ))}
-                <button onClick={() => setAssessInput('')} className="text-[10px] text-muted hover:text-score-red ml-1">Clear all</button>
-              </div>
-            )}
-          </div>
+        {/* Row 1: full-width search */}
+        <div className="w-full mb-2">
+          <NseStockSearch
+            onSelect={(sym, _name) => {
+              const bare = sym.replace('.NS','')
+              if (!assessInput.split(/[\s,]+/).map(s => s.trim().toUpperCase()).includes(bare))
+                setAssessInput(prev => prev ? prev + ', ' + bare : bare)
+            }}
+            placeholder="Search and add stocks (e.g. VEDL, SBIN, TATASTEEL)"
+          />
+          {assessInput && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {assessInput.split(/[\s,]+/).filter(Boolean).map(s => (
+                <span key={s} className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-950 border border-amber-800 text-score-amber rounded text-xs font-medium">
+                  {s}
+                  <button onClick={() => setAssessInput(assessInput.split(/[\s,]+/).filter(x => x.trim() !== s).join(', '))}
+                    className="text-muted hover:text-score-red ml-0.5">×</button>
+                </span>
+              ))}
+              <button onClick={() => setAssessInput('')} className="text-[10px] text-muted hover:text-score-red ml-1">Clear all</button>
+            </div>
+          )}
+        </div>
+        {/* Row 2: opportunity thresholds + assess button */}
+        <div className="flex flex-wrap items-center gap-2">
           {/* Opportunity score thresholds */}
-          <div className="flex items-center gap-2 text-xs text-muted mt-1">
-            <span>🔥 Score 1 if fell ≥</span>
+          <div className="flex items-center gap-2 text-xs text-muted flex-1 min-w-0">
+            <span className="whitespace-nowrap">🔥 Score 1 if fell ≥</span>
             <input type="number" value={oppScore1} onChange={e => setOppScore1(e.target.value)}
               className="w-14 bg-slate-800 border border-border rounded px-1.5 py-0.5 text-white text-xs text-right"
               step="0.5" placeholder="-5" />
-            <span>% · Score 2 if fell ≥</span>
+            <span className="whitespace-nowrap">% · Score 2 if fell ≥</span>
             <input type="number" value={oppScore2} onChange={e => setOppScore2(e.target.value)}
               className="w-14 bg-slate-800 border border-border rounded px-1.5 py-0.5 text-white text-xs text-right"
               step="0.5" placeholder="-2" />
-            <span>% (defaults: -5% / -2%)</span>
+            <span className="whitespace-nowrap">% (defaults: -5% / -2%)</span>
           </div>
           <button onClick={async () => {
             const syms = assessInput.split(/[\s,]+/).map(s => s.trim().toUpperCase()).filter(Boolean)
@@ -1374,10 +1407,22 @@ export default function Wheel() {
                           <span className="text-sm font-bold" style={{ color: scoreToColor(r.score) }}>{r.score}</span>
                         </td>
                         <td className="px-3 py-3">
-                          <button onClick={() => fetchPlan(r.symbol)}
-                            className="px-3 py-1.5 bg-score-amber hover:bg-amber-600 text-white rounded-lg text-xs font-medium whitespace-nowrap">
-                            Plan →
-                          </button>
+                          <div className="flex flex-col gap-1">
+                            <button onClick={() => fetchPlan(r.symbol)}
+                              className="px-3 py-1 bg-score-amber hover:bg-amber-600 text-white rounded-lg text-[11px] font-medium whitespace-nowrap">
+                              📋 Paper Trade
+                            </button>
+                            <button onClick={() => addToSmartWheel(r.symbol)}
+                              className={`px-3 py-1 rounded-lg text-[11px] font-medium whitespace-nowrap transition ${
+                                smartWheelAdded.has(r.symbol)
+                                  ? 'bg-emerald-800 text-emerald-200 cursor-default'
+                                  : 'bg-blue-700 hover:bg-blue-600 text-white'
+                              }`}
+                              disabled={smartWheelAdded.has(r.symbol)}
+                              title="Add to Smart Wheel V2 watchlist">
+                              {smartWheelAdded.has(r.symbol) ? '✓ Smart Wheel' : '⚙ Smart Wheel'}
+                            </button>
+                          </div>
                         </td>
                       </tr>
                       {hasWarnings && (
@@ -1433,6 +1478,7 @@ export default function Wheel() {
           onClose={() => { setPlan(null); setPlanSymbol(null) }}
           onPaperTrade={handlePaperTrade}
           onRefetch={handleRefetch}
+          onAddToSmartWheel={addToSmartWheel}
         />
       )}
     </div>

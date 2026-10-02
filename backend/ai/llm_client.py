@@ -73,7 +73,9 @@ def call_llm(prompt: str, system: str = "", max_tokens: int = 1024) -> str:
         else:
             result = f"[LLM error: {str(e)[:200]}]"
 
-    _set_cached_response(key, result)
+    # Never cache error responses — rate limits reset quickly and auth errors should always retry
+    if not result.startswith('[LLM'):
+        _set_cached_response(key, result)
     return result
 
 
@@ -113,7 +115,7 @@ def _call_openai(prompt: str, system: str, max_tokens: int) -> str:
 
 
 def _call_groq(prompt: str, system: str, max_tokens: int) -> str:
-    """Call Groq API (OpenAI-compatible). Uses llama-3.3-70b-versatile by default."""
+    """Call Groq API (OpenAI-compatible). Disables thinking for Qwen 3 to avoid TPM exhaustion."""
     import openai as oai
     api_key = os.getenv("GROQ_API_KEY", "")
     if not api_key:
@@ -127,11 +129,17 @@ def _call_groq(prompt: str, system: str, max_tokens: int) -> str:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
     model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
-    resp = client.chat.completions.create(
-        model=model,
-        max_tokens=max_tokens,
-        messages=messages,
-    )
+
+    kwargs: dict = {
+        "model":      model,
+        "max_tokens": max_tokens,
+        "messages":   messages,
+    }
+    # Disable thinking mode for Qwen 3 reasoning models — thinking tokens burn TPM very fast
+    if "qwen3" in model.lower() or "qwen/qwen3" in model.lower():
+        kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
+
+    resp = client.chat.completions.create(**kwargs)
     return _strip_thinking(resp.choices[0].message.content or "")
 
 
