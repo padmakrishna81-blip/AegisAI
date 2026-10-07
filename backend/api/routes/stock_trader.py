@@ -305,6 +305,36 @@ async def remove_stock_from_campaign(cid: str, symbol: str, user=Depends(get_cur
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@router.post("/stock-trader/campaign/{cid}/stock")
+async def add_stock_to_campaign(cid: str, body: StockItem, user=Depends(get_current_user)):
+    """Add a new stock or ETF to an existing campaign (starts in 'watching' status)."""
+    try:
+        from data.stock_trader_store import get_campaign, update_campaign
+        c = get_campaign(cid)
+        if not c:
+            return JSONResponse({"error": "Not found"}, status_code=404)
+        if c["username"] != user["username"] and user.get("role") != "admin":
+            return JSONResponse({"error": "Access denied"}, status_code=403)
+
+        if any(s["symbol"] == body.symbol for s in c.get("stocks", [])):
+            return JSONResponse({"error": f"{body.symbol} is already in this campaign"}, status_code=400)
+
+        new_stock = {
+            **body.dict(),
+            "status":        "watching",
+            "chunk1_qty":    0, "chunk1_price": 0.0,
+            "chunk2_qty":    0, "chunk2_price": 0.0,
+            "avg_price":     0.0, "total_qty":  0,
+            "sl_price":      0.0, "current_price": 0.0,
+            "pnl":           0.0, "pnl_pct":    0.0,
+        }
+        updated_stocks = c.get("stocks", []) + [new_stock]
+        result = update_campaign(cid, {"stocks": updated_stocks})
+        return result
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # ── Trade agent actions ───────────────────────────────────────────────────────
 
 @router.post("/stock-trader/campaign/{cid}/reset-errors")

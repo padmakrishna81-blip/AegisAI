@@ -1867,6 +1867,83 @@ function EditCampaignModal({ campaign, onClose, onSaved }: EditProps) {
 
 // ── Campaign Card ─────────────────────────────────────────────────────────────
 
+function AddStockRow({ campaign, onRefresh }: { campaign: Campaign; onRefresh: () => void }) {
+  const [open,       setOpen]       = useState(false)
+  const [pick,       setPick]       = useState<{ symbol: string; name: string; sector: string } | null>(null)
+  const [alloc,      setAlloc]      = useState('10')
+  const [saving,     setSaving]     = useState(false)
+  const [error,      setError]      = useState('')
+
+  const isEtf = pick?.sector === 'ETF'
+
+  const submit = async () => {
+    if (!pick) return
+    const allocNum = Number(alloc)
+    if (!allocNum || allocNum < 1 || allocNum > 100) { setError('Allocation must be 1–100%'); return }
+    setSaving(true); setError('')
+    try {
+      await api.post(`/stock-trader/campaign/${campaign.id}/stock`, {
+        symbol:         pick.symbol.replace('.NS', ''),
+        display:        pick.name || pick.symbol,
+        sector:         pick.sector || '',
+        allocation_pct: allocNum,
+        asset_type:     isEtf ? 'etf' : 'stock',
+        conviction:     'MEDIUM',
+        justification:  'Manually added',
+      })
+      onRefresh()
+      setPick(null); setAlloc('10'); setOpen(false)
+    } catch (e: any) {
+      setError(e?.response?.data?.error || 'Failed to add stock')
+    }
+    setSaving(false)
+  }
+
+  if (!open) return (
+    <div className="px-4 pb-3">
+      <button onClick={() => setOpen(true)}
+        className="text-xs text-blue-400 hover:text-blue-300 border border-blue-800/50 hover:border-blue-600 rounded-lg px-3 py-1.5 transition">
+        + Add Stock / ETF
+      </button>
+    </div>
+  )
+
+  return (
+    <div className="mx-4 mb-3 p-3 bg-slate-800/60 border border-border rounded-xl">
+      <div className="text-xs font-semibold text-slate-300 mb-2">Add Stock or ETF</div>
+      <NseStockSearch
+        includeEtfIndex
+        onSelect={(sym, name, sector) => { setPick({ symbol: sym, name, sector: sector || '' }); setError('') }}
+        placeholder="Search NSE symbol…"
+      />
+      {pick && (
+        <div className="flex items-center gap-2 mt-2">
+          <span className="text-xs text-slate-400">Allocation</span>
+          <input type="number" min={1} max={100} value={alloc}
+            onChange={e => setAlloc(e.target.value)}
+            className="w-16 text-center text-xs bg-slate-700 border border-border rounded px-2 py-1 text-white focus:border-blue-500 focus:outline-none" />
+          <span className="text-xs text-muted">%</span>
+          <button onClick={submit} disabled={saving}
+            className="ml-auto px-3 py-1 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs rounded-lg transition font-medium">
+            {saving ? '…' : 'Add'}
+          </button>
+          <button onClick={() => { setOpen(false); setPick(null); setError('') }}
+            className="px-3 py-1 bg-slate-700 hover:bg-slate-600 text-xs text-slate-300 rounded-lg transition">
+            Cancel
+          </button>
+        </div>
+      )}
+      {!pick && (
+        <button onClick={() => { setOpen(false); setError('') }}
+          className="mt-2 text-xs text-muted hover:text-slate-300">
+          Cancel
+        </button>
+      )}
+      {error && <div className="mt-1 text-xs text-red-400">{error}</div>}
+    </div>
+  )
+}
+
 function CampaignCard({ campaign, onRefresh }: { campaign: Campaign; onRefresh: () => void }) {
   const [expanded, setExpanded] = useState(true)
   const [running,  setRunning]  = useState(false)
@@ -2023,6 +2100,8 @@ function CampaignCard({ campaign, onRefresh }: { campaign: Campaign; onRefresh: 
       {expanded && (
         <div className="border-t border-border/40">
           <StocksTable campaign={campaign} onRefresh={onRefresh} />
+
+          <AddStockRow campaign={campaign} onRefresh={onRefresh} />
 
           <BrokerSessionBanner campaign={campaign} onReset={onRefresh} />
 
