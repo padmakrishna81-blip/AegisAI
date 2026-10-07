@@ -176,6 +176,52 @@ def _wheel_v2_monitor_loop():
 threading.Thread(target=_wheel_v2_monitor_loop, daemon=True).start()
 
 
+def _campaign_monitor_loop():
+    """Run stock-trader campaign cycles every 15 min during NSE market hours (9:15–15:30 IST).
+
+    Fires for every AUTO campaign that has active (non-watching, non-exited) positions.
+    Paper campaigns are skipped — they have no live broker orders to monitor.
+    """
+    import time as _time
+    _last_slot = ""
+    while True:
+        try:
+            now = datetime.now(IST)
+            if now.weekday() < 5:
+                h, m = now.hour, now.minute
+                in_market = (9 < h < 15) or (h == 9 and m >= 15) or (h == 15 and m <= 30)
+                slot = f"{now.date()}_{h}_{(m // 15) * 15}"
+                if in_market and slot != _last_slot:
+                    _last_slot = slot
+                    from data.stock_trader_store import _load
+                    from ai.trade_agent import run_campaign
+                    campaigns = _load().get("campaigns", {})
+                    for cid, campaign in campaigns.items():
+                        if not campaign.get("auto_trade", False):
+                            continue
+                        stocks = campaign.get("stocks", [])
+                        has_active = any(
+                            s.get("status") not in ("watching", "exited", "error")
+                            for s in stocks
+                        )
+                        has_watching = any(s.get("status") == "watching" for s in stocks)
+                        if not (has_active or has_watching):
+                            continue
+                        try:
+                            result = run_campaign(cid)
+                            actions = result.get("actions") or result.get("monitor_actions") or []
+                            acted = [a for a in actions if a.get("action") not in ("HOLD", None)]
+                            if acted:
+                                print(f"[campaign] {campaign.get('name', cid)}: {[a.get('action') for a in acted]}")
+                        except Exception as ce:
+                            print(f"[campaign] {campaign.get('name', cid)} error: {ce}")
+        except Exception as e:
+            print(f"[campaign-monitor] error: {e}")
+        _time.sleep(60)
+
+
+threading.Thread(target=_campaign_monitor_loop, daemon=True).start()
+
 @app.get("/")
 async def root():
     return {"message": "AegisAI Investment Intelligence Platform", "version": "1.0.0"}
