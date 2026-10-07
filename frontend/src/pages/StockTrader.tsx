@@ -2478,8 +2478,102 @@ function PositionsTab() {
 
 // ── Reports Tab ───────────────────────────────────────────────────────────────
 
+interface ReportData {
+  year_month: string
+  month_name: string
+  report_text: string
+  generated_at: string
+  portfolio_totals?: {
+    total_allocated: number
+    total_consumed: number
+    total_remaining: number
+    total_booked_pnl: number
+    total_unrealised_pnl: number
+    total_pnl: number
+  }
+  chunk2_candidates?: { symbol: string; sector: string; pnl_pct: number; campaign: string }[]
+}
+
+function ReportRenderer({ text }: { text: string }) {
+  const lines = text.split('\n')
+  const elements: React.ReactNode[] = []
+  let i = 0
+
+  while (i < lines.length) {
+    const line = lines[i]
+
+    // Section header ### …
+    if (line.startsWith('### ')) {
+      elements.push(
+        <h3 key={i} className="text-sm font-semibold text-blue-300 mt-5 mb-2 border-b border-slate-700 pb-1">
+          {line.replace(/^### /, '')}
+        </h3>
+      )
+      i++
+      continue
+    }
+
+    // Pipe table — collect consecutive rows
+    if (line.includes('|') && line.trim().startsWith('|')) {
+      const tableLines: string[] = []
+      while (i < lines.length && lines[i].includes('|') && lines[i].trim().startsWith('|')) {
+        if (!lines[i].match(/^\s*\|[-:| ]+\|\s*$/)) tableLines.push(lines[i])
+        i++
+      }
+      if (tableLines.length) {
+        const rows = tableLines.map(r => r.split('|').map(c => c.trim()).filter((_, idx, arr) => idx > 0 && idx < arr.length - 1))
+        elements.push(
+          <div key={`t${i}`} className="overflow-x-auto my-3">
+            <table className="w-full text-xs border-collapse">
+              {rows.map((cols, ri) => (
+                <tr key={ri} className={ri === 0 ? 'bg-slate-700/60 text-slate-200 font-semibold' : ri % 2 === 0 ? 'bg-slate-800/40 text-slate-300' : 'text-slate-300'}>
+                  {cols.map((c, ci) => (
+                    <td key={ci} className="px-2 py-1.5 border border-slate-700/50 whitespace-nowrap">
+                      {c}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </table>
+          </div>
+        )
+      }
+      continue
+    }
+
+    // Bullet point
+    if (line.match(/^[-•*] /)) {
+      const bullets: string[] = []
+      while (i < lines.length && lines[i].match(/^[-•*] /)) {
+        bullets.push(lines[i].replace(/^[-•*] /, ''))
+        i++
+      }
+      elements.push(
+        <ul key={`b${i}`} className="my-2 space-y-1">
+          {bullets.map((b, bi) => (
+            <li key={bi} className="flex gap-2 text-xs text-slate-300">
+              <span className="text-blue-400 mt-0.5 flex-shrink-0">▸</span>
+              <span>{b}</span>
+            </li>
+          ))}
+        </ul>
+      )
+      continue
+    }
+
+    // Blank line
+    if (!line.trim()) { elements.push(<div key={i} className="h-1" />); i++; continue }
+
+    // Regular paragraph line
+    elements.push(<p key={i} className="text-xs text-slate-300 leading-relaxed">{line}</p>)
+    i++
+  }
+
+  return <div className="space-y-0.5">{elements}</div>
+}
+
 function ReportsTab() {
-  const [reports,    setReports]    = useState<{ year_month: string; month_name: string; report_text: string; generated_at: string }[]>([])
+  const [reports,    setReports]    = useState<ReportData[]>([])
   const [selected,   setSelectedR]  = useState<string | null>(null)
   const [generating, setGenerating] = useState(false)
   const [loading,    setLoading]    = useState(false)
@@ -2506,6 +2600,7 @@ function ReportsTab() {
   }
 
   const active = reports.find(r => r.year_month === selected)
+  const pt = active?.portfolio_totals
 
   return (
     <div className="flex gap-4 h-full">
@@ -2538,6 +2633,7 @@ function ReportsTab() {
           ? <p className="text-muted text-sm text-center py-8">Select a report or generate one</p>
           : (
             <>
+              {/* Header row */}
               <div className="flex items-center justify-between mb-4">
                 <div className="text-white font-semibold">{active.month_name}</div>
                 <div className="flex items-center gap-3">
@@ -2550,14 +2646,53 @@ function ReportsTab() {
                   </button>
                 </div>
               </div>
-              {active.report_text?.startsWith('[LLM') && (
-                <div className="mb-4 bg-amber-950/50 border border-amber-800/60 rounded-lg px-4 py-3 text-xs text-amber-300">
-                  <strong>LLM error in this report.</strong> Fix your API key in Settings, then click <strong>↺ Regenerate</strong> above to overwrite it with a fresh report.
+
+              {/* Capital stat cards (from structured data) */}
+              {pt && (
+                <div className="grid grid-cols-3 gap-2 mb-4">
+                  {[
+                    { label: 'Allocated', value: pt.total_allocated, color: 'text-slate-200' },
+                    { label: 'Deployed',  value: pt.total_consumed,   color: 'text-amber-300' },
+                    { label: 'Remaining', value: pt.total_remaining,  color: 'text-blue-300' },
+                    { label: 'Booked P&L',   value: pt.total_booked_pnl,    color: pt.total_booked_pnl   >= 0 ? 'text-score-green' : 'text-score-red' },
+                    { label: 'Unrealised',   value: pt.total_unrealised_pnl, color: pt.total_unrealised_pnl >= 0 ? 'text-score-green' : 'text-score-red' },
+                    { label: 'Total P&L',    value: pt.total_pnl,            color: pt.total_pnl >= 0 ? 'text-score-green' : 'text-score-red' },
+                  ].map(s => (
+                    <div key={s.label} className="bg-slate-700/40 rounded-lg px-3 py-2 border border-slate-600/40">
+                      <div className="text-[10px] text-muted">{s.label}</div>
+                      <div className={`text-sm font-semibold ${s.color}`}>
+                        ₹{s.value.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
-              <div className="text-sm text-slate-300 whitespace-pre-wrap leading-relaxed">
-                {active.report_text}
-              </div>
+
+              {/* Chunk 2 warning strip */}
+              {active.chunk2_candidates && active.chunk2_candidates.length > 0 && (
+                <div className="mb-4 bg-amber-950/40 border border-amber-800/50 rounded-lg px-4 py-2">
+                  <div className="text-[10px] font-semibold text-amber-300 mb-1">
+                    ⚠ {active.chunk2_candidates.length} stock{active.chunk2_candidates.length > 1 ? 's' : ''} at Chunk 2 trigger
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {active.chunk2_candidates.map(c => (
+                      <span key={c.symbol} className="text-[10px] bg-amber-900/50 text-amber-200 px-2 py-0.5 rounded">
+                        {c.symbol} {c.pnl_pct.toFixed(1)}%
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* LLM error banner */}
+              {active.report_text?.startsWith('[LLM') && (
+                <div className="mb-4 bg-amber-950/50 border border-amber-800/60 rounded-lg px-4 py-3 text-xs text-amber-300">
+                  <strong>LLM error in this report.</strong> Fix your API key in Settings, then click <strong>↺ Regenerate</strong> above.
+                </div>
+              )}
+
+              {/* Rendered report body */}
+              <ReportRenderer text={active.report_text || ''} />
             </>
           )
         }

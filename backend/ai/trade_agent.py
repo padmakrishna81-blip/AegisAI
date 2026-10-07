@@ -695,42 +695,197 @@ def generate_monthly_report(username: str) -> dict:
     from ai.llm_client import call_llm
 
     campaigns = list_campaigns(username)
-    summary, all_logs = [], []
-    for c in campaigns:
-        logs = get_trade_log(c["id"])
-        all_logs.extend(logs[-30:])
-        stocks  = c.get("stocks", [])
-        booked  = sum(float(s.get("booked_pnl") or 0) for s in stocks if s.get("status") == "exited")
-        unreal  = sum(float(s.get("pnl") or 0) for s in stocks if s.get("status") not in ("exited", "watching", "error"))
-        summary.append({
-            "name": c.get("name", c["id"]), "status": c.get("status"),
-            "reserved_fund": c.get("reserved_fund", 0),
-            "cycle": c.get("cycle", 1),
-            "booked_pnl": round(booked, 2), "unrealised_pnl": round(unreal, 2),
-            "active_positions": len([s for s in stocks if s.get("status") not in ("exited", "watching", "error")]),
-        })
-
     today = datetime.now()
     ym    = today.strftime("%Y-%m")
     mn    = today.strftime("%B %Y")
 
-    prompt = f"""Generate a monthly equity portfolio report for {mn}.
-Campaign summary: {summary}
-Recent trades (last 20): {all_logs[-20:]}
+    # ── 1. Gather live prices for all active positions ────────────────────────
+    active_symbols: list[str] = []
+    for c in campaigns:
+        for s in c.get("stocks", []):
+            if s.get("status") not in ("watching", "exited", "error"):
+                active_symbols.append(s["symbol"])
+    live_prices: dict[str, float] = {}
+    if active_symbols:
+        try:
+            live_prices = _batch_prices(list(set(active_symbols)))
+        except Exception:
+            pass
 
-Write a professional, data-driven monthly report covering:
-1. Executive Summary  2. Portfolio Performance  3. Strategy Effectiveness
-4. Market Conditions Impact  5. Pending Actions  6. Outlook for next month
-Use ₹ for currency. Format with clear headings."""
+    # ── 2. Build per-campaign stats ───────────────────────────────────────────
+    all_logs: list[dict] = []
+    campaign_stats: list[dict] = []
+    portfolio_totals = {
+        "total_allocated": 0.0,
+        "total_consumed": 0.0,
+        "total_booked_pnl": 0.0,
+        "total_unrealised_pnl": 0.0,
+    }
+    sector_map: dict[str, dict] = {}   # sector → {allocated, unrealised_pnl, stocks}
+    all_stock_rows: list[dict] = []
+    chunk2_candidates: list[dict] = []
+
+    for c in campaigns:
+        logs = get_trade_log(c["id"])
+        all_logs.extend(logs[-20:])
+
+        reserved      = float(c.get("reserved_fund", 0))
+        chunk1_dep    = float(c.get("chunk1_deployed") or 0)
+        remaining     = max(reserved - chunk1_dep, 0.0)
+
+        stocks        = c.get("stocks", [])
+        split         = c.get("split_config") or {}
+        stocks_pct    = float(split.get("stocks_pct", 100)) / 100
+        etfs_pct      = float(split.get("etfs_pct", 0)) / 100
+
+        booked_pnl   = 0.0
+        unrealised   = 0.0
+        stock_rows: list[dict] = []
+
+        for s in stocks:
+            sym    = s.get("symbol", "")
+            status = s.get("status", "watching")
+            sector = s.get("sector") or "Unknown"
+            asset  = s.get("asset_type", "stock")
+            alloc  = float(s.get("allocation_pct", 0))
+            qty    = int(s.get("total_qty") or 0)
+            avg_p  = float(s.get("avg_price") or 0)
+            cur_p  = live_prices.get(sym) or float(s.get("current_price") or 0)
+            invested = round(avg_p * qty, 2)
+            pnl    = round((cur_p - avg_p) * qty, 2) if qty and avg_p and cur_p else 0.0
+            pnl_pct = round(((cur_p - avg_p) / avg_p) * 100, 2) if avg_p else 0.0
+
+            if status == "exited":
+                bp = float(s.get("booked_pnl") or 0)
+                booked_pnl += bp
+            elif status not in ("watching", "error"):
+                unrealised += pnl
+
+                # Sector rollup
+                if sector not in sector_map:
+                    sector_map[sector] = {"stocks": [], "invested": 0.0, "unrealised_pnl": 0.0}
+                sector_map[sector]["stocks"].append(sym)
+                sector_map[sector]["invested"] = round(sector_map[sector]["invested"] + invested, 2)
+                sector_map[sector]["unrealised_pnl"] = round(sector_map[sector]["unrealised_pnl"] + pnl, 2)
+
+                # Chunk 2 candidates: unrealised loss > 3% (approaching averaging trigger)
+                if pnl_pct <= -3.0:
+                    chunk2_candidates.append({
+                        "symbol": sym, "sector": sector,
+                        "avg_price": avg_p, "current_price": cur_p,
+                        "pnl_pct": pnl_pct, "campaign": c.get("name", c["id"])
+                    })
+
+                stock_rows.append({
+                    "symbol":        sym,
+                    "name":          s.get("display", sym),
+                    "sector":        sector,
+                    "asset_type":    asset,
+                    "status":        status,
+                    "allocation_pct": alloc,
+                    "avg_price":     avg_p,
+                    "current_price": cur_p,
+                    "qty":           qty,
+                    "invested":      invested,
+                    "pnl":           round(pnl, 2),
+                    "pnl_pct":       pnl_pct,
+                })
+                all_stock_rows.append({**stock_rows[-1], "campaign": c.get("name", c["id"])})
+
+        portfolio_totals["total_allocated"]      += reserved
+        portfolio_totals["total_consumed"]       += chunk1_dep
+        portfolio_totals["total_booked_pnl"]     += booked_pnl
+        portfolio_totals["total_unrealised_pnl"] += unrealised
+
+        campaign_stats.append({
+            "name":            c.get("name", c["id"]),
+            "status":          c.get("status"),
+            "auto_trade":      c.get("auto_trade", False),
+            "reserved_fund":   reserved,
+            "chunk1_deployed": round(chunk1_dep, 2),
+            "remaining":       round(remaining, 2),
+            "booked_pnl":      round(booked_pnl, 2),
+            "unrealised_pnl":  round(unrealised, 2),
+            "active_positions": len(stock_rows),
+            "stocks":          stock_rows,
+        })
+
+    portfolio_totals = {k: round(v, 2) for k, v in portfolio_totals.items()}
+    portfolio_totals["total_remaining"] = round(
+        portfolio_totals["total_allocated"] - portfolio_totals["total_consumed"], 2
+    )
+    portfolio_totals["total_pnl"] = round(
+        portfolio_totals["total_booked_pnl"] + portfolio_totals["total_unrealised_pnl"], 2
+    )
+
+    # ── 3. Prompt LLM ─────────────────────────────────────────────────────────
+    prompt = f"""You are a portfolio analyst generating a structured equity report for {mn}.
+
+## Portfolio Capital Summary
+- Total Allocated Capital: ₹{portfolio_totals['total_allocated']:,.0f}
+- Capital Deployed (Chunk 1): ₹{portfolio_totals['total_consumed']:,.0f}
+- Capital Remaining (available for Chunk 2 / new entries): ₹{portfolio_totals['total_remaining']:,.0f}
+- Booked P&L (from exited positions): ₹{portfolio_totals['total_booked_pnl']:,.2f}
+- Unrealised P&L (mark-to-market): ₹{portfolio_totals['total_unrealised_pnl']:,.2f}
+- Total P&L: ₹{portfolio_totals['total_pnl']:,.2f}
+
+## Active Positions (all campaigns)
+{all_stock_rows}
+
+## Chunk 2 Averaging Candidates (unrealised loss ≥ -3%)
+{chunk2_candidates if chunk2_candidates else "None — all positions within acceptable range"}
+
+## Sector Exposure
+{sector_map}
+
+## Campaign Details
+{campaign_stats}
+
+## Recent Trade Log (last 20 events)
+{all_logs[-20:]}
+
+---
+Generate the report in this EXACT structure with these section headers (use ₹ for INR):
+
+### Executive Summary
+2–3 sentence overview of portfolio health this month.
+
+### Capital Allocation
+A plain-text table with columns: Campaign | Allocated | Deployed | Remaining | Mode
+Then one line showing portfolio totals.
+
+### Stock Performance
+A plain-text table with columns: Symbol | Sector | Avg Price | CMP | Qty | Invested | P&L | P&L% | 5-Day Outlook
+For "5-Day Outlook": based on the stock's sector momentum and current P&L trend, give a brief directional view (e.g. "Bullish — IT sector tailwinds", "Cautious — near averaging trigger", "Hold — stable").
+
+### Chunk 2 Reserve Candidates
+List the stocks that are at or approaching the -3% averaging trigger. For each: Symbol, current loss%, recommended action (average down / watch / exit), and the approximate capital needed from the reserve fund.
+
+### Sector Analysis
+Brief table: Sector | No. of Stocks | Invested | Unrealised P&L | Comment
+
+### Portfolio Insights
+4–6 bullet points with actionable insights, risks, and opportunities specific to this portfolio.
+
+### Outlook for Next Month
+2–3 sentences."""
 
     try:
         text = call_llm(prompt,
-                        system="You are a portfolio analyst. Write a professional monthly report.",
-                        max_tokens=2000)
+                        system="You are a senior portfolio analyst. Generate a structured, data-driven monthly report. Use plain-text tables (pipe-separated). Be concise and specific to the numbers provided.",
+                        max_tokens=3000)
     except Exception as e:
         text = f"Report generation failed: {e}"
 
-    report = {"year_month": ym, "month_name": mn, "campaigns": summary, "report_text": text}
+    report = {
+        "year_month":        ym,
+        "month_name":        mn,
+        "campaigns":         campaign_stats,
+        "portfolio_totals":  portfolio_totals,
+        "sector_map":        sector_map,
+        "chunk2_candidates": chunk2_candidates,
+        "report_text":       text,
+    }
     save_monthly_report(username, ym, report)
     return report
 
