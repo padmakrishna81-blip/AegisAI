@@ -68,8 +68,10 @@ def call_llm(prompt: str, system: str = "", max_tokens: int = 1024) -> str:
         err = str(e)
         if "429" in err or "quota" in err.lower() or "billing" in err.lower() or "rate_limit" in err.lower():
             result = f"[LLM quota exceeded: Your {provider.upper()} account has run out of credits or hit rate limits.]"
-        elif "401" in err or "invalid" in err.lower() or "authentication" in err.lower():
+        elif "401" in err or "authentication" in err.lower() or "invalid_api_key" in err.lower():
             result = f"[LLM auth failed: API key is invalid or expired. Re-enter your {provider.upper()} key in Settings.]"
+        elif "404" in err or "model_not_found" in err.lower() or "does not exist" in err.lower():
+            result = f"[LLM model not found: The configured model is unavailable on your {provider.upper()} account. Check Settings.]"
         else:
             result = f"[LLM error: {str(e)[:200]}]"
 
@@ -115,31 +117,23 @@ def _call_openai(prompt: str, system: str, max_tokens: int) -> str:
 
 
 def _call_groq(prompt: str, system: str, max_tokens: int) -> str:
-    """Call Groq API (OpenAI-compatible). Disables thinking for Qwen 3 to avoid TPM exhaustion."""
-    import openai as oai
+    """Call Groq API using the native groq SDK."""
+    from groq import Groq
     api_key = os.getenv("GROQ_API_KEY", "")
     if not api_key:
         return "[Groq API key not configured]"
-    client = oai.OpenAI(
-        api_key=api_key,
-        base_url="https://api.groq.com/openai/v1",
-    )
+    client = Groq(api_key=api_key)
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
-    model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
-
-    kwargs: dict = {
-        "model":      model,
-        "max_tokens": max_tokens,
-        "messages":   messages,
-    }
-    # Disable thinking mode for Qwen 3 reasoning models — thinking tokens burn TPM very fast
-    if "qwen3" in model.lower() or "qwen/qwen3" in model.lower():
-        kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
-
-    resp = client.chat.completions.create(**kwargs)
+    model = os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b")
+    resp = client.chat.completions.create(
+        model=model,
+        max_tokens=max_tokens,
+        messages=messages,
+    )
+    # _strip_thinking removes <think>...</think> blocks produced by reasoning models
     return _strip_thinking(resp.choices[0].message.content or "")
 
 
