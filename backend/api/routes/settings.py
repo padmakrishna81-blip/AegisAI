@@ -1,8 +1,9 @@
 """Settings endpoints."""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from ai.llm_client import update_settings, get_provider, is_configured
+from api.routes.auth import get_current_user
 import os
 
 router = APIRouter()
@@ -28,34 +29,17 @@ async def get_settings():
 
 @router.post("/settings")
 async def save_settings(body: SettingsInput):
-    anthropic_val = body.anthropic_api_key
-    openai_val    = body.openai_api_key
-    groq_val      = body.groq_api_key
-
-    # __CLEAR__ sentinel — explicitly wipe the key
-    if anthropic_val == "__CLEAR__":
-        os.environ["ANTHROPIC_API_KEY"] = ""
-        anthropic_val = ""
-    if openai_val == "__CLEAR__":
-        os.environ["OPENAI_API_KEY"] = ""
-        openai_val = ""
-    if groq_val == "__CLEAR__":
-        os.environ["GROQ_API_KEY"] = ""
-        groq_val = ""
-
-    any_explicit = bool(
-        body.anthropic_api_key == "__CLEAR__" or
-        body.openai_api_key    == "__CLEAR__" or
-        body.groq_api_key      == "__CLEAR__" or
-        anthropic_val or openai_val or groq_val
-    )
+    # For each key: None = don't touch, "" = clear, "value" = set new value
+    def _resolve(raw: str) -> str | None:
+        if raw == "__CLEAR__":
+            return ""        # explicit clear
+        return raw or None   # non-empty string or None (don't touch)
 
     update_settings(
-        provider=body.llm_provider,
-        anthropic_key=anthropic_val,
-        openai_key=openai_val,
-        groq_key=groq_val,
-        overwrite_keys=any_explicit,
+        provider=body.llm_provider or "",
+        anthropic_key=_resolve(body.anthropic_api_key),
+        openai_key=_resolve(body.openai_api_key),
+        groq_key=_resolve(body.groq_api_key),
     )
     if body.llm_provider:
         os.environ["LLM_PROVIDER"] = body.llm_provider
@@ -68,3 +52,15 @@ async def save_settings(body: SettingsInput):
         "groq_configured": bool(os.getenv("GROQ_API_KEY", "").strip()),
         "llm_ready": is_configured(),
     }
+
+
+@router.post("/settings/test-llm")
+async def test_llm_connection(user=Depends(get_current_user)):
+    """Send a minimal test prompt to verify the LLM key is working."""
+    from ai.llm_client import call_llm
+    if not is_configured():
+        return {"ok": False, "error": f"No API key configured for provider '{get_provider()}'"}
+    result = call_llm("Reply with exactly: OK", max_tokens=10)
+    if result.startswith("[LLM"):
+        return {"ok": False, "error": result}
+    return {"ok": True, "provider": get_provider(), "response": result.strip()}

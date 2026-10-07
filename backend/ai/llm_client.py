@@ -160,8 +160,20 @@ def classify_sentiment(text: str) -> str:
     return "NEUTRAL"
 
 
-def update_settings(provider: str, anthropic_key: str = "", openai_key: str = "", groq_key: str = "", overwrite_keys: bool = False) -> None:
-    """Update .env and os.environ. Only overwrites keys when overwrite_keys=True."""
+def update_settings(
+    provider: str,
+    anthropic_key: str | None = None,
+    openai_key: str | None = None,
+    groq_key: str | None = None,
+    # Legacy parameter — ignored; kept only so old call sites don't break
+    overwrite_keys: bool = False,
+) -> None:
+    """Update .env and os.environ.
+
+    Pass None (default) to leave a key unchanged.
+    Pass "" to explicitly clear a key.
+    Pass a non-empty string to set a new value.
+    """
     env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
 
     existing = {}
@@ -179,23 +191,15 @@ def update_settings(provider: str, anthropic_key: str = "", openai_key: str = ""
         existing["LLM_PROVIDER"] = provider
         os.environ["LLM_PROVIDER"] = provider
 
-    if overwrite_keys:
-        existing["ANTHROPIC_API_KEY"] = anthropic_key
-        os.environ["ANTHROPIC_API_KEY"] = anthropic_key
-        existing["OPENAI_API_KEY"] = openai_key
-        os.environ["OPENAI_API_KEY"] = openai_key
-        existing["GROQ_API_KEY"] = groq_key
-        os.environ["GROQ_API_KEY"] = groq_key
-    else:
-        if anthropic_key:
-            existing["ANTHROPIC_API_KEY"] = anthropic_key
-            os.environ["ANTHROPIC_API_KEY"] = anthropic_key
-        if openai_key:
-            existing["OPENAI_API_KEY"] = openai_key
-            os.environ["OPENAI_API_KEY"] = openai_key
-        if groq_key:
-            existing["GROQ_API_KEY"] = groq_key
-            os.environ["GROQ_API_KEY"] = groq_key
+    for env_key, new_val in [
+        ("ANTHROPIC_API_KEY", anthropic_key),
+        ("OPENAI_API_KEY",    openai_key),
+        ("GROQ_API_KEY",      groq_key),
+    ]:
+        if new_val is None:
+            continue  # caller didn't touch this key
+        existing[env_key] = new_val
+        os.environ[env_key] = new_val
 
     with open(env_path, "w") as f:
         for k, v in existing.items():

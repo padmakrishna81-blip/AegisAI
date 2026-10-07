@@ -2514,7 +2514,8 @@ function ReportsTab() {
         <div className="flex items-center justify-between mb-3">
           <span className="text-xs font-semibold text-white">Reports</span>
           <button onClick={generate} disabled={generating}
-            className="text-[10px] px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded">
+            className="text-[10px] px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded"
+            title="Generate report for current month">
             {generating ? '…' : '+ Generate'}
           </button>
         </div>
@@ -2539,10 +2540,21 @@ function ReportsTab() {
             <>
               <div className="flex items-center justify-between mb-4">
                 <div className="text-white font-semibold">{active.month_name}</div>
-                <div className="text-[10px] text-muted">
-                  Generated {new Date(active.generated_at).toLocaleDateString('en-IN')}
+                <div className="flex items-center gap-3">
+                  <div className="text-[10px] text-muted">
+                    Generated {new Date(active.generated_at).toLocaleDateString('en-IN')}
+                  </div>
+                  <button onClick={generate} disabled={generating}
+                    className="text-[10px] px-2 py-1 bg-slate-700 hover:bg-slate-600 text-white rounded border border-border">
+                    {generating ? '…' : '↺ Regenerate'}
+                  </button>
                 </div>
               </div>
+              {active.report_text?.startsWith('[LLM') && (
+                <div className="mb-4 bg-amber-950/50 border border-amber-800/60 rounded-lg px-4 py-3 text-xs text-amber-300">
+                  <strong>LLM error in this report.</strong> Fix your API key in Settings, then click <strong>↺ Regenerate</strong> above to overwrite it with a fresh report.
+                </div>
+              )}
               <div className="text-sm text-slate-300 whitespace-pre-wrap leading-relaxed">
                 {active.report_text}
               </div>
