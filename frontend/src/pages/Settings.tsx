@@ -120,6 +120,22 @@ export default function Settings() {
       setAnthropicKey('')
       setOpenaiKey('')
       setGroqKey('')
+      // Auto-test the key so the user gets immediate feedback
+      if (res.data.llm_ready) {
+        try {
+          setTestingLlm(true)
+          const tr = await client.post('/settings/test-llm', {})
+          if (tr.data.ok) {
+            setLlmTestResult({ ok: true, text: `Connected — ${(tr.data.provider as string)?.toUpperCase()} responded` })
+          } else {
+            setLlmTestResult({ ok: false, text: tr.data.error || 'LLM test failed — check your API key' })
+          }
+        } catch {
+          setLlmTestResult({ ok: false, text: 'Could not reach backend — check logs' })
+        } finally {
+          setTestingLlm(false)
+        }
+      }
     } catch (e) {
       console.error(e)
     } finally {
