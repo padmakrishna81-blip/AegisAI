@@ -1449,12 +1449,15 @@ interface CampaignStock {
 }
 
 function StocksTable({ campaign, onRefresh }: { campaign: Campaign; onRefresh: () => void }) {
-  const [editingSymbol, setEditingSymbol]   = useState<string | null>(null)
-  const [editAlloc,     setEditAlloc]       = useState('')
-  const [editStatus,    setEditStatus]      = useState('')
-  const [savingSymbol,  setSavingSymbol]    = useState<string | null>(null)
-  const [deleteTarget,  setDeleteTarget]    = useState<string | null>(null)
-  const [deleting,      setDeleting]        = useState(false)
+  const [editingSymbol,     setEditingSymbol]     = useState<string | null>(null)
+  const [editAlloc,         setEditAlloc]         = useState('')
+  const [editStatus,        setEditStatus]        = useState('')
+  const [savingSymbol,      setSavingSymbol]      = useState<string | null>(null)
+  const [deleteTarget,      setDeleteTarget]      = useState<string | null>(null)
+  const [deleting,          setDeleting]          = useState(false)
+  const [editingAllocFor,   setEditingAllocFor]   = useState<string | null>(null)
+  const [inlineAlloc,       setInlineAlloc]       = useState('')
+  const [savingAlloc,       setSavingAlloc]       = useState<string | null>(null)
 
   const startEdit = (s: CampaignStock) => {
     setEditingSymbol(s.symbol)
@@ -1464,13 +1467,27 @@ function StocksTable({ campaign, onRefresh }: { campaign: Campaign; onRefresh: (
 
   const cancelEdit = () => { setEditingSymbol(null); setEditAlloc(''); setEditStatus('') }
 
+  const startAllocEdit = (s: CampaignStock) => {
+    setEditingAllocFor(s.symbol)
+    setInlineAlloc(String(s.allocation_pct))
+  }
+
+  const saveAllocInline = async (sym: string) => {
+    const val = Number(inlineAlloc)
+    if (!val || val < 1 || val > 100) { setEditingAllocFor(null); return }
+    setSavingAlloc(sym)
+    try {
+      await api.patch(`/stock-trader/campaign/${campaign.id}/stock/${sym}`, { allocation_pct: val })
+      onRefresh()
+    } catch {}
+    setSavingAlloc(null)
+    setEditingAllocFor(null)
+  }
+
   const saveEdit = async (sym: string) => {
     setSavingSymbol(sym)
     try {
-      await api.patch(`/stock-trader/campaign/${campaign.id}/stock/${sym}`, {
-        allocation_pct: Number(editAlloc),
-        status: editStatus,
-      })
+      await api.patch(`/stock-trader/campaign/${campaign.id}/stock/${sym}`, { status: editStatus })
       onRefresh()
       cancelEdit()
     } catch {}
@@ -1513,15 +1530,26 @@ function StocksTable({ campaign, onRefresh }: { campaign: Campaign; onRefresh: (
                 {/* Stock name */}
                 <td className="px-4 py-2">
                   <div className="font-semibold text-white">{s.symbol}</div>
-                  {isEditing ? (
+                  {editingAllocFor === s.symbol ? (
                     <div className="flex items-center gap-1 mt-1">
-                      <input type="number" min={1} max={100} step={1} value={editAlloc}
-                        onChange={e => setEditAlloc(e.target.value)}
-                        className="w-14 text-center text-xs bg-slate-700 border border-border rounded px-1 py-0.5 text-white" />
-                      <span className="text-[9px] text-muted">% alloc</span>
+                      <input
+                        type="number" min={1} max={100} step={1}
+                        value={inlineAlloc}
+                        onChange={e => setInlineAlloc(e.target.value)}
+                        onKeyDown={e => { if (e.key === 'Enter') saveAllocInline(s.symbol); if (e.key === 'Escape') setEditingAllocFor(null) }}
+                        onBlur={() => saveAllocInline(s.symbol)}
+                        autoFocus
+                        className="w-14 text-center text-xs bg-slate-700 border border-blue-500 rounded px-1 py-0.5 text-white focus:outline-none" />
+                      <span className="text-[9px] text-muted">%</span>
+                      {savingAlloc === s.symbol && <span className="text-[9px] text-muted">…</span>}
                     </div>
                   ) : (
-                    <div className="text-[9px] text-muted">{s.allocation_pct}% alloc</div>
+                    <div
+                      className="text-[9px] text-blue-400 hover:text-blue-300 cursor-pointer underline decoration-dotted mt-0.5 w-fit"
+                      title="Click to edit allocation"
+                      onClick={() => startAllocEdit(s)}>
+                      {s.allocation_pct}% alloc
+                    </div>
                   )}
                 </td>
 
