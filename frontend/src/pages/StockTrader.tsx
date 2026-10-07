@@ -2290,50 +2290,85 @@ function CampaignsTab({ onNewCampaign }: { onNewCampaign?: () => void }) {
 
 // ── Positions Tab ─────────────────────────────────────────────────────────────
 
-function PositionsTab() {
-  const [campaigns, setCampaigns] = useState<Campaign[]>([])
-  const [loading, setLoading]     = useState(false)
+interface LivePosition extends StockPosition {
+  _campaign: string
+  _cid: string
+}
 
-  const load = useCallback(async () => {
+function PositionsTab() {
+  const [positions, setPositions] = useState<LivePosition[]>([])
+  const [loading,   setLoading]   = useState(false)
+  const [liveMode,  setLiveMode]  = useState(false)
+
+  const load = useCallback(async (live = false) => {
     setLoading(true)
     try {
-      const r = await api.get('/stock-trader/campaigns')
-      setCampaigns(r.campaigns || [])
+      if (live) {
+        const r = await api.get('/stock-trader/positions/live')
+        setPositions(r.positions || [])
+        setLiveMode(true)
+      } else {
+        const r = await api.get('/stock-trader/campaigns')
+        const camps: Campaign[] = r.campaigns || []
+        const flat = camps.flatMap(c =>
+          c.stocks
+            .filter(s => s.status !== 'watching')
+            .map(s => ({ ...s, _campaign: c.name, _cid: c.id } as LivePosition))
+        )
+        setPositions(flat)
+        setLiveMode(false)
+      }
     } catch {}
     setLoading(false)
   }, [])
 
   useEffect(() => { load() }, [load])
   useEffect(() => {
-    const t = setInterval(load, 120_000)
+    const t = setInterval(() => load(liveMode), 120_000)
     return () => clearInterval(t)
-  }, [load])
+  }, [load, liveMode])
 
-  const allPositions = campaigns.flatMap(c =>
-    c.stocks.filter(s => s.status !== 'watching').map(s => ({ ...s, _campaign: c.name, _cid: c.id }))
-  )
+  const active  = positions.filter(p => p.status !== 'exited')
+  const exited  = positions.filter(p => p.status === 'exited')
 
-  const totalUnreal = allPositions.filter(p => p.status !== 'exited').reduce((s, p) => s + (p.pnl || 0), 0)
-  const totalBooked = allPositions.filter(p => p.status === 'exited').reduce((s, p) => s + (p.booked_pnl || 0), 0)
+  const totalInvested = active.reduce((s, p) => s + ((p.avg_price || 0) * (p.total_qty || p.chunk1_qty || 0)), 0)
+  const totalCurrent  = active.reduce((s, p) => s + ((p.current_price || p.avg_price || 0) * (p.total_qty || p.chunk1_qty || 0)), 0)
+  const totalUnreal   = liveMode ? (totalCurrent - totalInvested) : active.reduce((s, p) => s + (p.pnl || 0), 0)
+  const totalBooked   = exited.reduce((s, p) => s + (p.booked_pnl || 0), 0)
+
+  const pnlAmt = (amt: number | undefined) => amt === undefined || amt === 0 ? '–'
+    : `${amt >= 0 ? '+' : ''}₹${Math.abs(amt).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`
+  const pnlPct = (pct: number | undefined) => pct === undefined || pct === 0 ? '–'
+    : `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`
 
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
         <div className="text-sm font-semibold text-white">All Positions</div>
-        <button onClick={load} disabled={loading}
-          className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-xs rounded-lg border border-border transition text-xs">
-          {loading ? '⟳' : '⟳ Refresh'}
-        </button>
+        <div className="flex gap-2">
+          <button onClick={() => load(false)} disabled={loading}
+            className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-xs rounded-lg border border-border transition">
+            ⟳ Cached
+          </button>
+          <button onClick={() => load(true)} disabled={loading}
+            className="px-3 py-1.5 bg-blue-700 hover:bg-blue-600 text-xs text-white rounded-lg border border-blue-600 transition font-medium">
+            {loading && liveMode ? '⟳' : '⚡ Live P&L'}
+          </button>
+        </div>
       </div>
 
+      {liveMode && (
+        <div className="mb-3 text-[10px] text-blue-400 bg-blue-950/30 border border-blue-800/40 rounded px-3 py-1.5">
+          Live prices fetched from market data — P&L is real-time
+        </div>
+      )}
+
       {/* Summary strip */}
-      {allPositions.length > 0 && (
+      {positions.length > 0 && (
         <div className="grid grid-cols-3 gap-3 mb-4">
           <div className="bg-slate-800/60 rounded-lg p-3 text-center">
             <div className="text-[10px] text-muted">Active Positions</div>
-            <div className="text-lg font-bold text-white mt-0.5">
-              {allPositions.filter(p => p.status !== 'exited').length}
-            </div>
+            <div className="text-lg font-bold text-white mt-0.5">{active.length}</div>
           </div>
           <div className="bg-slate-800/60 rounded-lg p-3 text-center">
             <div className="text-[10px] text-muted">Unrealised P&L</div>
@@ -2350,13 +2385,13 @@ function PositionsTab() {
         </div>
       )}
 
-      {!loading && !allPositions.length && (
+      {!loading && !positions.length && (
         <div className="text-center text-muted text-sm py-12">
           No positions yet. Create a campaign and run the trade agent to start.
         </div>
       )}
 
-      {allPositions.length > 0 && (
+      {positions.length > 0 && (
         <div className="overflow-x-auto bg-slate-800/40 rounded-xl border border-border">
           <table className="w-full text-xs">
             <thead>
@@ -2373,42 +2408,67 @@ function PositionsTab() {
               </tr>
             </thead>
             <tbody>
-              {allPositions.map((p, i) => (
-                <tr key={i} className="border-b border-border/20 hover:bg-slate-700/20">
-                  <td className="px-4 py-2.5">
-                    <div className="font-semibold text-white">{p.symbol}</div>
-                    <div className="text-[9px] text-muted">{p.sector}</div>
-                  </td>
-                  <td className="px-4 py-2.5 text-slate-400">{(p as any)._campaign}</td>
-                  <td className="px-4 py-2.5">
-                    <span className={`text-[9px] px-1.5 py-0.5 rounded ${STATUS_COLOR[p.status] || ''}`}>
-                      {STATUS_LABEL[p.status] || p.status}
-                    </span>
-                  </td>
-                  <td className="px-4 py-2.5 text-right text-slate-300">{p.total_qty || p.chunk1_qty || '–'}</td>
+              {positions.map((p, i) => {
+                const qty    = p.total_qty || p.chunk1_qty || 0
+                const livePnl = liveMode && p.avg_price && qty && p.current_price
+                  ? (p.current_price - p.avg_price) * qty : undefined
+                const livePct = liveMode && p.avg_price && p.current_price
+                  ? ((p.current_price - p.avg_price) / p.avg_price) * 100 : undefined
+                const dispPnl = p.status === 'exited' ? p.booked_pnl : (livePnl ?? p.pnl)
+                const dispPct = p.status === 'exited' ? undefined : (livePct ?? p.pnl_pct)
+                return (
+                  <tr key={i} className="border-b border-border/20 hover:bg-slate-700/20">
+                    <td className="px-4 py-2.5">
+                      <div className="font-semibold text-white">{p.symbol}</div>
+                      <div className="text-[9px] text-muted">{p.sector}</div>
+                    </td>
+                    <td className="px-4 py-2.5 text-slate-400">{p._campaign}</td>
+                    <td className="px-4 py-2.5">
+                      <span className={`text-[9px] px-1.5 py-0.5 rounded ${STATUS_COLOR[p.status] || ''}`}>
+                        {STATUS_LABEL[p.status] || p.status}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2.5 text-right text-slate-300">{qty || '–'}</td>
+                    <td className="px-4 py-2.5 text-right font-mono text-slate-300">
+                      {p.avg_price ? `₹${fmt(p.avg_price)}` : '–'}
+                    </td>
+                    <td className="px-4 py-2.5 text-right font-mono text-white">
+                      {p.current_price ? `₹${fmt(p.current_price)}` : (p.exit_price ? `₹${fmt(p.exit_price)}` : '–')}
+                    </td>
+                    <td className={`px-4 py-2.5 text-right font-mono font-semibold ${pnlClass(dispPnl)}`}>
+                      {pnlAmt(dispPnl)}
+                    </td>
+                    <td className={`px-4 py-2.5 text-right font-mono text-[10px] ${pnlClass(dispPct)}`}>
+                      {pnlPct(dispPct)}
+                    </td>
+                    <td className="px-4 py-2.5 text-right font-mono text-amber-400 text-[10px]">
+                      {p.sl_price ? `₹${fmt(p.sl_price)}` : '–'}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+            {/* Aggregate row */}
+            {active.length > 0 && (
+              <tfoot>
+                <tr className="border-t-2 border-border bg-slate-700/30 font-semibold">
+                  <td className="px-4 py-2.5 text-slate-300" colSpan={4}>Total ({active.length} positions)</td>
                   <td className="px-4 py-2.5 text-right font-mono text-slate-300">
-                    {p.avg_price ? `₹${fmt(p.avg_price)}` : '–'}
+                    {totalInvested > 0 ? `₹${totalInvested.toLocaleString('en-IN', { maximumFractionDigits: 0 })}` : '–'}
                   </td>
                   <td className="px-4 py-2.5 text-right font-mono text-white">
-                    {p.current_price ? `₹${fmt(p.current_price)}` : (p.exit_price ? `₹${fmt(p.exit_price)}` : '–')}
+                    {totalCurrent > 0 ? `₹${totalCurrent.toLocaleString('en-IN', { maximumFractionDigits: 0 })}` : '–'}
                   </td>
-                  <td className={`px-4 py-2.5 text-right font-mono font-semibold ${pnlClass(p.status === 'exited' ? p.booked_pnl : p.pnl)}`}>
-                    {p.status === 'exited' && p.booked_pnl !== undefined
-                      ? `${p.booked_pnl >= 0 ? '+' : ''}₹${Math.abs(p.booked_pnl).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`
-                      : p.pnl !== undefined && p.pnl !== 0
-                        ? `${p.pnl >= 0 ? '+' : ''}₹${Math.abs(p.pnl).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`
-                        : '–'
-                    }
+                  <td className={`px-4 py-2.5 text-right font-mono ${pnlClass(totalUnreal)}`}>
+                    {pnlAmt(totalUnreal)}
                   </td>
-                  <td className={`px-4 py-2.5 text-right font-mono text-[10px] ${pnlClass(p.pnl_pct)}`}>
-                    {p.pnl_pct ? `${p.pnl_pct >= 0 ? '+' : ''}${fmt(p.pnl_pct)}%` : '–'}
+                  <td className={`px-4 py-2.5 text-right font-mono text-[10px] ${pnlClass(totalInvested > 0 ? totalUnreal / totalInvested * 100 : 0)}`}>
+                    {totalInvested > 0 ? pnlPct(totalUnreal / totalInvested * 100) : '–'}
                   </td>
-                  <td className="px-4 py-2.5 text-right font-mono text-amber-400 text-[10px]">
-                    {p.sl_price ? `₹${fmt(p.sl_price)}` : '–'}
-                  </td>
+                  <td />
                 </tr>
-              ))}
-            </tbody>
+              </tfoot>
+            )}
           </table>
         </div>
       )}

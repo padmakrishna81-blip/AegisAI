@@ -388,6 +388,43 @@ async def run_campaign_cycle(cid: str, user=Depends(require_role('live_trader'))
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@router.get("/stock-trader/positions/live")
+async def live_positions(user=Depends(get_current_user)):
+    """Return all active positions with live prices and freshly computed P&L."""
+    try:
+        from data.stock_trader_store import list_campaigns
+        from ai.trade_agent import _batch_prices
+
+        campaigns = list_campaigns(user["username"])
+        positions = []
+        symbols_needed: list[str] = []
+
+        for c in campaigns:
+            for s in c.get("stocks", []):
+                if s.get("status") not in ("watching", "error"):
+                    positions.append({**s, "_campaign": c["name"], "_cid": c["id"]})
+                    symbols_needed.append(s["symbol"])
+
+        if not positions:
+            return {"positions": []}
+
+        prices = await _in_thread(lambda: _batch_prices(list(set(symbols_needed))))
+
+        for p in positions:
+            live = prices.get(p["symbol"])
+            if live and live > 0:
+                qty = p.get("total_qty") or p.get("chunk1_qty") or 0
+                avg = float(p.get("avg_price") or 0)
+                p["current_price"] = live
+                if qty and avg:
+                    p["pnl"]     = round((live - avg) * qty, 2)
+                    p["pnl_pct"] = round(((live - avg) / avg) * 100, 4)
+
+        return {"positions": _clean_nan(positions)}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @router.get("/stock-trader/campaign/{cid}/fundamentals/{symbol}")
 async def get_fundamentals(cid: str, symbol: str, user=Depends(get_current_user)):
     try:

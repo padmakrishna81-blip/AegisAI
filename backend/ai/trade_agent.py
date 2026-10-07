@@ -480,7 +480,8 @@ def deploy_chunk(campaign: dict, chunk_n: int = 1,
         f"chunk{chunk_n}_date":     datetime.now(timezone.utc).isoformat(),
     }
     if chunk_n == 1:
-        patch["chunk1_deployed"] = round(total_deployed, 2)
+        existing = float(campaign.get("chunk1_deployed") or 0)
+        patch["chunk1_deployed"] = round(existing + total_deployed, 2)
     update_campaign(campaign["id"], patch)
     placed_count = len([s for s in updated if s.get("status") == f"c{chunk_n}_placed"])
     return {
@@ -752,17 +753,29 @@ def run_campaign(campaign_id: str) -> dict:
     watching = [s for s in stocks if s.get("status") == "watching"]
     active   = [s for s in stocks if s.get("status") not in ("watching", "exited", "error")]
 
-    if watching and not active:
-        if not _entry_condition_met(campaign):
-            return {"message": "Entry condition not met yet", "actions": []}
-        check = _check_funds(campaign)
-        if not check["available"] and campaign.get("auto_trade", False):
-            if check.get("error") and _is_session_error(check["error"]):
-                return {"error": "broker_session_expired", "message": check["error"]}
-            return {"error": f"Insufficient funds. Balance ₹{check['balance']:.0f}, "
-                             f"required ₹{campaign['reserved_fund']:.0f}"}
+    if watching:
+        if not active:
+            # First deployment — check entry condition and funds
+            if not _entry_condition_met(campaign):
+                return {"message": "Entry condition not met yet", "actions": []}
+            check = _check_funds(campaign)
+            if not check["available"] and campaign.get("auto_trade", False):
+                if check.get("error") and _is_session_error(check["error"]):
+                    return {"error": "broker_session_expired", "message": check["error"]}
+                return {"error": f"Insufficient funds. Balance ₹{check['balance']:.0f}, "
+                                 f"required ₹{campaign['reserved_fund']:.0f}"}
+        # Deploy chunk 1 for all watching stocks (initial or replacement top-up)
         result = deploy_chunk(campaign, chunk_n=1)
-        return {"campaign_id": campaign_id, "action": "CHUNK1_DEPLOYED", **result}
+        if not active:
+            return {"campaign_id": campaign_id, "action": "CHUNK1_DEPLOYED", **result}
+        # Refresh campaign so monitoring sees the newly placed stocks
+        campaign = get_campaign(campaign_id)
+        active   = [s for s in campaign.get("stocks", [])
+                    if s.get("status") not in ("watching", "exited", "error")]
+        actions  = monitor_and_act(campaign) if active else []
+        return {"campaign_id": campaign_id,
+                "action": "CHUNK1_TOPUP_AND_MONITOR",
+                "chunk1_result": result, "monitor_actions": actions}
 
     if active:
         actions = monitor_and_act(campaign)
