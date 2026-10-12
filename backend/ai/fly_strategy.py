@@ -484,24 +484,28 @@ def get_naked_fly(symbol: str) -> dict:
     today = date.today()
 
     chain = _fetch_full_chain(clean)
-    source = "nse" if chain else "yfinance"
+    source = "jugaad" if chain else "none"
 
     if not chain:
         return {"error": f"Could not fetch option chain for {clean}", "symbol": clean}
 
-    # Find nearest expiry with DTE > 30 and sufficient data
-    qualifying = [
-        (exp_str, data)
-        for exp_str, data in chain.items()
-        if data["dte"] > 30 and len(data.get("calls", [])) >= 5 and len(data.get("puts", [])) >= 5
-    ]
+    # Prefer DTE > 30; fall back to any expiry with DTE >= 7 if nothing better
+    def _qualifies(exp_str: str, data: dict, min_dte: int) -> bool:
+        return (data["dte"] >= min_dte
+                and len(data.get("calls", [])) >= 3
+                and len(data.get("puts", [])) >= 3)
+
+    qualifying = [(e, d) for e, d in chain.items() if _qualifies(e, d, 30)]
     if not qualifying:
-        return {"error": f"No expiry with DTE>30 and sufficient liquidity found for {clean}", "symbol": clean}
+        qualifying = [(e, d) for e, d in chain.items() if _qualifies(e, d, 7)]
+    if not qualifying:
+        return {"error": f"No expiry with sufficient liquidity found for {clean}", "symbol": clean}
 
     qualifying.sort(key=lambda x: x[1]["dte"])
     expiry_str, exp_data = qualifying[0]
     spot = exp_data["spot"]
     dte = exp_data["dte"]
+    dte_warning = "Near-month expiry only (DTE < 30). Strategy works best with DTE > 30." if dte < 30 else None
     T = dte / 365.0
 
     if spot <= 0:
@@ -639,5 +643,6 @@ def get_naked_fly(symbol: str) -> dict:
             "value": stock_value,
         },
         "source": source,
+        "dte_warning": dte_warning,
         "error": None,
     }

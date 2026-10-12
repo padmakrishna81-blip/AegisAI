@@ -66,6 +66,7 @@ interface FlySetup {
   hedge_iron_fly: HedgeIronFly
   hedge_stock: HedgeStock
   source: string
+  dte_warning: string | null
   error: string | null
 }
 
@@ -350,6 +351,11 @@ export default function FlyStrategy() {
 
       {flySetup && !flySetup.error && (
         <div className="space-y-4">
+          {flySetup.dte_warning && (
+            <div className="bg-amber-900/30 border border-amber-700 text-amber-300 rounded-xl px-4 py-2 text-sm">
+              ⚠ {flySetup.dte_warning}
+            </div>
+          )}
           {/* Header card */}
           <div className="bg-gray-800 rounded-xl p-4">
             <div className="flex flex-wrap items-center gap-4">
