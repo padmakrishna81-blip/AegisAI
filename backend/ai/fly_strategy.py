@@ -142,17 +142,69 @@ def _parse_expiry_date(s: str) -> Optional[date]:
     return None
 
 
+def _fetch_chain_jugaad(symbol: str, today: date) -> dict:
+    """Primary chain fetcher using jugaad-data (works from cloud/EC2)."""
+    from jugaad_data.nse import NSELive
+    n = NSELive()
+    data = n.equities_option_chain(symbol)
+    spot = float(data.get("records", {}).get("underlyingValue") or 0)
+    raw = data.get("records", {}).get("data", [])
+    if not raw or spot <= 0:
+        return {}
+
+    chain: dict = {}
+    for item in raw:
+        exp_str = item.get("expiryDates", "")
+        exp_date = _parse_expiry_date(exp_str)
+        if not exp_date:
+            continue
+        dte = (exp_date - today).days
+        if exp_str not in chain:
+            chain[exp_str] = {"spot": spot, "dte": dte, "calls": [], "puts": []}
+
+        strike = float(item.get("strikePrice", 0))
+        for side, key in [("calls", "CE"), ("puts", "PE")]:
+            seg = item.get(key)
+            if not seg:
+                continue
+            bid = float(seg.get("buyPrice1") or 0)
+            ask = float(seg.get("sellPrice1") or 0)
+            ltp = float(seg.get("lastPrice") or 0)
+            mid = round((bid + ask) / 2, 2) if bid > 0 and ask > 0 else ltp
+            if mid <= 0 and ltp > 0:
+                mid = ltp
+            chain[exp_str][side].append({
+                "strike": strike,
+                "ltp": ltp,
+                "mid": mid,
+                "bid": bid,
+                "ask": ask,
+                "iv": float(seg.get("impliedVolatility") or 0),
+                "volume": int(seg.get("totalTradedVolume") or 0),
+                "oi": int(seg.get("openInterest") or 0),
+            })
+    return chain
+
+
 def _fetch_full_chain(symbol: str) -> dict:
     """
     Fetch complete NSE option chain for a stock symbol.
-    Returns {expiry_str: {spot, dte, calls, puts}} where calls/puts are
-    lists of {strike, ltp, bid, ask, iv, volume, oi}.
-    Falls back to yfinance if NSE fails.
+    Tries jugaad-data (cloud-safe) first, then NSE direct scrape, then yfinance.
+    Returns {expiry_str: {spot, dte, calls, puts}}.
     """
     clean = symbol.upper().replace(".NS", "").replace(".BO", "")
-    url = f"https://www.nseindia.com/api/option-chain-equities?symbol={clean}"
     today = date.today()
 
+    # ── jugaad-data (primary — works from cloud IPs) ─────────────────────────
+    try:
+        chain = _fetch_chain_jugaad(clean, today)
+        if chain:
+            return chain
+    except Exception as e:
+        logger.debug("jugaad chain failed for %s: %s", clean, e)
+
+    # ── NSE direct scrape (fallback — may be blocked from EC2) ───────────────
+    url = f"https://www.nseindia.com/api/option-chain-equities?symbol={clean}"
     try:
         global _NSE_SESSION_TS
         sess = _nse_session()
@@ -164,9 +216,9 @@ def _fetch_full_chain(symbol: str) -> dict:
 
         if r.status_code == 200:
             data = r.json()
-            spot = float(data.get("records", {}).get("underlyingValue", 0))
+            spot = float(data.get("records", {}).get("underlyingValue") or 0)
             raw = data.get("records", {}).get("data", [])
-            chain: dict = {}
+            chain = {}
             for item in raw:
                 exp_str = item.get("expiryDate", "")
                 exp_date = _parse_expiry_date(exp_str)
