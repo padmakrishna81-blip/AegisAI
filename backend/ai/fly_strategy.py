@@ -9,6 +9,7 @@ Consolidation scan: Nifty 50 stocks where actual N-day range ≤ 1 SD expected m
 Safety ranking: LLM assigns Rank 1 (safe) / 2 (moderate) / 3 (avoid) based on upcoming events.
 """
 
+import inspect
 import json
 import logging
 import math
@@ -142,19 +143,11 @@ def _parse_expiry_date(s: str) -> Optional[date]:
     return None
 
 
-def _fetch_chain_jugaad(symbol: str, today: date) -> dict:
-    """Primary chain fetcher using jugaad-data (works from cloud/EC2)."""
-    from jugaad_data.nse import NSELive
-    n = NSELive()
-    data = n.equities_option_chain(symbol)
-    spot = float(data.get("records", {}).get("underlyingValue") or 0)
-    raw = data.get("records", {}).get("data", [])
-    if not raw or spot <= 0:
-        return {}
-
-    chain: dict = {}
+def _parse_jugaad_records(raw: list, spot: float, today: date, chain: dict) -> None:
+    """Parse jugaad records[] items into chain dict in-place."""
     for item in raw:
-        exp_str = item.get("expiryDates", "")
+        # NSE returns "expiryDate"; jugaad sometimes renames to "expiryDates"
+        exp_str = item.get("expiryDate") or item.get("expiryDates", "")
         exp_date = _parse_expiry_date(exp_str)
         if not exp_date:
             continue
@@ -183,6 +176,52 @@ def _fetch_chain_jugaad(symbol: str, today: date) -> dict:
                 "volume": int(seg.get("totalTradedVolume") or 0),
                 "oi": int(seg.get("openInterest") or 0),
             })
+
+
+def _fetch_chain_jugaad(symbol: str, today: date) -> dict:
+    """
+    Fetch full multi-expiry option chain using jugaad-data.
+    - First call gets near-month data + list of all expiry dates.
+    - Subsequent calls fetch each remaining expiry via expiry_date param.
+    Works from cloud/EC2 IPs where NSE is blocked.
+    """
+    from jugaad_data.nse import NSELive
+    n = NSELive()
+
+    data = n.equities_option_chain(symbol)
+    records = data.get("records", {})
+    spot = float(records.get("underlyingValue") or 0)
+    if spot <= 0:
+        return {}
+
+    chain: dict = {}
+
+    # Parse whatever records the initial call returned (usually near-month)
+    _parse_jugaad_records(records.get("data", []), spot, today, chain)
+
+    # Discover all available expiries from top-level list
+    all_expiries: list = records.get("expiryDates", [])
+
+    # Fetch expiries not yet in chain (up to 3 total including near-month)
+    for exp_str in all_expiries[:3]:
+        if exp_str in chain:
+            continue
+        try:
+            sig = inspect.signature(n.equities_option_chain)
+            if "expiry_date" in sig.parameters:
+                extra = n.equities_option_chain(symbol, expiry_date=exp_str)
+            else:
+                # Older jugaad — try keyword arg anyway, fall back silently
+                try:
+                    extra = n.equities_option_chain(symbol, exp_str)
+                except TypeError:
+                    continue
+            extra_records = extra.get("records", {})
+            extra_spot = float(extra_records.get("underlyingValue") or spot)
+            _parse_jugaad_records(extra_records.get("data", []), extra_spot, today, chain)
+        except Exception as e:
+            logger.debug("jugaad extra expiry fetch failed for %s %s: %s", symbol, exp_str, e)
+
     return chain
 
 
