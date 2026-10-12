@@ -58,6 +58,7 @@ interface ResultsEvent {
 interface GiftNiftyData {
   price: number | null
   prev_close: number | null
+  nse_close: number | null
   day_high: number | null
   day_low: number | null
   day_open: number | null
@@ -66,6 +67,8 @@ interface GiftNiftyData {
   gap_pts: number | null
   gap_signal: 'positive' | 'negative' | 'flat'
   last_updated: string | null
+  expiry: string | null
+  contracts_traded: number | null
   source?: string
   error?: string
 }
@@ -139,21 +142,28 @@ function GiftNiftyCard() {
               'bg-slate-800 border border-border text-slate-400'
             }`}>
               {data.gap_signal === 'positive'
-                ? `▲ Nifty likely to open ~${Math.abs(data.gap_pts).toFixed(0)} pts positive in next session`
+                ? `▲ Gap vs NSE close: +${Math.abs(data.gap_pts).toFixed(0)} pts — Nifty likely to open positive`
                 : data.gap_signal === 'negative'
-                ? `▼ Nifty likely to open ~${Math.abs(data.gap_pts).toFixed(0)} pts negative in next session`
-                : 'Nifty likely to open flat in next session'}
+                ? `▼ Gap vs NSE close: −${Math.abs(data.gap_pts).toFixed(0)} pts — Nifty likely to open negative`
+                : 'Gap vs NSE close: flat'}
+              {data.nse_close != null && (
+                <span className="ml-2 font-normal text-xs opacity-70">(NSE closed at {fmt(data.nse_close)})</span>
+              )}
             </div>
           )}
 
-          {/* Performance grid */}
-          <div className="grid grid-cols-4 gap-3">
-            {[
-              { label: "Today's High", val: fmt(data.day_high), color: 'text-score-green' },
-              { label: "Today's Low",  val: fmt(data.day_low),  color: 'text-score-red'   },
-              { label: "Today's Open", val: fmt(data.day_open), color: 'text-white'        },
-              { label: 'Prev Close',   val: fmt(data.prev_close), color: 'text-slate-300'  },
-            ].map(({ label, val, color }) => (
+          {/* Data grid */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {([
+              { label: 'Day Change',  val: `${(data.change ?? 0) >= 0 ? '+' : ''}${fmt(data.change)}`,                              color: chgColor         },
+              { label: 'Change %',    val: `${(data.change_pct ?? 0) >= 0 ? '+' : ''}${data.change_pct?.toFixed(2) ?? '—'}%`,       color: chgColor         },
+              { label: 'NSE Close',   val: fmt(data.nse_close),                                                                       color: 'text-slate-300' },
+              { label: 'Expiry',      val: data.expiry ?? '—',                                                                        color: 'text-slate-300' },
+              ...(data.day_high        != null ? [{ label: 'Day High',   val: fmt(data.day_high),                                     color: 'text-score-green' }] : []),
+              ...(data.day_low         != null ? [{ label: 'Day Low',    val: fmt(data.day_low),                                      color: 'text-score-red'   }] : []),
+              ...(data.contracts_traded != null ? [{ label: 'Contracts', val: data.contracts_traded.toLocaleString(),                 color: 'text-slate-300'   }] : []),
+              ...(data.last_updated    != null ? [{ label: 'GIFT Time',  val: (data.last_updated.split(' ')[1] ?? data.last_updated), color: 'text-slate-400'   }] : []),
+            ] as { label: string; val: string; color: string }[]).map(({ label, val, color }) => (
               <div key={label} className="bg-slate-800/60 rounded-lg p-2.5">
                 <div className="text-[10px] text-muted mb-0.5">{label}</div>
                 <div className={`text-sm font-bold ${color}`}>{val}</div>
