@@ -7,7 +7,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 FRONTEND_DIR="$SCRIPT_DIR/frontend"
-EC2_HOST="ubuntu@13.202.218.119"
+EC2_HOST="ubuntu@15.252.231.178"
 EC2_KEY="$HOME/.ssh/aegisai-key.pem"
 EC2_APP_DIR="/home/ubuntu/aegisai"
 EC2_WEB_ROOT="/var/www/aegisai"
