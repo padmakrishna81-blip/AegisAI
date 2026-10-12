@@ -560,10 +560,12 @@ export default function FlyStrategy() {
           </div>
 
           {/* Summary + Place Order */}
-          {summary && (
-            <div className="bg-gray-800 rounded-xl p-4">
-              <h3 className="text-white font-semibold mb-3">Position Summary</h3>
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3 mb-2">
+          {summary && flySetup && (
+            <div className="bg-gray-800 rounded-xl p-4 space-y-4">
+              <h3 className="text-white font-semibold">Position Summary</h3>
+
+              {/* Quick-glance grid */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3">
                 {[
                   { label: 'Net Credit', value: `₹${summary.netTotal.toLocaleString()}`, cls: 'text-green-400' },
                   { label: 'Net Δ', value: `${summary.netDelta >= 0 ? '+' : ''}${summary.netDelta.toFixed(3)}`, cls: 'text-gray-300' },
@@ -578,6 +580,107 @@ export default function FlyStrategy() {
                   </div>
                 ))}
               </div>
+
+              {/* Formula breakdown */}
+              <div className="border-t border-gray-700 pt-4 space-y-3">
+                <p className="text-gray-400 text-xs font-medium uppercase tracking-wider">Calculation Details</p>
+
+                {/* Max Profit */}
+                <div className="bg-green-900/20 border border-green-800/50 rounded-lg p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-green-400 font-medium text-sm">Max Profit</span>
+                    <span className="text-green-400 font-bold">₹{summary.maxProfit.toLocaleString()}</span>
+                  </div>
+                  <div className="text-gray-400 text-xs space-y-1">
+                    <div className="font-mono text-gray-500">
+                      (PE prem + CE prem{hedgeAEnabled ? ' − buy PE − buy CE' : ''}) × lot_size × lots
+                    </div>
+                    <div className="font-mono text-gray-300">
+                      ({flySetup.sell_pe.premium}
+                      {hedgeAEnabled
+                        ? ` + ${flySetup.sell_ce.premium} − ${flySetup.hedge_iron_fly.buy_pe_premium} − ${flySetup.hedge_iron_fly.buy_ce_premium})`
+                        : ` + ${flySetup.sell_ce.premium})`}
+                      {' '}× {flySetup.lot_size} × {lots}
+                      {' '}= <span className="text-green-400 font-semibold">₹{summary.maxProfit.toLocaleString()}</span>
+                    </div>
+                    <div className="text-gray-500 mt-1">
+                      Realised when both options expire worthless (spot stays between ₹{summary.beDown.toLocaleString()} – ₹{summary.beUp.toLocaleString()} at expiry).
+                    </div>
+                  </div>
+                </div>
+
+                {/* Max Loss */}
+                <div className={`border rounded-lg p-3 ${summary.maxLoss != null ? 'bg-red-900/20 border-red-800/50' : 'bg-orange-900/20 border-orange-800/50'}`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className={`font-medium text-sm ${summary.maxLoss != null ? 'text-red-400' : 'text-orange-400'}`}>Max Loss</span>
+                    <span className={`font-bold ${summary.maxLoss != null ? 'text-red-400' : 'text-orange-400'}`}>
+                      {summary.maxLoss != null ? `₹${summary.maxLoss.toLocaleString()}` : 'Unlimited'}
+                    </span>
+                  </div>
+                  {summary.maxLoss != null ? (
+                    <div className="text-gray-400 text-xs space-y-1">
+                      <div className="font-mono text-gray-500">
+                        (wing_width − net_credit_per_share) × lot_size × lots
+                      </div>
+                      <div className="font-mono text-gray-300">
+                        ({flySetup.hedge_iron_fly.wing_width.toFixed(2)}
+                        {' '}−{' '}
+                        {r2((flySetup.sell_pe.premium + flySetup.sell_ce.premium - flySetup.hedge_iron_fly.buy_pe_premium - flySetup.hedge_iron_fly.buy_ce_premium)).toFixed(2)})
+                        {' '}× {flySetup.lot_size} × {lots}
+                        {' '}= <span className="text-red-400 font-semibold">₹{summary.maxLoss.toLocaleString()}</span>
+                      </div>
+                      <div className="text-gray-500 mt-1">
+                        Wing width = ₹{flySetup.hedge_iron_fly.wing_width.toFixed(1)} (buy strikes ₹{flySetup.hedge_iron_fly.buy_pe_strike} / ₹{flySetup.hedge_iron_fly.buy_ce_strike}).
+                        Loss is capped because Hedge A (Iron Fly) is included.
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-xs space-y-1">
+                      <div className="text-orange-300 font-mono">No wings — loss grows as spot moves beyond either strike.</div>
+                      <div className="text-gray-400">
+                        Practical risk if spot drops 1SD (₹{r2(flySetup.spot - flySetup.sd_move).toLocaleString()}):
+                        {' '}loss ≈ <span className="text-orange-300 font-medium">
+                          ₹{r2((flySetup.sd_move - (flySetup.sell_pe.premium + flySetup.sell_ce.premium)) * flySetup.lot_size * lots).toLocaleString()}
+                        </span>
+                      </div>
+                      <div className="text-gray-400">
+                        Practical risk if spot rises 1SD (₹{r2(flySetup.spot + flySetup.sd_move).toLocaleString()}):
+                        {' '}loss ≈ <span className="text-orange-300 font-medium">
+                          ₹{r2((flySetup.sd_move - (flySetup.sell_pe.premium + flySetup.sell_ce.premium)) * flySetup.lot_size * lots).toLocaleString()}
+                        </span>
+                      </div>
+                      <div className="text-gray-500 mt-1">Enable Hedge A above to cap loss at ₹{flySetup.hedge_iron_fly.capped_max_loss?.toLocaleString() ?? '—'}.</div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Breakevens */}
+                <div className="bg-gray-700/30 border border-gray-600/50 rounded-lg p-3">
+                  <div className="text-gray-300 font-medium text-sm mb-2">Breakeven Points</div>
+                  <div className="grid grid-cols-2 gap-3 text-xs">
+                    <div>
+                      <div className="text-gray-400 mb-1">Upper BE</div>
+                      <div className="font-mono text-gray-500">CE strike + net_credit_per_share</div>
+                      <div className="font-mono text-gray-300 mt-0.5">
+                        {flySetup.sell_ce.strike} + {r2((flySetup.sell_pe.premium + flySetup.sell_ce.premium) - (hedgeAEnabled ? flySetup.hedge_iron_fly.buy_pe_premium + flySetup.hedge_iron_fly.buy_ce_premium : 0)).toFixed(2)}
+                        {' '}= <span className="text-white font-semibold">₹{summary.beUp.toLocaleString()}</span>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-gray-400 mb-1">Lower BE</div>
+                      <div className="font-mono text-gray-500">PE strike − net_credit_per_share</div>
+                      <div className="font-mono text-gray-300 mt-0.5">
+                        {flySetup.sell_pe.strike} − {r2((flySetup.sell_pe.premium + flySetup.sell_ce.premium) - (hedgeAEnabled ? flySetup.hedge_iron_fly.buy_pe_premium + flySetup.hedge_iron_fly.buy_ce_premium : 0)).toFixed(2)}
+                        {' '}= <span className="text-white font-semibold">₹{summary.beDown.toLocaleString()}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="text-gray-500 text-xs mt-2">
+                    Safe zone: ₹{summary.beDown.toLocaleString()} – ₹{summary.beUp.toLocaleString()} · width ₹{r2(summary.beUp - summary.beDown).toLocaleString()} vs 1SD range ±₹{flySetup.sd_move.toFixed(1)}
+                  </div>
+                </div>
+              </div>
+
               <p className="text-gray-500 text-xs text-center">Informational only. Use the button below to place orders.</p>
             </div>
           )}
