@@ -124,20 +124,26 @@ async def fly_order(body: dict, user=Depends(get_current_user)):
             raise RuntimeError("No Angel One session — connect broker first")
 
         client = AngelOneClient(session, cache_key=f"{username}:angelone")
-        symbol   = body["symbol"]
-        expiry   = body["expiry"]
-        lots     = int(body.get("lots", 1))
-        lot_size = int(body["lot_size"])
+        symbol    = body["symbol"]
+        expiry    = body["expiry"]
+        lots      = int(body.get("lots", 1))
+        lot_size  = int(body["lot_size"])
+        order_type = body.get("order_type", "MARKET").upper()
+
+        pe_limit_price = float(body["sell_pe"]["premium"]) if order_type == "LIMIT" else 0.0
+        ce_limit_price = float(body["sell_ce"]["premium"]) if order_type == "LIMIT" else 0.0
 
         pe_order = client.place_nfo_order(
             symbol=symbol, expiry_str=expiry,
             strike=float(body["sell_pe"]["strike"]), opt_type="PE",
             side="SELL", lots=lots, lot_size=lot_size,
+            order_type=order_type, price=pe_limit_price,
         )
         ce_order = client.place_nfo_order(
             symbol=symbol, expiry_str=expiry,
             strike=float(body["sell_ce"]["strike"]), opt_type="CE",
             side="SELL", lots=lots, lot_size=lot_size,
+            order_type=order_type, price=ce_limit_price,
         )
 
         position = {

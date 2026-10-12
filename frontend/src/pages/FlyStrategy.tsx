@@ -129,6 +129,9 @@ export default function FlyStrategy() {
   // Order modal
   const [showOrderModal, setShowOrderModal] = useState(false)
   const [lots, setLots] = useState(1)
+  const [orderType, setOrderType] = useState<'MARKET' | 'LIMIT'>('MARKET')
+  const [limitPePremium, setLimitPePremium] = useState('')
+  const [limitCePremium, setLimitCePremium] = useState('')
   const [placingOrder, setPlacingOrder] = useState(false)
   const [orderError, setOrderError] = useState('')
 
@@ -220,16 +223,23 @@ export default function FlyStrategy() {
 
   async function placeOrder() {
     if (!flySetup) return
+    const pePrem = orderType === 'LIMIT' ? parseFloat(limitPePremium) : flySetup.sell_pe.premium
+    const cePrem = orderType === 'LIMIT' ? parseFloat(limitCePremium) : flySetup.sell_ce.premium
+    if (isNaN(pePrem) || pePrem <= 0 || isNaN(cePrem) || cePrem <= 0) {
+      setOrderError('Enter valid positive premiums for both legs')
+      return
+    }
     setPlacingOrder(true); setOrderError('')
     try {
       const body = {
         symbol: flySetup.symbol, expiry: flySetup.expiry,
-        sell_pe: { strike: flySetup.sell_pe.strike, premium: flySetup.sell_pe.premium },
-        sell_ce: { strike: flySetup.sell_ce.strike, premium: flySetup.sell_ce.premium },
+        sell_pe: { strike: flySetup.sell_pe.strike, premium: pePrem },
+        sell_ce: { strike: flySetup.sell_ce.strike, premium: cePrem },
         lot_size: flySetup.lot_size, lots,
         spot_at_entry: flySetup.spot,
-        net_credit_total: flySetup.net_credit * lots,
+        net_credit_total: r2((pePrem + cePrem) * flySetup.lot_size * lots),
         dte: flySetup.dte,
+        order_type: orderType,
       }
       await api.post('/fly/order', body)
       setShowOrderModal(false)
@@ -586,7 +596,14 @@ export default function FlyStrategy() {
                   </div>
                 </div>
                 <button
-                  onClick={() => { setLots(1); setOrderError(''); setShowOrderModal(true) }}
+                  onClick={() => {
+                    setLots(1)
+                    setOrderType('MARKET')
+                    setLimitPePremium(String(flySetup.sell_pe.premium))
+                    setLimitCePremium(String(flySetup.sell_ce.premium))
+                    setOrderError('')
+                    setShowOrderModal(true)
+                  }}
                   className="shrink-0 px-6 py-3 bg-green-600 hover:bg-green-500 text-white text-sm font-bold rounded-lg shadow-lg shadow-green-900/50 transition-all hover:shadow-green-800/70 flex items-center gap-2"
                 >
                   🚀 Place Order via Angel One
@@ -618,13 +635,73 @@ export default function FlyStrategy() {
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
           <div className="bg-gray-800 rounded-xl p-6 max-w-md w-full space-y-4">
             <h3 className="text-white font-bold text-lg">Confirm Fly Order</h3>
-            <div className="bg-gray-700 rounded-lg p-3 space-y-1.5 text-sm">
+
+            {/* Order type toggle */}
+            <div className="flex items-center gap-1 bg-gray-700 rounded-lg p-1">
+              {(['MARKET', 'LIMIT'] as const).map(t => (
+                <button key={t} onClick={() => setOrderType(t)}
+                  className={`flex-1 py-1.5 rounded text-sm font-medium transition-colors ${orderType === t ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}>
+                  {t}
+                </button>
+              ))}
+            </div>
+            {orderType === 'LIMIT' && (
+              <p className="text-amber-400 text-xs -mt-2">Limit orders fill only if the market reaches your price. Use Refresh Prices first to get current LTPs.</p>
+            )}
+
+            {/* Trade summary */}
+            <div className="bg-gray-700 rounded-lg p-3 space-y-2 text-sm">
               <div className="flex justify-between"><span className="text-gray-400">Symbol</span><span className="text-white font-medium">{flySetup.symbol}</span></div>
               <div className="flex justify-between"><span className="text-gray-400">Expiry</span><span className="text-white">{flySetup.expiry}</span></div>
-              <div className="flex justify-between"><span className="text-gray-400">SELL PE</span><span className="text-rose-300">₹{flySetup.sell_pe.strike} @ ₹{flySetup.sell_pe.premium}</span></div>
-              <div className="flex justify-between"><span className="text-gray-400">SELL CE</span><span className="text-sky-300">₹{flySetup.sell_ce.strike} @ ₹{flySetup.sell_ce.premium}</span></div>
-              <div className="flex justify-between border-t border-gray-600 pt-1.5"><span className="text-gray-400">Net Credit / lot</span><span className="text-green-400 font-bold">₹{flySetup.net_credit.toLocaleString()}</span></div>
+
+              {/* SELL PE row */}
+              <div className="flex items-center justify-between">
+                <span className="text-rose-300">SELL PE @ ₹{flySetup.sell_pe.strike}</span>
+                {orderType === 'LIMIT' ? (
+                  <div className="flex items-center gap-1">
+                    <span className="text-gray-400 text-xs">₹</span>
+                    <input
+                      type="number" step="0.05" min="0.05"
+                      value={limitPePremium}
+                      onChange={e => setLimitPePremium(e.target.value)}
+                      className="w-24 bg-gray-600 border border-gray-500 focus:border-blue-400 text-white text-right text-sm px-2 py-1 rounded focus:outline-none"
+                    />
+                  </div>
+                ) : (
+                  <span className="text-rose-200 font-medium">₹{flySetup.sell_pe.premium} (market)</span>
+                )}
+              </div>
+
+              {/* SELL CE row */}
+              <div className="flex items-center justify-between">
+                <span className="text-sky-300">SELL CE @ ₹{flySetup.sell_ce.strike}</span>
+                {orderType === 'LIMIT' ? (
+                  <div className="flex items-center gap-1">
+                    <span className="text-gray-400 text-xs">₹</span>
+                    <input
+                      type="number" step="0.05" min="0.05"
+                      value={limitCePremium}
+                      onChange={e => setLimitCePremium(e.target.value)}
+                      className="w-24 bg-gray-600 border border-gray-500 focus:border-blue-400 text-white text-right text-sm px-2 py-1 rounded focus:outline-none"
+                    />
+                  </div>
+                ) : (
+                  <span className="text-sky-200 font-medium">₹{flySetup.sell_ce.premium} (market)</span>
+                )}
+              </div>
+
+              {/* Dynamic net credit */}
+              <div className="flex justify-between border-t border-gray-600 pt-2">
+                <span className="text-gray-400">Net Credit / lot</span>
+                <span className="text-green-400 font-bold">
+                  {orderType === 'LIMIT'
+                    ? `₹${r2((parseFloat(limitPePremium) || 0) + (parseFloat(limitCePremium) || 0)) * flySetup.lot_size}`
+                    : `₹${flySetup.net_credit.toLocaleString()}`}
+                </span>
+              </div>
             </div>
+
+            {/* Lots */}
             <div className="flex items-center gap-3">
               <label className="text-gray-300 text-sm">Lots:</label>
               <div className="flex items-center gap-2">
@@ -632,17 +709,22 @@ export default function FlyStrategy() {
                 <span className="text-white font-medium w-8 text-center">{lots}</span>
                 <button onClick={() => setLots(l => l + 1)} className="w-7 h-7 rounded bg-gray-700 hover:bg-gray-600 text-white">+</button>
               </div>
-              <span className="text-gray-400 text-xs">= ₹{r2(flySetup.net_credit * lots).toLocaleString()} total credit</span>
+              <span className="text-gray-400 text-xs">
+                = ₹{orderType === 'LIMIT'
+                  ? r2(((parseFloat(limitPePremium) || 0) + (parseFloat(limitCePremium) || 0)) * flySetup.lot_size * lots).toLocaleString()
+                  : r2(flySetup.net_credit * lots).toLocaleString()} total credit
+              </span>
             </div>
+
             <div className="bg-amber-900/30 border border-amber-700 text-amber-300 text-xs rounded-lg p-3">
-              Auto-monitor active: AI will alert you at 2% MTM gain and auto-exit at 50% of target credit captured. Loss warning at 150%.
+              Auto-monitor active: AI alerts at 2% MTM gain, auto-exits at 50% of target. Loss warning at 150%.
             </div>
             {orderError && <div className="text-red-400 text-sm">{orderError}</div>}
             <div className="flex gap-3">
               <button onClick={() => setShowOrderModal(false)} className="flex-1 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded text-sm">Cancel</button>
               <button onClick={placeOrder} disabled={placingOrder}
                 className="flex-1 py-2 bg-green-600 hover:bg-green-500 disabled:bg-green-800 text-white rounded text-sm font-medium">
-                {placingOrder ? 'Placing…' : 'Confirm & Place'}
+                {placingOrder ? 'Placing…' : `Confirm & Place ${orderType}`}
               </button>
             </div>
           </div>
