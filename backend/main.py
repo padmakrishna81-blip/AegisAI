@@ -34,6 +34,7 @@ def convert_numpy(obj):
 from api.routes import analyze, discover, portfolio, covered_calls, market, ai_advisor, settings, validate, etf, paper_trade, global_stocks, nse_search, cc_strategy, predict, predict_constituents, monitor, strategies, holdings as holdings_routes
 from api.routes import auth as auth_routes
 from api.routes import cushion_strangle as cushion_strangle_routes
+from api.routes import custom_fly as custom_fly_routes
 from api.routes import wheel_agent as wheel_agent_routes
 from api.routes import broker as broker_routes
 from api.routes import market_brain as market_brain_routes
@@ -74,6 +75,7 @@ app.include_router(monitor.router, prefix="/api", tags=["monitor"])
 app.include_router(holdings_routes.router, prefix="/api", tags=["holdings"])
 app.include_router(strategies.router, prefix="/api", tags=["strategies"])
 app.include_router(cushion_strangle_routes.router, prefix="/api", tags=["cushion-strangle"])
+app.include_router(custom_fly_routes.router,     prefix="/api", tags=["custom-fly"])
 app.include_router(wheel_agent_routes.router, prefix="/api", tags=["wheel-agent"])
 app.include_router(broker_routes.router, prefix="/api", tags=["broker"])
 app.include_router(market_brain_routes.router, prefix="/api", tags=["market-brain"])

@@ -30,6 +30,7 @@ const NAV_ITEMS = [
   { path: '/custom-strangle',  label: 'Custom Builder',   icon: '🔧', min_role: 'paper_trader' },
   { path: '/multi-builder',    label: 'Multi-Asset',      icon: '🧩', min_role: 'paper_trader' },
   { path: '/strategy-monitor', label: 'Strategy Monitor', icon: '📡', min_role: 'paper_trader' },
+  { path: '/custom-fly',       label: 'Custom Fly',       icon: '🦋', min_role: 'paper_trader' },
 
   { divider: true, label: 'Live Trading' },
 
