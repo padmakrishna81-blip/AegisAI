@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 
 from api.routes.auth import get_current_user
-from ai.fly_strategy import scan_consolidating, rank_safety, get_naked_fly, _SCAN_CACHE, _SCAN_CACHE_TTL
+from ai.fly_strategy import scan_consolidating, rank_safety, get_naked_fly, get_chain_expiries, _SCAN_CACHE, _SCAN_CACHE_TTL
 
 router = APIRouter()
 _executor = ThreadPoolExecutor(max_workers=4)
@@ -30,7 +30,6 @@ async def fly_scan(
     try:
         stocks = await loop.run_in_executor(_executor, _run)
 
-        # Determine cache age
         cache_entry = _SCAN_CACHE.get(str(days))
         cached_at = None
         if cache_entry:
@@ -48,17 +47,38 @@ async def fly_scan(
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
-@router.get("/fly/setup/{symbol}")
-async def fly_setup(
+@router.get("/fly/expiries/{symbol}")
+async def fly_expiries(
     symbol: str,
     user=Depends(get_current_user),
 ):
-    """Get naked fly (premium-matched short CE + short PE) setup for a symbol."""
-    loop = asyncio.get_running_loop()
+    """Return available option expiries for a symbol."""
     clean = symbol.upper().replace(".NS", "").replace(".BO", "")
+    loop = asyncio.get_running_loop()
+    try:
+        expiries = await loop.run_in_executor(_executor, lambda: get_chain_expiries(clean))
+        if not expiries:
+            return JSONResponse({"error": f"No option chain found for {clean}"}, status_code=400)
+        return {"symbol": clean, "expiries": expiries}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.get("/fly/setup/{symbol}")
+async def fly_setup(
+    symbol: str,
+    expiry: str | None = Query(default=None),
+    user=Depends(get_current_user),
+):
+    """Get naked fly (premium-matched short CE + short PE) setup for a symbol and expiry."""
+    clean = symbol.upper().replace(".NS", "").replace(".BO", "")
+    username = user.get("username") if user else None
+    loop = asyncio.get_running_loop()
 
     try:
-        result = await loop.run_in_executor(_executor, lambda: get_naked_fly(clean))
+        result = await loop.run_in_executor(
+            _executor, lambda: get_naked_fly(clean, expiry=expiry, username=username)
+        )
         if result.get("error"):
             return JSONResponse({"error": result["error"]}, status_code=400)
         return result

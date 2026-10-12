@@ -306,7 +306,23 @@ def _fetch_chain_yfinance(symbol: str, today: date) -> dict:
     return chain
 
 
-# ─── Consolidation scan ───────────────────────────────────────────────────────
+def get_chain_expiries(symbol: str) -> list[dict]:
+    """
+    Return available expiries for a symbol with DTE info.
+    Each entry: {expiry_str, dte, calls_count, puts_count}
+    """
+    clean = symbol.upper().replace(".NS", "").replace(".BO", "")
+    today = date.today()
+    chain = _fetch_full_chain(clean)
+    expiries = []
+    for exp_str, data in sorted(chain.items(), key=lambda x: x[1]["dte"]):
+        expiries.append({
+            "expiry": exp_str,
+            "dte": data["dte"],
+            "calls_count": len(data.get("calls", [])),
+            "puts_count": len(data.get("puts", [])),
+        })
+    return expiries
 
 _SCAN_CACHE: dict = {}
 _SCAN_CACHE_TTL = 900  # 15 minutes
@@ -369,6 +385,14 @@ def scan_consolidating(days: int) -> list[dict]:
             ratio = actual_range / expected_1sd if expected_1sd > 0 else 9.9
             consolidating = ratio <= 1.0
 
+            # HV rank: how elevated is current HV vs its own rolling distribution (proxy for IV rank)
+            rolling_hv = returns.rolling(20).std().dropna()
+            hv_vals = rolling_hv.values
+            if len(hv_vals) >= 10:
+                hv_rank_val = int(round(100 * sum(v < hv_daily for v in hv_vals) / len(hv_vals)))
+            else:
+                hv_rank_val = 50
+
             results.append({
                 "symbol": sym,
                 "sector": SECTOR.get(sym, "Other"),
@@ -378,8 +402,10 @@ def scan_consolidating(days: int) -> list[dict]:
                 "ratio": round(ratio, 3),
                 "consolidating": consolidating,
                 "hv_pct": round(hv_annual * 100, 1),
+                "hv_rank": hv_rank_val,
                 "safety_rank": None,
                 "rank_reason": "",
+                "highly_recommended": False,
             })
         except Exception as e:
             logger.debug("Skipping %s in scan: %s", sym, e)
@@ -407,16 +433,27 @@ def rank_safety(stocks: list[dict]) -> list[dict]:
         return stocks
 
     names = [s["symbol"] for s in consolidating]
+    hv_context = ", ".join(
+        f"{s['symbol']} (HV rank {s.get('hv_rank', 50)}/100)"
+        for s in consolidating
+    )
     prompt = (
-        f"Today is {date.today().isoformat()}. Rank each of the following Nifty 50 stocks "
-        f"by their options-selling risk in the NEXT 2 WEEKS. Consider: earnings/results, "
-        f"AGM, index rebalancing, macro events, regulatory risk, sector headwinds.\n\n"
+        f"Today is {date.today().isoformat()}. You are analysing Nifty 50 stocks for a SHORT-TERM "
+        f"naked fly options strategy (target: 2-3% return in under 5 days via theta + IV crush).\n\n"
+        f"Rank each stock by options-selling risk IN THE NEXT 2 WEEKS. "
+        f"Consider: earnings/results, AGM, index rebalancing, macro events, regulatory risk, "
+        f"sector headwinds, and whether IV is likely to COMPRESS soon (post-event, overshoot, etc).\n\n"
+        f"Stocks with their historical volatility rank (HV rank = where current HV sits in "
+        f"the 90-day rolling distribution; higher = more elevated IV, better premiums):\n{hv_context}\n\n"
         f"Stocks: {', '.join(names)}\n\n"
-        f"Respond ONLY as a JSON array with objects:\n"
-        f'[{{"symbol":"SYMBOL","rank":1,"reason":"one sentence"}},...]\n\n'
+        f"Respond ONLY as a JSON array:\n"
+        f'[{{"symbol":"SYMBOL","rank":1,"reason":"one sentence","iv_crush_likely":true}},...]\n\n'
         f"Rank 1 = Highest safety (no known events, stable sector). "
         f"Rank 2 = Moderate (some event risk, 50%+ chance stays in 1SD). "
         f"Rank 3 = Avoid (results/AGM/high volatility expected). "
+        f"iv_crush_likely = true ONLY when: (a) a near-term event has just passed and IV is "
+        f"likely to deflate, OR (b) IV is clearly elevated above fundamentals with no fresh catalyst "
+        f"coming in the next 5 days. "
         f"Return ALL {len(names)} stocks."
     )
 
@@ -435,18 +472,31 @@ def rank_safety(stocks: list[dict]) -> list[dict]:
                         rank_map[sym] = {
                             "rank": int(item.get("rank", 2)),
                             "reason": str(item.get("reason", "")),
+                            "iv_crush_likely": bool(item.get("iv_crush_likely", False)),
                         }
         except Exception as e:
             logger.warning("Safety rank JSON parse failed: %s", e)
 
     for s in stocks:
         if s.get("consolidating"):
-            info = rank_map.get(s["symbol"], {"rank": 2, "reason": "Could not rank — using default"})
+            info = rank_map.get(s["symbol"], {"rank": 2, "reason": "Could not rank — using default", "iv_crush_likely": False})
             s["safety_rank"] = info["rank"]
-            s["rank_reason"] = info["reason"]
+            # "Highly recommended" = safe/moderate rank + elevated IV + IV crush likely OR just very high HV rank
+            hv_rank = s.get("hv_rank", 0)
+            iv_crush = info.get("iv_crush_likely", False)
+            s["highly_recommended"] = (
+                info["rank"] <= 2 and (iv_crush or hv_rank >= 70)
+            )
+            reason = info["reason"]
+            if s["highly_recommended"] and iv_crush:
+                reason = "🔥 IV crush candidate — " + reason
+            elif s["highly_recommended"] and hv_rank >= 70:
+                reason = f"🔥 Elevated IV (rank {hv_rank}/100) — " + reason
+            s["rank_reason"] = reason
         else:
             s["safety_rank"] = None
             s["rank_reason"] = ""
+            s["highly_recommended"] = False
 
     # Update cache
     for cache_entry in _SCAN_CACHE.values():
@@ -455,15 +505,33 @@ def rank_safety(stocks: list[dict]) -> list[dict]:
             if match:
                 item["safety_rank"] = match["safety_rank"]
                 item["rank_reason"] = match["rank_reason"]
+                item["highly_recommended"] = match.get("highly_recommended", False)
 
     return stocks
 
 
 # ─── Naked Fly setup ──────────────────────────────────────────────────────────
 
-def get_naked_fly(symbol: str) -> dict:
+def _refresh_ltp_angel_one(symbol: str, expiry_str: str, strike: float, opt_type: str, username: str) -> float | None:
+    """Try to get live option LTP from Angel One broker session."""
+    try:
+        from data.broker_creds import get_session
+        from brokers.angel_one import AngelOneClient
+        session = get_session(username, "angelone")
+        if not session:
+            return None
+        client = AngelOneClient(session, cache_key=f"{username}:angelone")
+        return client.get_option_ltp(symbol, expiry_str, strike, opt_type)
+    except Exception as e:
+        logger.debug("Angel One option LTP failed: %s", e)
+    return None
+
+
+def get_naked_fly(symbol: str, expiry: str | None = None, username: str | None = None) -> dict:
     """
     Build a naked fly (premium-matched short CE + short PE) setup for symbol.
+    expiry: optional expiry string (e.g. "27-Oct-2026") — if None, auto-selects best
+    username: if provided, tries Angel One for live option LTPs before jugaad/NSE
 
     Returns:
     {
@@ -475,7 +543,8 @@ def get_naked_fly(symbol: str) -> dict:
                         wing_width, hedge_debit, capped_max_loss},
       hedge_stock: {side, shares, value},
       breakeven_up, breakeven_down,
-      source,  # "nse" or "yfinance"
+      source,  # "angel_one", "jugaad", or "yfinance"
+      dte_warning,  # non-null if DTE < 30
       error,   # non-null if setup could not be built
     }
     """
@@ -489,23 +558,28 @@ def get_naked_fly(symbol: str) -> dict:
     if not chain:
         return {"error": f"Could not fetch option chain for {clean}", "symbol": clean}
 
-    # Prefer DTE > 30; fall back to any expiry with DTE >= 7 if nothing better
-    def _qualifies(exp_str: str, data: dict, min_dte: int) -> bool:
-        return (data["dte"] >= min_dte
-                and len(data.get("calls", [])) >= 3
-                and len(data.get("puts", [])) >= 3)
+    # Use caller-specified expiry if provided, otherwise auto-select
+    if expiry and expiry in chain:
+        expiry_str = expiry
+        exp_data = chain[expiry]
+    else:
+        def _qualifies(exp_str: str, data: dict, min_dte: int) -> bool:
+            return (data["dte"] >= min_dte
+                    and len(data.get("calls", [])) >= 3
+                    and len(data.get("puts", [])) >= 3)
 
-    qualifying = [(e, d) for e, d in chain.items() if _qualifies(e, d, 30)]
-    if not qualifying:
-        qualifying = [(e, d) for e, d in chain.items() if _qualifies(e, d, 7)]
-    if not qualifying:
-        return {"error": f"No expiry with sufficient liquidity found for {clean}", "symbol": clean}
+        qualifying = [(e, d) for e, d in chain.items() if _qualifies(e, d, 30)]
+        if not qualifying:
+            qualifying = [(e, d) for e, d in chain.items() if _qualifies(e, d, 7)]
+        if not qualifying:
+            return {"error": f"No expiry with sufficient liquidity found for {clean}", "symbol": clean}
 
-    qualifying.sort(key=lambda x: x[1]["dte"])
-    expiry_str, exp_data = qualifying[0]
+        qualifying.sort(key=lambda x: x[1]["dte"])
+        expiry_str, exp_data = qualifying[0]
+
     spot = exp_data["spot"]
     dte = exp_data["dte"]
-    dte_warning = "Near-month expiry only (DTE < 30). Strategy works best with DTE > 30." if dte < 30 else None
+    dte_warning = "Near-month expiry (DTE < 30). Strategy works best with DTE > 30." if dte < 30 else None
     T = dte / 365.0
 
     if spot <= 0:
@@ -544,6 +618,17 @@ def get_naked_fly(symbol: str) -> dict:
     if ce_premium <= 0:
         return {"error": f"Could not find CE with matching premium for {clean}", "symbol": clean}
 
+    # ── Refresh premiums from Angel One if broker session is available ────────
+    if username:
+        ao_pe = _refresh_ltp_angel_one(clean, expiry_str, pe_strike, "PE", username)
+        if ao_pe and ao_pe > 0:
+            pe_premium = ao_pe
+            source = "angel_one"
+        ao_ce = _refresh_ltp_angel_one(clean, expiry_str, ce_strike, "CE", username)
+        if ao_ce and ao_ce > 0:
+            ce_premium = ao_ce
+            source = "angel_one"
+
     premium_diff_pct = abs(ce_premium - pe_premium) / pe_premium * 100
 
     # ── ATM IV (average of PE and CE IVs) ────────────────────────────────────
@@ -552,9 +637,11 @@ def get_naked_fly(symbol: str) -> dict:
         atm_iv = 25.0  # reasonable fallback
 
     # ── Deltas ───────────────────────────────────────────────────────────────
-    pe_delta = -_put_delta_abs(spot, pe_strike, atm_iv, T)  # negative (sell)
-    ce_delta = _call_delta(spot, ce_strike, atm_iv, T)       # positive (sell)
-    # Net position delta when SHORT both: sell PE adds +|delta_PE|, sell CE adds -delta_CE
+    # Option deltas (option's own theoretical delta):
+    #   PE delta is negative (-put_delta_abs), CE delta is positive (+call_delta)
+    # Position deltas when SELLING both:
+    #   Short PE: +put_delta_abs (positive), Short CE: -call_delta (negative)
+    # Net position delta = +put_delta_abs - call_delta
     pe_delta_abs = _put_delta_abs(spot, pe_strike, atm_iv, T)
     ce_delta_val = _call_delta(spot, ce_strike, atm_iv, T)
     net_delta = round(pe_delta_abs - ce_delta_val, 3)
@@ -564,6 +651,16 @@ def get_naked_fly(symbol: str) -> dict:
     ce_liq = best_ce["volume"] >= 100 and best_ce["oi"] >= 500
 
     net_credit = round((pe_premium + ce_premium) * lot_size, 2)
+
+    # Return metrics for "2-3% in few days" objective
+    # return_pct: total credit as % of stock's spot price (premium yield per share)
+    return_pct = round((pe_premium + ce_premium) / spot * 100, 2) if spot > 0 else 0.0
+    # Rough 5-day theta capture: assume ~sqrt(5/DTE) fraction of total premium decays in 5 days
+    # (theta is not linear — front-loaded near expiry, but sqrt approximation is common)
+    if dte > 0:
+        est_5d_theta_pct = round(return_pct * min(math.sqrt(5.0 / dte), 1.0), 2)
+    else:
+        est_5d_theta_pct = return_pct
 
     # ── Breakevens ───────────────────────────────────────────────────────────
     total_prem = pe_premium + ce_premium
@@ -610,7 +707,7 @@ def get_naked_fly(symbol: str) -> dict:
         "sell_pe": {
             "strike": pe_strike,
             "premium": round(pe_premium, 2),
-            "delta": round(pe_delta, 3),
+            "delta": round(pe_delta_abs, 3),       # stored as positive; position delta = +pe_delta_abs
             "volume": atm_put["volume"],
             "oi": atm_put["oi"],
             "liq_ok": pe_liq,
@@ -618,12 +715,14 @@ def get_naked_fly(symbol: str) -> dict:
         "sell_ce": {
             "strike": ce_strike,
             "premium": round(ce_premium, 2),
-            "delta": round(ce_delta_val, 3),
+            "delta": round(ce_delta_val, 3),        # stored as positive; position delta = -ce_delta_val
             "volume": best_ce["volume"],
             "oi": best_ce["oi"],
             "liq_ok": ce_liq,
         },
         "net_credit": net_credit,
+        "return_pct": return_pct,
+        "est_5d_theta_pct": est_5d_theta_pct,
         "net_delta": net_delta,
         "premium_diff_pct": round(premium_diff_pct, 1),
         "breakeven_up": breakeven_up,

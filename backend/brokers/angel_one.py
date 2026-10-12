@@ -240,6 +240,49 @@ class AngelOneClient(BrokerClient):
             time.sleep(0.3)  # small delay between LTP calls
         return result
 
+    def get_option_ltp(self, symbol: str, expiry_str: str, strike: float, opt_type: str) -> float | None:
+        """
+        Fetch live LTP for a specific NSE F&O option contract from Angel One.
+        expiry_str: "27-Oct-2026" format (as returned by jugaad/NSE)
+        opt_type: "CE" or "PE"
+        Returns LTP as float or None if unavailable.
+        """
+        self._ensure_connected()
+        if not self._obj:
+            return None
+        try:
+            from datetime import datetime
+            exp_date = None
+            for fmt in ["%d-%b-%Y", "%d-%b-%y", "%Y-%m-%d", "%d/%m/%Y"]:
+                try:
+                    exp_date = datetime.strptime(expiry_str.strip(), fmt)
+                    break
+                except ValueError:
+                    pass
+            if not exp_date:
+                return None
+
+            # Angel One tradingsymbol format for NSE F&O options:
+            # SYMBOLDDMMMYYCE/PESTRIKE  e.g. ITC27OCT26CE265.00
+            exp_code = exp_date.strftime("%d%b%y").upper()  # "27OCT26"
+            # Try integer strike first (most common), then decimal
+            for strike_fmt in [f"{int(strike)}", f"{strike:.2f}"]:
+                tradingsymbol = f"{symbol.upper()}{exp_code}{opt_type.upper()}{strike_fmt}"
+                try:
+                    resp_search = self._obj.searchScrip("NFO", tradingsymbol)
+                    if resp_search and resp_search.get("data"):
+                        token = str(resp_search["data"][0]["symboltoken"])
+                        resp = self._obj.ltpData("NFO", tradingsymbol, token)
+                        if resp and resp.get("status") and resp.get("data"):
+                            ltp = resp["data"].get("ltp")
+                            if ltp is not None and float(ltp) > 0:
+                                return float(ltp)
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.debug("get_option_ltp failed for %s %s %s %s: %s", symbol, expiry_str, strike, opt_type, e)
+        return None
+
     def place_order(self, params: dict) -> dict:
         """
         params: symbol, token, exchange, side (BUY/SELL), qty, price (0=market),
