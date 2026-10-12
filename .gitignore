@@ -24,6 +24,7 @@ backend/stock_trader.json
 backend/global_stocks.json
 backend/wheel_v2_positions.json
 backend/wheel_v2_config.json
+backend/fly_positions.json
 backend/aegisai.db
 
 # TypeScript build artifacts

@@ -566,7 +566,14 @@ def _refresh_ltp_angel_one(symbol: str, expiry_str: str, strike: float, opt_type
     return None
 
 
-def get_naked_fly(symbol: str, expiry: str | None = None, username: str | None = None) -> dict:
+def get_naked_fly(
+    symbol: str,
+    expiry: str | None = None,
+    username: str | None = None,
+    pe_strike_override: float | None = None,
+    ce_strike_override: float | None = None,
+    force_refresh: bool = False,
+) -> dict:
     """
     Build a naked fly (premium-matched short CE + short PE) setup for symbol.
     expiry: optional expiry string (e.g. "27-Oct-2026") — if None, auto-selects best
@@ -636,8 +643,11 @@ def get_naked_fly(symbol: str, expiry: str | None = None, username: str | None =
     calls = sorted(exp_data["calls"], key=lambda x: x["strike"])
     puts = sorted(exp_data["puts"], key=lambda x: x["strike"])
 
-    # ── Find ATM PE ──────────────────────────────────────────────────────────
-    atm_put = min(puts, key=lambda x: abs(x["strike"] - spot))
+    # ── Find ATM PE (or use override strike) ────────────────────────────────
+    if pe_strike_override:
+        atm_put = min(puts, key=lambda x: abs(x["strike"] - pe_strike_override))
+    else:
+        atm_put = min(puts, key=lambda x: abs(x["strike"] - spot))
     pe_strike = atm_put["strike"]
     pe_premium = atm_put["mid"] if atm_put["mid"] > 0 else atm_put["ltp"]
     pe_iv = atm_put["iv"]
@@ -645,11 +655,14 @@ def get_naked_fly(symbol: str, expiry: str | None = None, username: str | None =
     if pe_premium <= 0:
         return {"error": f"ATM PE has zero premium for {clean} at strike {pe_strike}", "symbol": clean}
 
-    # ── Find CE with matching premium ────────────────────────────────────────
-    best_ce = min(
-        calls,
-        key=lambda x: abs((x["mid"] if x["mid"] > 0 else x["ltp"]) - pe_premium)
-    )
+    # ── Find CE with matching premium (or use override strike) ──────────────
+    if ce_strike_override:
+        best_ce = min(calls, key=lambda x: abs(x["strike"] - ce_strike_override))
+    else:
+        best_ce = min(
+            calls,
+            key=lambda x: abs((x["mid"] if x["mid"] > 0 else x["ltp"]) - pe_premium)
+        )
     ce_strike = best_ce["strike"]
     ce_premium = best_ce["mid"] if best_ce["mid"] > 0 else best_ce["ltp"]
     ce_iv = best_ce["iv"]
@@ -658,6 +671,7 @@ def get_naked_fly(symbol: str, expiry: str | None = None, username: str | None =
         return {"error": f"Could not find CE with matching premium for {clean}", "symbol": clean}
 
     # ── Refresh premiums from Angel One if broker session is available ────────
+    ao_cache_key = f"{username}:angelone" if (username and not force_refresh) else None
     if username:
         ao_pe = _refresh_ltp_angel_one(clean, expiry_str, pe_strike, "PE", username)
         if ao_pe and ao_pe > 0:
@@ -735,6 +749,34 @@ def get_naked_fly(symbol: str, expiry: str | None = None, username: str | None =
         stock_side = "NONE"
         stock_value = 0.0
 
+    # Available strikes for frontend pickers (sorted)
+    put_strikes  = sorted([p["strike"] for p in puts])
+    call_strikes = sorted([c["strike"] for c in calls])
+
+    # If chain is sparse (< 5 strikes), generate synthetic strikes from ATM ± 8 steps
+    # Detect the strike interval from whatever strikes we have, or use a sensible default
+    def _detect_interval(strikes: list[float], fallback: float) -> float:
+        if len(strikes) >= 2:
+            diffs = [abs(strikes[i+1] - strikes[i]) for i in range(len(strikes)-1)]
+            return min(diffs) or fallback
+        return fallback
+
+    _default_interval = round(spot / 100) * 5 or 10.0   # ~1% of spot, rounded to nearest 5
+    put_interval  = _detect_interval(put_strikes, _default_interval)
+    call_interval = _detect_interval(call_strikes, _default_interval)
+
+    if len(put_strikes) < 5:
+        atm_round = round(spot / put_interval) * put_interval
+        put_strikes = sorted(set(put_strikes + [
+            round(atm_round + i * put_interval, 1) for i in range(-8, 9)
+        ]))
+
+    if len(call_strikes) < 5:
+        atm_round = round(spot / call_interval) * call_interval
+        call_strikes = sorted(set(call_strikes + [
+            round(atm_round + i * call_interval, 1) for i in range(-5, 12)
+        ]))
+
     return {
         "symbol": clean,
         "spot": round(spot, 2),
@@ -782,5 +824,7 @@ def get_naked_fly(symbol: str, expiry: str | None = None, username: str | None =
         },
         "source": source,
         "dte_warning": dte_warning,
+        "put_strikes": put_strikes,
+        "call_strikes": call_strikes,
         "error": None,
     }

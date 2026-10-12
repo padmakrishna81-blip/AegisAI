@@ -224,6 +224,15 @@ def _campaign_monitor_loop():
 
 threading.Thread(target=_campaign_monitor_loop, daemon=True).start()
 
+
+def _fly_monitor_loop():
+    from ai.fly_monitor_agent import monitor_loop
+    monitor_loop()
+
+
+threading.Thread(target=_fly_monitor_loop, daemon=True).start()
+
+
 @app.get("/")
 async def root():
     return {"message": "AegisAI Investment Intelligence Platform", "version": "1.0.0"}

@@ -283,6 +283,91 @@ class AngelOneClient(BrokerClient):
             logger.debug("get_option_ltp failed for %s %s %s %s: %s", symbol, expiry_str, strike, opt_type, e)
         return None
 
+    def place_nfo_order(
+        self,
+        symbol: str,
+        expiry_str: str,
+        strike: float,
+        opt_type: str,
+        side: str,
+        lots: int,
+        lot_size: int,
+        order_type: str = "MARKET",
+        price: float = 0.0,
+    ) -> dict:
+        """
+        Place an NFO option order (used for fly entry/exit).
+        symbol: NSE F&O symbol e.g. "ITC"
+        expiry_str: "27-Nov-2026" format
+        strike: e.g. 265.0
+        opt_type: "CE" or "PE"
+        side: "BUY" or "SELL"
+        lots: number of lots
+        lot_size: shares per lot
+        Returns order result dict.
+        """
+        self._ensure_connected()
+        if not self._obj:
+            raise RuntimeError("Angel One not connected")
+        try:
+            from datetime import datetime
+            exp_date = None
+            for fmt in ["%d-%b-%Y", "%d-%b-%y", "%Y-%m-%d", "%d/%m/%Y"]:
+                try:
+                    exp_date = datetime.strptime(expiry_str.strip(), fmt)
+                    break
+                except ValueError:
+                    pass
+            if not exp_date:
+                raise ValueError(f"Cannot parse expiry: {expiry_str}")
+
+            exp_code = exp_date.strftime("%d%b%y").upper()
+            qty = lots * lot_size
+
+            for strike_fmt in [f"{int(strike)}", f"{strike:.2f}"]:
+                tradingsymbol = f"{symbol.upper()}{exp_code}{opt_type.upper()}{strike_fmt}"
+                try:
+                    resp_search = self._obj.searchScrip("NFO", tradingsymbol)
+                    if not (resp_search and resp_search.get("data")):
+                        continue
+                    token = str(resp_search["data"][0]["symboltoken"])
+                    order_params = {
+                        "variety":         "NORMAL",
+                        "tradingsymbol":   tradingsymbol,
+                        "symboltoken":     token,
+                        "transactiontype": side.upper(),
+                        "exchange":        "NFO",
+                        "ordertype":       order_type.upper(),
+                        "producttype":     "CARRYFORWARD",
+                        "duration":        "DAY",
+                        "price":           str(price) if order_type.upper() == "LIMIT" else "0",
+                        "squareoff":       "0",
+                        "stoploss":        "0",
+                        "quantity":        str(qty),
+                    }
+                    raw = self._obj._postRequest("api.order.place", order_params)
+                    ok = raw.get("status") or raw.get("success")
+                    if not ok:
+                        err_msg = raw.get("message") or raw.get("errorcode") or "Unknown error"
+                        raise RuntimeError(f"NFO order failed for {tradingsymbol}: {err_msg}")
+                    order_data = raw.get("data") or {}
+                    order_id = order_data if isinstance(order_data, str) else order_data.get("orderid", "")
+                    return {
+                        "order_id":      str(order_id),
+                        "tradingsymbol": tradingsymbol,
+                        "broker":        "Angel One",
+                        "status":        "placed",
+                        "message":       raw.get("message", "Order placed"),
+                    }
+                except RuntimeError:
+                    raise
+                except Exception:
+                    continue
+            raise RuntimeError(f"Could not find NFO scrip for {symbol} {expiry_str} {opt_type} {strike}")
+        except Exception as e:
+            logger.warning("place_nfo_order failed: %s", e)
+            raise
+
     def place_order(self, params: dict) -> dict:
         """
         params: symbol, token, exchange, side (BUY/SELL), qty, price (0=market),
