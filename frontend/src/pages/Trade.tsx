@@ -1514,9 +1514,142 @@ function CcPositionsTab({ positions, onRefresh }: { positions: CcPosition[]; onR
   )
 }
 
+// ─── Fly Positions Tab ────────────────────────────────────────────────────────
+
+interface FlyPaperPosition {
+  id: string
+  symbol: string
+  expiry: string
+  lot_size: number
+  lots: number
+  is_paper?: boolean
+  sell_pe: { strike: number; entry_premium: number }
+  sell_ce: { strike: number; entry_premium: number }
+  net_credit_total: number
+  entered_at: string
+  status: string
+  current_pe_ltp: number
+  current_ce_ltp: number
+  mtm_pnl: number
+  pct_of_target: number
+  exit_reason: string | null
+  exited_at: string | null
+}
+
+function FlyPositionsTab() {
+  const [positions, setPositions] = useState<FlyPaperPosition[]>([])
+  const [loading, setLoading] = useState(true)
+
+  const load = async () => {
+    setLoading(true)
+    try {
+      const res = await client.get('/fly/positions')
+      const all: FlyPaperPosition[] = res.data.positions || []
+      setPositions(all.filter(p => p.is_paper))
+    } catch { /* ignore */ }
+    finally { setLoading(false) }
+  }
+
+  useEffect(() => { load() }, [])
+
+  const active = positions.filter(p => p.status === 'active')
+  const closed = positions.filter(p => p.status === 'exited')
+
+  const fmtPnl = (v: number) => {
+    const s = v >= 0 ? '+' : ''
+    return <span className={v >= 0 ? 'text-score-green' : 'text-score-red'}>{s}₹{Math.abs(v).toLocaleString('en-IN')}</span>
+  }
+
+  if (loading) return <div className="p-6 text-muted text-sm">Loading fly positions…</div>
+
+  if (positions.length === 0) return (
+    <div className="p-6 text-center text-muted text-sm">
+      No paper fly positions yet. Go to <strong className="text-white">Custom Fly</strong>, select a stock and place a paper trade.
+    </div>
+  )
+
+  const colHdr = 'text-left text-[10px] text-muted uppercase tracking-wide py-2 px-3'
+  const cell = 'px-3 py-2.5 text-sm'
+
+  const Table = ({ rows }: { rows: FlyPaperPosition[] }) => (
+    <table className="w-full text-sm">
+      <thead className="border-b border-border">
+        <tr>
+          <th className={colHdr}>Symbol / Expiry</th>
+          <th className={colHdr}>SELL PE</th>
+          <th className={colHdr}>SELL CE</th>
+          <th className={colHdr}>Net Credit</th>
+          <th className={colHdr}>Lots</th>
+          <th className={colHdr}>MTM P&L</th>
+          <th className={colHdr}>% of Target</th>
+          <th className={colHdr}>Status</th>
+          <th className={colHdr}>Entered</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map(p => (
+          <tr key={p.id} className="border-b border-border/50 hover:bg-slate-800/40">
+            <td className={cell}>
+              <div className="font-medium text-white">{p.symbol}</div>
+              <div className="text-[11px] text-muted">{p.expiry}</div>
+            </td>
+            <td className={cell}>
+              <div className="text-rose-300">@₹{p.sell_pe.strike}</div>
+              <div className="text-[11px] text-muted">entry ₹{p.sell_pe.entry_premium}</div>
+            </td>
+            <td className={cell}>
+              <div className="text-sky-300">@₹{p.sell_ce.strike}</div>
+              <div className="text-[11px] text-muted">entry ₹{p.sell_ce.entry_premium}</div>
+            </td>
+            <td className={`${cell} font-medium text-green-300`}>
+              ₹{p.net_credit_total.toLocaleString('en-IN')}
+            </td>
+            <td className={cell}>{p.lots} × {p.lot_size}</td>
+            <td className={cell}>{fmtPnl(p.mtm_pnl ?? 0)}</td>
+            <td className={cell}>
+              <span className={`font-medium ${(p.pct_of_target ?? 0) >= 50 ? 'text-score-green' : (p.pct_of_target ?? 0) < 0 ? 'text-score-red' : 'text-slate-300'}`}>
+                {(p.pct_of_target ?? 0).toFixed(1)}%
+              </span>
+            </td>
+            <td className={cell}>
+              {p.status === 'active'
+                ? <span className="px-2 py-0.5 rounded text-xs bg-blue-950 border border-blue-800 text-score-blue">Active</span>
+                : <span className="px-2 py-0.5 rounded text-xs bg-slate-700 text-muted">{p.exit_reason || 'Exited'}</span>}
+            </td>
+            <td className={`${cell} text-muted text-xs`}>{fmtDate(p.entered_at)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+
+  return (
+    <div className="space-y-4 px-4 py-4">
+      <div className="flex items-center justify-between">
+        <div className="text-sm text-muted">{active.length} active · {closed.length} closed</div>
+        <button onClick={load} className="text-xs text-score-blue hover:underline">↻ Refresh</button>
+      </div>
+
+      {active.length > 0 && (
+        <div className="bg-card rounded-xl border border-border overflow-x-auto">
+          <div className="px-4 py-2.5 border-b border-border text-sm font-semibold text-white">Active Fly Positions</div>
+          <Table rows={active} />
+        </div>
+      )}
+
+      {closed.length > 0 && (
+        <div className="bg-card rounded-xl border border-border overflow-x-auto">
+          <div className="px-4 py-2.5 border-b border-border text-sm font-semibold text-muted">Closed Fly Positions</div>
+          <Table rows={closed} />
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Main Trade Page ──────────────────────────────────────────────────────────
 
-type TradeTab = 'holdings' | 'portfolio' | 'new_trade' | 'orders' | 'options'
+type TradeTab = 'holdings' | 'portfolio' | 'new_trade' | 'orders' | 'options' | 'fly'
 
 export default function Trade() {
   const [tab, setTab] = useState<TradeTab>('holdings')
@@ -1602,6 +1735,7 @@ export default function Trade() {
           { key: 'new_trade',  label: '+ New Trade' },
           { key: 'orders',     label: '📋 Order Log' },
           { key: 'options',    label: '🔒 Options' },
+          { key: 'fly',        label: '🦋 Fly Positions' },
         ] as { key: TradeTab; label: string }[]).map(({ key, label }) => (
           <button
             key={key}
@@ -1792,6 +1926,8 @@ export default function Trade() {
       {tab === 'options' && (
         <CcPositionsTab positions={summary?.cc_positions || []} onRefresh={refresh} />
       )}
+
+      {tab === 'fly' && <FlyPositionsTab />}
 
       {/* Info footer */}
       <div className="bg-slate-800/60 border border-border rounded-xl p-4 text-xs text-muted space-y-1">

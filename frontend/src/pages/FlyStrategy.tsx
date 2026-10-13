@@ -49,6 +49,7 @@ interface MtmPoint { ts: string; pe_ltp: number; ce_ltp: number; mtm_pnl: number
 interface FlyPosition {
   id: string; symbol: string; expiry: string; lot_size: number; lots: number
   spot_at_entry: number; dte_at_entry: number
+  is_paper?: boolean
   sell_pe: { strike: number; entry_premium: number; order_id: string }
   sell_ce: { strike: number; entry_premium: number; order_id: string }
   net_credit_total: number; entered_at: string; status: string
@@ -129,6 +130,7 @@ export default function FlyStrategy() {
   // Order modal
   const [showOrderModal, setShowOrderModal] = useState(false)
   const [lots, setLots] = useState(1)
+  const [tradeMode, setTradeMode] = useState<'paper' | 'live'>('paper')
   const [orderType, setOrderType] = useState<'MARKET' | 'LIMIT'>('MARKET')
   const [limitPePremium, setLimitPePremium] = useState('')
   const [limitCePremium, setLimitCePremium] = useState('')
@@ -241,7 +243,8 @@ export default function FlyStrategy() {
         dte: flySetup.dte,
         order_type: orderType,
       }
-      await api.post('/fly/order', body)
+      const endpoint = tradeMode === 'paper' ? '/fly/paper-order' : '/fly/order'
+      await api.post(endpoint, body)
       setShowOrderModal(false)
       await fetchPositions()
     } catch (e: unknown) {
@@ -701,6 +704,7 @@ export default function FlyStrategy() {
                 <button
                   onClick={() => {
                     setLots(1)
+                    setTradeMode('paper')
                     setOrderType('MARKET')
                     setLimitPePremium(String(flySetup.sell_pe.premium))
                     setLimitCePremium(String(flySetup.sell_ce.premium))
@@ -709,7 +713,7 @@ export default function FlyStrategy() {
                   }}
                   className="shrink-0 px-6 py-3 bg-green-600 hover:bg-green-500 text-white text-sm font-bold rounded-lg shadow-lg shadow-green-900/50 transition-all hover:shadow-green-800/70 flex items-center gap-2"
                 >
-                  🚀 Place Order via Angel One
+                  🚀 Place Order
                 </button>
               </div>
             </div>
@@ -738,6 +742,24 @@ export default function FlyStrategy() {
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
           <div className="bg-gray-800 rounded-xl p-6 max-w-md w-full space-y-4">
             <h3 className="text-white font-bold text-lg">Confirm Fly Order</h3>
+
+            {/* Trade mode toggle */}
+            <div className="flex items-center gap-1 bg-gray-700 rounded-lg p-1">
+              <button onClick={() => setTradeMode('paper')}
+                className={`flex-1 py-1.5 rounded text-sm font-medium transition-colors ${tradeMode === 'paper' ? 'bg-amber-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}>
+                📝 Paper Trade
+              </button>
+              <button onClick={() => setTradeMode('live')}
+                className={`flex-1 py-1.5 rounded text-sm font-medium transition-colors ${tradeMode === 'live' ? 'bg-green-600 text-white' : 'text-gray-400 hover:text-gray-200'}`}>
+                ⚡ Live (Angel One)
+              </button>
+            </div>
+            {tradeMode === 'paper' && (
+              <p className="text-amber-300 text-xs -mt-2">Paper trade: no real order placed. Position appears in the Trade page under the Fly tab.</p>
+            )}
+            {tradeMode === 'live' && (
+              <p className="text-green-300 text-xs -mt-2">Live trade: real NFO order via Angel One. Ensure broker is connected.</p>
+            )}
 
             {/* Order type toggle */}
             <div className="flex items-center gap-1 bg-gray-700 rounded-lg p-1">
@@ -826,8 +848,12 @@ export default function FlyStrategy() {
             <div className="flex gap-3">
               <button onClick={() => setShowOrderModal(false)} className="flex-1 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded text-sm">Cancel</button>
               <button onClick={placeOrder} disabled={placingOrder}
-                className="flex-1 py-2 bg-green-600 hover:bg-green-500 disabled:bg-green-800 text-white rounded text-sm font-medium">
-                {placingOrder ? 'Placing…' : `Confirm & Place ${orderType}`}
+                className={`flex-1 py-2 disabled:opacity-60 text-white rounded text-sm font-medium ${tradeMode === 'paper' ? 'bg-amber-600 hover:bg-amber-500' : 'bg-green-600 hover:bg-green-500'}`}>
+                {placingOrder
+                  ? 'Placing…'
+                  : tradeMode === 'paper'
+                    ? `📝 Paper ${orderType}`
+                    : `⚡ Live ${orderType} via Angel One`}
               </button>
             </div>
           </div>
@@ -850,7 +876,10 @@ function PositionCard({ pos, onClose, closingId }: { pos: FlyPosition; onClose: 
     <div className={`bg-gray-800 rounded-xl p-4 border ${pct >= 50 ? 'border-green-700' : pct < -50 ? 'border-red-700' : 'border-gray-700'}`}>
       <div className="flex items-start justify-between mb-3 flex-wrap gap-2">
         <div>
-          <div className="text-white font-semibold">{pos.symbol} <span className="text-gray-400 text-sm font-normal">Naked Fly</span></div>
+          <div className="text-white font-semibold">
+            {pos.symbol} <span className="text-gray-400 text-sm font-normal">Naked Fly</span>
+            {pos.is_paper && <span className="ml-2 text-xs px-1.5 py-0.5 rounded bg-amber-900 text-amber-300 font-medium">PAPER</span>}
+          </div>
           <div className="text-gray-400 text-xs mt-0.5">
             PE@{pos.sell_pe.strike} · CE@{pos.sell_ce.strike} · {pos.expiry} · {pos.lots} lot{pos.lots !== 1 ? 's' : ''}
           </div>

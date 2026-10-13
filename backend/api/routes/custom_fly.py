@@ -103,6 +103,66 @@ async def fly_setup(
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# ── Paper order (no broker) ───────────────────────────────────────────────────
+
+@router.post("/fly/paper-order")
+async def fly_paper_order(body: dict, user=Depends(get_current_user)):
+    """
+    Simulate a fly order (paper trade) — no broker call, stores position
+    with is_paper=True so the Trade page can show it.
+    Body: same shape as /fly/order
+    """
+    username = user.get("username")
+
+    try:
+        symbol    = body["symbol"]
+        expiry    = body["expiry"]
+        lots      = int(body.get("lots", 1))
+        lot_size  = int(body["lot_size"])
+        order_type = body.get("order_type", "MARKET").upper()
+
+        pe_prem = float(body["sell_pe"]["premium"])
+        ce_prem = float(body["sell_ce"]["premium"])
+
+        position = {
+            "id":              str(uuid.uuid4()),
+            "is_paper":        True,
+            "symbol":          symbol,
+            "expiry":          expiry,
+            "lot_size":        lot_size,
+            "lots":            lots,
+            "dte_at_entry":    int(body.get("dte", 30)),
+            "spot_at_entry":   float(body.get("spot_at_entry", 0)),
+            "sell_pe": {
+                "strike":        float(body["sell_pe"]["strike"]),
+                "entry_premium": pe_prem,
+                "order_id":      "PAPER",
+            },
+            "sell_ce": {
+                "strike":        float(body["sell_ce"]["strike"]),
+                "entry_premium": ce_prem,
+                "order_id":      "PAPER",
+            },
+            "net_credit_total": float(body.get("net_credit_total", 0)),
+            "order_type":       order_type,
+            "entered_at":       datetime.utcnow().isoformat(),
+            "status":           "active",
+            "current_pe_ltp":   pe_prem,
+            "current_ce_ltp":   ce_prem,
+            "mtm_pnl":          0.0,
+            "pct_of_target":    0.0,
+            "mtm_pct_of_position": 0.0,
+            "last_checked":     datetime.utcnow().isoformat(),
+            "mtm_history":      [],
+            "exit_reason":      None,
+            "exited_at":        None,
+        }
+        add_position(username, position)
+        return {"position": position, "paper": True}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # ── Place order ───────────────────────────────────────────────────────────────
 
 @router.post("/fly/order")
