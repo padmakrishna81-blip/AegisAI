@@ -321,52 +321,108 @@ class AngelOneClient(BrokerClient):
             if not exp_date:
                 raise ValueError(f"Cannot parse expiry: {expiry_str}")
 
-            exp_code = exp_date.strftime("%d%b%y").upper()
             qty = lots * lot_size
 
-            for strike_fmt in [f"{int(strike)}", f"{strike:.2f}"]:
-                tradingsymbol = f"{symbol.upper()}{exp_code}{opt_type.upper()}{strike_fmt}"
-                try:
-                    resp_search = self._obj.searchScrip("NFO", tradingsymbol)
-                    if not (resp_search and resp_search.get("data")):
+            def _try_place(exp_code: str, strike_val: float) -> dict | None:
+                """Attempt to find scrip + place order for a given expiry-code and strike."""
+                for strike_fmt in [f"{int(strike_val)}", f"{strike_val:.2f}"]:
+                    tradingsymbol = f"{symbol.upper()}{exp_code}{opt_type.upper()}{strike_fmt}"
+                    try:
+                        resp_search = self._obj.searchScrip("NFO", tradingsymbol)
+                        if not (resp_search and resp_search.get("data")):
+                            continue
+                        token = str(resp_search["data"][0]["symboltoken"])
+                        order_params = {
+                            "variety":         "NORMAL",
+                            "tradingsymbol":   tradingsymbol,
+                            "symboltoken":     token,
+                            "transactiontype": side.upper(),
+                            "exchange":        "NFO",
+                            "ordertype":       order_type.upper(),
+                            "producttype":     "CARRYFORWARD",
+                            "duration":        "DAY",
+                            "price":           str(price) if order_type.upper() == "LIMIT" else "0",
+                            "squareoff":       "0",
+                            "stoploss":        "0",
+                            "quantity":        str(qty),
+                        }
+                        raw = self._obj._postRequest("api.order.place", order_params)
+                        ok = raw.get("status") or raw.get("success")
+                        if not ok:
+                            err_msg = raw.get("message") or raw.get("errorcode") or "Unknown error"
+                            raise RuntimeError(f"NFO order failed for {tradingsymbol}: {err_msg}")
+                        order_data = raw.get("data") or {}
+                        order_id = order_data if isinstance(order_data, str) else order_data.get("orderid", "")
+                        return {
+                            "order_id":      str(order_id),
+                            "tradingsymbol": tradingsymbol,
+                            "broker":        "Angel One",
+                            "status":        "placed",
+                            "message":       raw.get("message", "Order placed"),
+                        }
+                    except RuntimeError:
+                        raise
+                    except Exception:
                         continue
-                    token = str(resp_search["data"][0]["symboltoken"])
-                    order_params = {
-                        "variety":         "NORMAL",
-                        "tradingsymbol":   tradingsymbol,
-                        "symboltoken":     token,
-                        "transactiontype": side.upper(),
-                        "exchange":        "NFO",
-                        "ordertype":       order_type.upper(),
-                        "producttype":     "CARRYFORWARD",
-                        "duration":        "DAY",
-                        "price":           str(price) if order_type.upper() == "LIMIT" else "0",
-                        "squareoff":       "0",
-                        "stoploss":        "0",
-                        "quantity":        str(qty),
-                    }
-                    raw = self._obj._postRequest("api.order.place", order_params)
-                    ok = raw.get("status") or raw.get("success")
-                    if not ok:
-                        err_msg = raw.get("message") or raw.get("errorcode") or "Unknown error"
-                        raise RuntimeError(f"NFO order failed for {tradingsymbol}: {err_msg}")
-                    order_data = raw.get("data") or {}
-                    order_id = order_data if isinstance(order_data, str) else order_data.get("orderid", "")
-                    return {
-                        "order_id":      str(order_id),
-                        "tradingsymbol": tradingsymbol,
-                        "broker":        "Angel One",
-                        "status":        "placed",
-                        "message":       raw.get("message", "Order placed"),
-                    }
-                except RuntimeError:
-                    raise
+                return None
+
+            # Attempt 1: exact expiry date as given
+            result = _try_place(exp_date.strftime("%d%b%y").upper(), strike)
+            if result:
+                return result
+
+            # Attempt 2: nearest Thursday within ±7 days (jugaad sometimes returns
+            # a Mon/Fri date while Angel One indexes by the actual NSE expiry Thursday)
+            for delta in [1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7]:
+                candidate = exp_date + timedelta(days=delta)
+                if candidate.weekday() == 3:  # Thursday
+                    result = _try_place(candidate.strftime("%d%b%y").upper(), strike)
+                    if result:
+                        logger.info(
+                            "place_nfo_order: expiry %s resolved to %s (offset %+d days)",
+                            expiry_str, candidate.strftime("%d-%b-%Y"), delta,
+                        )
+                        return result
+                    break  # only try the nearest Thursday once
+
+            # Attempt 3: partial-symbol search — search without strike suffix, then
+            # match the contract whose strike is closest to requested strike
+            for exp_code in [exp_date.strftime("%d%b%y").upper()]:
+                prefix = f"{symbol.upper()}{exp_code}{opt_type.upper()}"
+                try:
+                    resp_partial = self._obj.searchScrip("NFO", prefix)
+                    if not (resp_partial and resp_partial.get("data")):
+                        continue
+                    best = None
+                    best_diff = float("inf")
+                    for item in resp_partial["data"]:
+                        ts = item.get("tradingsymbol", "")
+                        if not ts.upper().startswith(prefix):
+                            continue
+                        strike_part = ts[len(prefix):]
+                        try:
+                            found_strike = float(strike_part)
+                            diff = abs(found_strike - strike)
+                            if diff < best_diff:
+                                best_diff = diff
+                                best = item
+                        except ValueError:
+                            continue
+                    if best and best_diff < 1.0:
+                        result = _try_place(exp_code, float(best["tradingsymbol"][len(prefix):]))
+                        if result:
+                            return result
                 except Exception:
                     continue
-            raise RuntimeError(f"Could not find NFO scrip for {symbol} {expiry_str} {opt_type} {strike}")
+
+            raise RuntimeError(
+                f"Could not find NFO scrip for {symbol} {expiry_str} {opt_type} {strike}. "
+                f"Contract may not be listed in Angel One yet — try Paper Trade mode."
+            )
         except Exception as e:
             logger.warning("place_nfo_order failed: %s", e)
             raise
+
 
     def place_order(self, params: dict) -> dict:
         """

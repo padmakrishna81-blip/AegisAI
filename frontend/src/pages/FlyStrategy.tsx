@@ -283,9 +283,29 @@ export default function FlyStrategy() {
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-6 pb-16 md:pb-0 space-y-5">
-      <div>
-        <h1 className="text-2xl font-bold text-white">Custom Fly Strategy</h1>
-        <p className="text-gray-400 text-sm mt-1">Target: 2-3% return in under 5 days via theta + IV crush. Naked fly — premium-matched short CE + short PE.</p>
+      {/* ── Page header with persistent Paper / Live toggle ── */}
+      <div className="flex items-start justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-white">Custom Fly Strategy</h1>
+          <p className="text-gray-400 text-sm mt-1">Target: 2-3% return in under 5 days via theta + IV crush. Naked fly — premium-matched short CE + short PE.</p>
+        </div>
+        <div className="flex flex-col items-end gap-1">
+          <div className="flex items-center gap-1 bg-gray-800 border border-gray-700 rounded-lg p-1">
+            <button
+              onClick={() => setTradeMode('paper')}
+              className={`px-4 py-1.5 rounded text-sm font-semibold transition-colors ${tradeMode === 'paper' ? 'bg-amber-600 text-white shadow' : 'text-gray-400 hover:text-gray-200'}`}>
+              📝 Paper
+            </button>
+            <button
+              onClick={() => setTradeMode('live')}
+              className={`px-4 py-1.5 rounded text-sm font-semibold transition-colors ${tradeMode === 'live' ? 'bg-green-600 text-white shadow' : 'text-gray-400 hover:text-gray-200'}`}>
+              ⚡ Live
+            </button>
+          </div>
+          <span className="text-[11px] text-gray-500">
+            {tradeMode === 'paper' ? 'Orders are simulated — no real trades' : 'Live orders via Angel One'}
+          </span>
+        </div>
       </div>
 
       {/* ── Active positions ── */}
@@ -704,16 +724,20 @@ export default function FlyStrategy() {
                 <button
                   onClick={() => {
                     setLots(1)
-                    setTradeMode('paper')
+                    // keep tradeMode as currently set by the top toggle
                     setOrderType('MARKET')
                     setLimitPePremium(String(flySetup.sell_pe.premium))
                     setLimitCePremium(String(flySetup.sell_ce.premium))
                     setOrderError('')
                     setShowOrderModal(true)
                   }}
-                  className="shrink-0 px-6 py-3 bg-green-600 hover:bg-green-500 text-white text-sm font-bold rounded-lg shadow-lg shadow-green-900/50 transition-all hover:shadow-green-800/70 flex items-center gap-2"
+                  className={`shrink-0 px-6 py-3 text-white text-sm font-bold rounded-lg shadow-lg transition-all flex items-center gap-2 ${
+                    tradeMode === 'paper'
+                      ? 'bg-amber-600 hover:bg-amber-500 shadow-amber-900/50 hover:shadow-amber-800/70'
+                      : 'bg-green-600 hover:bg-green-500 shadow-green-900/50 hover:shadow-green-800/70'
+                  }`}
                 >
-                  🚀 Place Order
+                  {tradeMode === 'paper' ? '📝 Paper Trade' : '⚡ Place Live Order'}
                 </button>
               </div>
             </div>
