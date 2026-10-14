@@ -283,6 +283,59 @@ async def patch_stock_in_campaign(cid: str, symbol: str, body: dict, user=Depend
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@router.post("/stock-trader/campaign/{cid}/stock/{symbol}/manual-fill")
+async def manual_fill(cid: str, symbol: str, body: dict, user=Depends(get_current_user)):
+    """
+    Record a manual buy that happened outside the campaign (e.g. broker averaging).
+    Body: { qty: number, price: number }
+    Recalculates total_qty and avg_price in-place.
+    """
+    try:
+        from data.stock_trader_store import get_campaign, update_campaign
+        from datetime import datetime
+        c = get_campaign(cid)
+        if not c:
+            return JSONResponse({"error": "Not found"}, status_code=404)
+        if c["username"] != user["username"] and user.get("role") != "admin":
+            return JSONResponse({"error": "Access denied"}, status_code=403)
+
+        fill_qty   = float(body.get("qty", 0))
+        fill_price = float(body.get("price", 0))
+        if fill_qty <= 0 or fill_price <= 0:
+            return JSONResponse({"error": "qty and price must be positive"}, status_code=400)
+
+        updated = False
+        for stock in c["stocks"]:
+            if stock["symbol"] != symbol:
+                continue
+            old_qty   = float(stock.get("total_qty") or 0)
+            old_avg   = float(stock.get("avg_price") or 0)
+            new_qty   = old_qty + fill_qty
+            # weighted average
+            if old_qty > 0 and old_avg > 0:
+                new_avg = round((old_qty * old_avg + fill_qty * fill_price) / new_qty, 4)
+            else:
+                new_avg = fill_price
+            stock["total_qty"] = new_qty
+            stock["avg_price"]  = new_avg
+            # Log into manual_fills list for audit trail
+            stock.setdefault("manual_fills", []).append({
+                "qty": fill_qty, "price": fill_price,
+                "ts": datetime.utcnow().isoformat(),
+                "note": body.get("note", ""),
+            })
+            updated = True
+            break
+
+        if not updated:
+            return JSONResponse({"error": f"{symbol} not found in campaign"}, status_code=404)
+
+        result = update_campaign(cid, {"stocks": c["stocks"]})
+        return result
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @router.delete("/stock-trader/campaign/{cid}/stock/{symbol}")
 async def remove_stock_from_campaign(cid: str, symbol: str, user=Depends(get_current_user)):
     """Remove a stock from a campaign. Stops monitoring; does NOT place broker sell orders."""

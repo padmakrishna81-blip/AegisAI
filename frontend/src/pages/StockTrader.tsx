@@ -1458,6 +1458,10 @@ function StocksTable({ campaign, onRefresh }: { campaign: Campaign; onRefresh: (
   const [editingAllocFor,   setEditingAllocFor]   = useState<string | null>(null)
   const [inlineAlloc,       setInlineAlloc]       = useState('')
   const [savingAlloc,       setSavingAlloc]       = useState<string | null>(null)
+  const [fillTarget,        setFillTarget]        = useState<string | null>(null)
+  const [fillQty,           setFillQty]           = useState('')
+  const [fillPrice,         setFillPrice]         = useState('')
+  const [savingFill,        setSavingFill]        = useState(false)
 
   const startEdit = (s: CampaignStock) => {
     setEditingSymbol(s.symbol)
@@ -1502,6 +1506,19 @@ function StocksTable({ campaign, onRefresh }: { campaign: Campaign; onRefresh: (
       setDeleteTarget(null)
     } catch {}
     setDeleting(false)
+  }
+
+  const saveFill = async (sym: string) => {
+    const qty   = parseFloat(fillQty)
+    const price = parseFloat(fillPrice)
+    if (!qty || qty <= 0 || !price || price <= 0) return
+    setSavingFill(true)
+    try {
+      await api.post(`/stock-trader/campaign/${campaign.id}/stock/${sym}/manual-fill`, { qty, price })
+      onRefresh()
+      setFillTarget(null); setFillQty(''); setFillPrice('')
+    } catch {}
+    setSavingFill(false)
   }
 
   return (
@@ -1628,11 +1645,39 @@ function StocksTable({ campaign, onRefresh }: { campaign: Campaign; onRefresh: (
                         Cancel
                       </button>
                     </div>
+                  ) : fillTarget === s.symbol ? (
+                    /* ── Manual fill inline form ── */
+                    <div className="flex items-center justify-end gap-1 flex-wrap">
+                      <input
+                        type="number" placeholder="Qty" min="1" step="1"
+                        value={fillQty} onChange={e => setFillQty(e.target.value)}
+                        className="w-16 text-[10px] px-1.5 py-0.5 bg-slate-700 border border-slate-500 text-white rounded focus:outline-none focus:border-blue-400"
+                      />
+                      <input
+                        type="number" placeholder="Price ₹" min="0.01" step="0.01"
+                        value={fillPrice} onChange={e => setFillPrice(e.target.value)}
+                        className="w-20 text-[10px] px-1.5 py-0.5 bg-slate-700 border border-slate-500 text-white rounded focus:outline-none focus:border-blue-400"
+                      />
+                      <button onClick={() => saveFill(s.symbol)} disabled={savingFill || !fillQty || !fillPrice}
+                        className="text-[10px] px-2 py-0.5 bg-amber-700 hover:bg-amber-600 text-white rounded disabled:opacity-50 transition">
+                        {savingFill ? '…' : '✓'}
+                      </button>
+                      <button onClick={() => { setFillTarget(null); setFillQty(''); setFillPrice('') }}
+                        className="text-[10px] px-1.5 py-0.5 bg-slate-700 hover:bg-slate-600 text-white rounded transition">
+                        ✕
+                      </button>
+                    </div>
                   ) : (
                     <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition">
                       <button onClick={() => startEdit(s)} title="Edit allocation / status"
                         className="text-[10px] px-1.5 py-0.5 text-slate-400 hover:text-white hover:bg-slate-600 rounded transition">
                         ✎
+                      </button>
+                      <button
+                        onClick={() => { setFillTarget(s.symbol); setFillPrice(s.current_price ? String(s.current_price) : ''); setFillQty('') }}
+                        title="Record manual buy / average"
+                        className="text-[10px] px-1.5 py-0.5 text-amber-500 hover:text-amber-300 hover:bg-amber-900/30 rounded transition">
+                        +Buy
                       </button>
                       <button onClick={() => setDeleteTarget(s.symbol)} title="Remove from campaign"
                         className="text-[10px] px-1.5 py-0.5 text-red-500 hover:text-red-300 hover:bg-red-900/30 rounded transition">
