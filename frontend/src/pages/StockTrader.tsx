@@ -70,7 +70,7 @@ interface StockPosition {
   conviction: string
   justification: string
   asset_type?: 'stock' | 'etf'
-  status: 'watching' | 'chunk1_placed' | 'chunk2_placed' | 'trailing_sl' | 'exited' | 'error'
+  status: 'watching' | 'chunk1_placed' | 'chunk2_placed' | 'trailing_sl' | 'exited' | 'exit_pending' | 'error'
   chunk1_qty: number
   chunk1_price: number
   chunk1_date?: string
@@ -84,6 +84,8 @@ interface StockPosition {
   pnl_pct: number
   booked_pnl?: number
   exit_price?: number
+  exit_order_id?: string
+  exit_price_req?: number
   error?: string
   last_checked?: string
 }
@@ -151,6 +153,7 @@ const STATUS_LABEL: Record<string, string> = {
   c3_placed:      'Chunk 3 ✓', c4_placed: 'Chunk 4 ✓',
   trailing_sl:    'Trailing SL',
   exited:         'Exited',
+  exit_pending:   'Exit Pending',
   error:          'Error',
 }
 const STATUS_COLOR: Record<string, string> = {
@@ -161,6 +164,7 @@ const STATUS_COLOR: Record<string, string> = {
   c4_placed:      'bg-violet-900/60 text-violet-300',
   trailing_sl:    'bg-amber-900/60 text-amber-300',
   exited:         'bg-emerald-900/60 text-emerald-300',
+  exit_pending:   'bg-orange-900/60 text-orange-300',
   error:          'bg-red-900/60 text-red-400',
 }
 
@@ -1462,6 +1466,9 @@ function StocksTable({ campaign, onRefresh }: { campaign: Campaign; onRefresh: (
   const [fillQty,           setFillQty]           = useState('')
   const [fillPrice,         setFillPrice]         = useState('')
   const [savingFill,        setSavingFill]        = useState(false)
+  const [exitTarget,        setExitTarget]        = useState<string | null>(null)
+  const [exitPrice,         setExitPrice]         = useState('')
+  const [savingExit,        setSavingExit]        = useState(false)
 
   const startEdit = (s: CampaignStock) => {
     setEditingSymbol(s.symbol)
@@ -1521,6 +1528,18 @@ function StocksTable({ campaign, onRefresh }: { campaign: Campaign; onRefresh: (
     setSavingFill(false)
   }
 
+  const saveExit = async (sym: string) => {
+    setSavingExit(true)
+    try {
+      const body: Record<string, unknown> = { note: 'Manual exit' }
+      if (exitPrice) body.exit_price = parseFloat(exitPrice)
+      await api.post(`/stock-trader/campaign/${campaign.id}/stock/${sym}/manual-exit`, body)
+      onRefresh()
+      setExitTarget(null); setExitPrice('')
+    } catch {}
+    setSavingExit(false)
+  }
+
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-xs">
@@ -1533,7 +1552,7 @@ function StocksTable({ campaign, onRefresh }: { campaign: Campaign; onRefresh: (
             <th className="px-4 py-2 text-right">CMP</th>
             <th className="px-4 py-2 text-right">P&L</th>
             <th className="px-4 py-2 text-right">SL</th>
-            <th className="px-4 py-2 text-right">Actions</th>
+            <th className="px-4 py-2 text-right min-w-[220px] whitespace-nowrap">Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -1619,7 +1638,7 @@ function StocksTable({ campaign, onRefresh }: { campaign: Campaign; onRefresh: (
                 </td>
 
                 {/* Actions */}
-                <td className="px-3 py-2 text-right">
+                <td className="px-3 py-2 text-right min-w-[220px] whitespace-nowrap">
                   {isEditing ? (
                     <div className="flex items-center justify-end gap-1">
                       <button onClick={() => saveEdit(s.symbol)} disabled={savingSymbol === s.symbol}
@@ -1667,20 +1686,46 @@ function StocksTable({ campaign, onRefresh }: { campaign: Campaign; onRefresh: (
                         ✕
                       </button>
                     </div>
+                  ) : exitTarget === s.symbol ? (
+                    /* ── Manual exit inline form ── */
+                    <div className="flex items-center justify-end gap-1 flex-wrap">
+                      <span className="text-[9px] text-red-400 mr-1">Exit @ ₹</span>
+                      <input
+                        type="number" placeholder={s.current_price ? String(s.current_price) : 'CMP'} min="0.01" step="0.01"
+                        value={exitPrice} onChange={e => setExitPrice(e.target.value)}
+                        className="w-22 text-[10px] px-1.5 py-0.5 bg-slate-700 border border-red-700 text-white rounded focus:outline-none focus:border-red-400"
+                      />
+                      <button onClick={() => saveExit(s.symbol)} disabled={savingExit}
+                        className="text-[10px] px-2 py-0.5 bg-red-700 hover:bg-red-600 text-white rounded disabled:opacity-50 transition">
+                        {savingExit ? '…' : 'Confirm'}
+                      </button>
+                      <button onClick={() => { setExitTarget(null); setExitPrice('') }}
+                        className="text-[10px] px-1.5 py-0.5 bg-slate-700 hover:bg-slate-600 text-white rounded transition">
+                        ✕
+                      </button>
+                    </div>
                   ) : (
-                    <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition">
+                    <div className="flex items-center justify-end gap-1.5">
                       <button onClick={() => startEdit(s)} title="Edit allocation / status"
-                        className="text-[10px] px-1.5 py-0.5 text-slate-400 hover:text-white hover:bg-slate-600 rounded transition">
-                        ✎
+                        className="text-xs px-2 py-1 bg-slate-700 hover:bg-slate-600 text-slate-300 hover:text-white rounded transition">
+                        Edit
                       </button>
                       <button
                         onClick={() => { setFillTarget(s.symbol); setFillPrice(s.current_price ? String(s.current_price) : ''); setFillQty('') }}
                         title="Record manual buy / average"
-                        className="text-[10px] px-1.5 py-0.5 text-amber-500 hover:text-amber-300 hover:bg-amber-900/30 rounded transition">
+                        className="text-xs px-2 py-1 bg-amber-700 hover:bg-amber-600 text-white rounded transition">
                         +Buy
                       </button>
+                      {s.total_qty && s.total_qty > 0 && s.status !== 'exited' && (
+                        <button
+                          onClick={() => { setExitTarget(s.symbol); setExitPrice(s.current_price ? String(s.current_price) : '') }}
+                          title="Manual exit this position"
+                          className="text-xs px-2 py-1 bg-red-700 hover:bg-red-600 text-white rounded transition">
+                          Exit
+                        </button>
+                      )}
                       <button onClick={() => setDeleteTarget(s.symbol)} title="Remove from campaign"
-                        className="text-[10px] px-1.5 py-0.5 text-red-500 hover:text-red-300 hover:bg-red-900/30 rounded transition">
+                        className="text-xs px-2 py-1 bg-slate-700 hover:bg-red-800 text-slate-400 hover:text-white rounded transition">
                         🗑
                       </button>
                     </div>
@@ -2344,6 +2389,13 @@ function PositionsTab() {
   const [positions, setPositions] = useState<LivePosition[]>([])
   const [loading,   setLoading]   = useState(false)
   const [liveMode,  setLiveMode]  = useState(false)
+  const [exitTarget, setExitTarget] = useState<string | null>(null)
+  const [exitPrice,  setExitPrice]  = useState('')
+  const [savingExit, setSavingExit] = useState(false)
+
+  const [confirmTarget, setConfirmTarget] = useState<string | null>(null)
+  const [confirmPrice,  setConfirmPrice]  = useState('')
+  const [savingConfirm, setSavingConfirm] = useState(false)
 
   const load = useCallback(async (live = false) => {
     setLoading(true)
@@ -2372,6 +2424,49 @@ function PositionsTab() {
     const t = setInterval(() => load(liveMode), 120_000)
     return () => clearInterval(t)
   }, [load, liveMode])
+
+  const saveExit = async (p: LivePosition, useBroker: boolean) => {
+    setSavingExit(true)
+    try {
+      const body: Record<string, unknown> = { use_broker: useBroker }
+      if (exitPrice) body.exit_price = parseFloat(exitPrice)
+      const res = await api.post(`/stock-trader/campaign/${p._cid}/stock/${p.symbol}/manual-exit`, body)
+      setExitTarget(null)
+      setExitPrice('')
+      if (useBroker && res.broker_order_id) {
+        alert(`✅ Sell order placed on Angel One (ID: ${res.broker_order_id}).\n\nPosition is now "Exit Pending". Confirm the fill once Angel One executes the order.`)
+      }
+      load(liveMode)
+    } catch (e: unknown) {
+      alert((e as any)?.response?.data?.error || 'Exit failed')
+    }
+    setSavingExit(false)
+  }
+
+  const confirmFill = async (p: LivePosition) => {
+    setSavingConfirm(true)
+    try {
+      const fillPrice = parseFloat(confirmPrice) || p.exit_price_req || 0
+      if (!fillPrice) { alert('Enter fill price'); setSavingConfirm(false); return }
+      await api.post(`/stock-trader/campaign/${p._cid}/stock/${p.symbol}/confirm-exit`, { fill_price: fillPrice })
+      setConfirmTarget(null)
+      setConfirmPrice('')
+      load(liveMode)
+    } catch (e: unknown) {
+      alert((e as any)?.response?.data?.error || 'Confirm failed')
+    }
+    setSavingConfirm(false)
+  }
+
+  const revertExit = async (p: LivePosition) => {
+    if (!confirm(`Revert ${p.symbol} back to Open Position? The pending sell order on Angel One will NOT be cancelled automatically — cancel it manually on the broker app first.`)) return
+    try {
+      await api.post(`/stock-trader/campaign/${p._cid}/stock/${p.symbol}/revert-exit`, {})
+      load(liveMode)
+    } catch (e: unknown) {
+      alert((e as any)?.response?.data?.error || 'Revert failed')
+    }
+  }
 
   const active  = positions.filter(p => p.status !== 'exited')
   const exited  = positions.filter(p => p.status === 'exited')
@@ -2436,87 +2531,197 @@ function PositionsTab() {
         </div>
       )}
 
-      {positions.length > 0 && (
-        <div className="overflow-x-auto bg-slate-800/40 rounded-xl border border-border">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="border-b border-border text-muted text-left">
-                <th className="px-4 py-3">Stock</th>
-                <th className="px-4 py-3">Campaign</th>
-                <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3 text-right">Qty</th>
-                <th className="px-4 py-3 text-right">Avg Cost</th>
-                <th className="px-4 py-3 text-right">CMP</th>
-                <th className="px-4 py-3 text-right">P&L</th>
-                <th className="px-4 py-3 text-right">P&L%</th>
-                <th className="px-4 py-3 text-right">SL</th>
-              </tr>
-            </thead>
-            <tbody>
-              {positions.map((p, i) => {
-                const qty    = p.total_qty || p.chunk1_qty || 0
-                const livePnl = liveMode && p.avg_price && qty && p.current_price
-                  ? (p.current_price - p.avg_price) * qty : undefined
-                const livePct = liveMode && p.avg_price && p.current_price
-                  ? ((p.current_price - p.avg_price) / p.avg_price) * 100 : undefined
-                const dispPnl = p.status === 'exited' ? p.booked_pnl : (livePnl ?? p.pnl)
-                const dispPct = p.status === 'exited' ? undefined : (livePct ?? p.pnl_pct)
-                return (
-                  <tr key={i} className="border-b border-border/20 hover:bg-slate-700/20">
-                    <td className="px-4 py-2.5">
-                      <div className="font-semibold text-white">{p.symbol}</div>
-                      <div className="text-[9px] text-muted">{p.sector}</div>
-                    </td>
-                    <td className="px-4 py-2.5 text-slate-400">{p._campaign}</td>
-                    <td className="px-4 py-2.5">
-                      <span className={`text-[9px] px-1.5 py-0.5 rounded ${STATUS_COLOR[p.status] || ''}`}>
-                        {STATUS_LABEL[p.status] || p.status}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2.5 text-right text-slate-300">{qty || '–'}</td>
-                    <td className="px-4 py-2.5 text-right font-mono text-slate-300">
-                      {p.avg_price ? `₹${fmt(p.avg_price)}` : '–'}
-                    </td>
-                    <td className="px-4 py-2.5 text-right font-mono text-white">
-                      {p.current_price ? `₹${fmt(p.current_price)}` : (p.exit_price ? `₹${fmt(p.exit_price)}` : '–')}
-                    </td>
-                    <td className={`px-4 py-2.5 text-right font-mono font-semibold ${pnlClass(dispPnl)}`}>
-                      {pnlAmt(dispPnl)}
-                    </td>
-                    <td className={`px-4 py-2.5 text-right font-mono text-[10px] ${pnlClass(dispPct)}`}>
-                      {pnlPct(dispPct)}
-                    </td>
-                    <td className="px-4 py-2.5 text-right font-mono text-amber-400 text-[10px]">
-                      {p.sl_price ? `₹${fmt(p.sl_price)}` : '–'}
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-            {/* Aggregate row */}
+      {/* ── helper to render one row ── */}
+      {positions.length > 0 && (() => {
+        const renderRow = (p: LivePosition, i: number) => {
+          const qty     = p.total_qty || p.chunk1_qty || 0
+          const livePnl = liveMode && p.avg_price && qty && p.current_price
+            ? (p.current_price - p.avg_price) * qty : undefined
+          const livePct = liveMode && p.avg_price && p.current_price
+            ? ((p.current_price - p.avg_price) / p.avg_price) * 100 : undefined
+          const dispPnl = p.status === 'exited' ? p.booked_pnl : (livePnl ?? p.pnl)
+          const dispPct = p.status === 'exited' ? undefined : (livePct ?? p.pnl_pct)
+          return (
+            <tr key={i} className="border-b border-border/20 hover:bg-slate-700/20">
+              <td className="px-4 py-2.5">
+                <div className="font-semibold text-white">{p.symbol}</div>
+                <div className="text-[9px] text-muted">{p.sector}</div>
+              </td>
+              <td className="px-4 py-2.5 text-slate-400">{p._campaign}</td>
+              <td className="px-4 py-2.5">
+                <span className={`text-[9px] px-1.5 py-0.5 rounded ${STATUS_COLOR[p.status] || ''}`}>
+                  {STATUS_LABEL[p.status] || p.status}
+                </span>
+              </td>
+              <td className="px-4 py-2.5 text-right text-slate-300">{qty || '–'}</td>
+              <td className="px-4 py-2.5 text-right font-mono text-slate-300">
+                {p.avg_price ? `₹${fmt(p.avg_price)}` : '–'}
+              </td>
+              <td className="px-4 py-2.5 text-right font-mono text-white">
+                {p.status === 'exited'
+                  ? (p.exit_price ? `₹${fmt(p.exit_price)}` : '–')
+                  : (p.current_price ? `₹${fmt(p.current_price)}` : '–')}
+              </td>
+              <td className={`px-4 py-2.5 text-right font-mono font-semibold ${pnlClass(dispPnl)}`}>
+                {pnlAmt(dispPnl)}
+              </td>
+              <td className={`px-4 py-2.5 text-right font-mono text-[10px] ${pnlClass(dispPct)}`}>
+                {pnlPct(dispPct)}
+              </td>
+              <td className="px-4 py-2.5 text-right font-mono text-amber-400 text-[10px]">
+                {p.sl_price ? `₹${fmt(p.sl_price)}` : '–'}
+              </td>
+              <td className="px-4 py-2.5 text-right whitespace-nowrap">
+                {p.status !== 'exited' && (p.status !== 'exit_pending' && exitTarget === `${p._cid}:${p.symbol}` ? (
+                  <div className="flex items-center justify-end gap-1 flex-wrap">
+                    <span className="text-[9px] text-red-400">Exit@₹</span>
+                    <input
+                      type="number" placeholder={p.current_price ? String(p.current_price) : 'CMP'}
+                      min="0.01" step="0.01" value={exitPrice}
+                      onChange={e => setExitPrice(e.target.value)}
+                      className="w-20 text-[10px] px-1.5 py-0.5 bg-slate-700 border border-red-700 text-white rounded focus:outline-none"
+                    />
+                    <button onClick={() => saveExit(p, true)} disabled={savingExit}
+                      className="text-[10px] px-2 py-0.5 bg-red-700 hover:bg-red-600 text-white rounded disabled:opacity-50 transition"
+                      title="Place SELL order on Angel One — position stays Open until you confirm the fill">
+                      {savingExit ? '…' : '🔴 Sell via Angel'}
+                    </button>
+                    <button onClick={() => saveExit(p, false)} disabled={savingExit}
+                      className="text-[10px] px-2 py-0.5 bg-slate-600 hover:bg-slate-500 text-white rounded disabled:opacity-50 transition"
+                      title="Record exit in app only (already sold in broker)">
+                      {savingExit ? '…' : 'Record only'}
+                    </button>
+                    <button onClick={() => { setExitTarget(null); setExitPrice('') }}
+                      className="text-[10px] px-1.5 py-0.5 bg-slate-700 hover:bg-slate-600 text-white rounded transition">
+                      ✕
+                    </button>
+                  </div>
+                ) : p.status === 'exit_pending' ? (
+                  /* ── Exit Pending: order placed, awaiting fill confirmation ── */
+                  <div className="flex items-center justify-end gap-1 flex-wrap">
+                    <span className="text-[9px] text-orange-400 font-medium" title={`Angel One Order ID: ${p.exit_order_id}`}>
+                      ⏳ #{p.exit_order_id?.slice(-6)}
+                    </span>
+                    {confirmTarget === `${p._cid}:${p.symbol}` ? (
+                      <>
+                        <span className="text-[9px] text-green-400">Fill@₹</span>
+                        <input
+                          type="number" placeholder={p.exit_price_req ? String(p.exit_price_req) : 'fill price'}
+                          min="0.01" step="0.01" value={confirmPrice}
+                          onChange={e => setConfirmPrice(e.target.value)}
+                          className="w-20 text-[10px] px-1.5 py-0.5 bg-slate-700 border border-green-700 text-white rounded focus:outline-none"
+                        />
+                        <button onClick={() => confirmFill(p)} disabled={savingConfirm}
+                          className="text-[10px] px-2 py-0.5 bg-green-700 hover:bg-green-600 text-white rounded disabled:opacity-50 transition">
+                          {savingConfirm ? '…' : '✓ Confirm'}
+                        </button>
+                        <button onClick={() => { setConfirmTarget(null); setConfirmPrice('') }}
+                          className="text-[10px] px-1.5 py-0.5 bg-slate-700 hover:bg-slate-600 text-white rounded transition">✕</button>
+                      </>
+                    ) : (
+                      <button
+                        onClick={() => { setConfirmTarget(`${p._cid}:${p.symbol}`); setConfirmPrice(p.exit_price_req ? String(p.exit_price_req) : '') }}
+                        className="text-[10px] px-2 py-0.5 bg-green-700 hover:bg-green-600 text-white rounded transition"
+                        title="Confirm Angel One executed the sell order">
+                        ✓ Confirm Fill
+                      </button>
+                    )}
+                    <button onClick={() => revertExit(p)}
+                      className="text-[10px] px-2 py-0.5 bg-slate-600 hover:bg-amber-700 text-white rounded transition"
+                      title="Revert position back to Open (cancel manually on Angel One first)">
+                      ↩ Revert
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => { setExitTarget(`${p._cid}:${p.symbol}`); setExitPrice(p.current_price ? String(p.current_price) : '') }}
+                    className="text-xs px-2 py-1 bg-red-700 hover:bg-red-600 text-white rounded transition">
+                    Exit
+                  </button>
+                ))}
+              </td>
+            </tr>
+          )
+        }
+
+        const thead = (
+          <thead>
+            <tr className="border-b border-border text-muted text-left">
+              <th className="px-4 py-3">Stock</th>
+              <th className="px-4 py-3">Campaign</th>
+              <th className="px-4 py-3">Status</th>
+              <th className="px-4 py-3 text-right">Qty</th>
+              <th className="px-4 py-3 text-right">Avg Cost</th>
+              <th className="px-4 py-3 text-right">Exit/CMP</th>
+              <th className="px-4 py-3 text-right">P&L</th>
+              <th className="px-4 py-3 text-right">P&L%</th>
+              <th className="px-4 py-3 text-right">SL</th>
+              <th className="px-4 py-3 text-right">Actions</th>
+            </tr>
+          </thead>
+        )
+
+        return (
+          <>
+            {/* ── Open Positions ── */}
             {active.length > 0 && (
-              <tfoot>
-                <tr className="border-t-2 border-border bg-slate-700/30 font-semibold">
-                  <td className="px-4 py-2.5 text-slate-300" colSpan={4}>Total ({active.length} positions)</td>
-                  <td className="px-4 py-2.5 text-right font-mono text-slate-300">
-                    {totalInvested > 0 ? `₹${totalInvested.toLocaleString('en-IN', { maximumFractionDigits: 0 })}` : '–'}
-                  </td>
-                  <td className="px-4 py-2.5 text-right font-mono text-white">
-                    {totalCurrent > 0 ? `₹${totalCurrent.toLocaleString('en-IN', { maximumFractionDigits: 0 })}` : '–'}
-                  </td>
-                  <td className={`px-4 py-2.5 text-right font-mono ${pnlClass(totalUnreal)}`}>
-                    {pnlAmt(totalUnreal)}
-                  </td>
-                  <td className={`px-4 py-2.5 text-right font-mono text-[10px] ${pnlClass(totalInvested > 0 ? totalUnreal / totalInvested * 100 : 0)}`}>
-                    {totalInvested > 0 ? pnlPct(totalUnreal / totalInvested * 100) : '–'}
-                  </td>
-                  <td />
-                </tr>
-              </tfoot>
+              <div className="mb-6">
+                <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">
+                  Open Positions ({active.length})
+                </div>
+                <div className="overflow-x-auto bg-slate-800/40 rounded-xl border border-border">
+                  <table className="w-full text-xs">
+                    {thead}
+                    <tbody>{active.map(renderRow)}</tbody>
+                    <tfoot>
+                      <tr className="border-t-2 border-border bg-slate-700/30 font-semibold">
+                        <td className="px-4 py-2.5 text-slate-300" colSpan={4}>Total ({active.length})</td>
+                        <td className="px-4 py-2.5 text-right font-mono text-slate-300">
+                          {totalInvested > 0 ? `₹${totalInvested.toLocaleString('en-IN', { maximumFractionDigits: 0 })}` : '–'}
+                        </td>
+                        <td className="px-4 py-2.5 text-right font-mono text-white">
+                          {totalCurrent > 0 ? `₹${totalCurrent.toLocaleString('en-IN', { maximumFractionDigits: 0 })}` : '–'}
+                        </td>
+                        <td className={`px-4 py-2.5 text-right font-mono ${pnlClass(totalUnreal)}`}>
+                          {pnlAmt(totalUnreal)}
+                        </td>
+                        <td className={`px-4 py-2.5 text-right font-mono text-[10px] ${pnlClass(totalInvested > 0 ? totalUnreal / totalInvested * 100 : 0)}`}>
+                          {totalInvested > 0 ? pnlPct(totalUnreal / totalInvested * 100) : '–'}
+                        </td>
+                        <td /><td />
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              </div>
             )}
-          </table>
-        </div>
-      )}
+
+            {/* ── Closed Positions ── */}
+            {exited.length > 0 && (
+              <div>
+                <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">
+                  Closed Positions ({exited.length})
+                </div>
+                <div className="overflow-x-auto bg-slate-800/40 rounded-xl border border-border">
+                  <table className="w-full text-xs">
+                    {thead}
+                    <tbody>{exited.map(renderRow)}</tbody>
+                    <tfoot>
+                      <tr className="border-t-2 border-border bg-slate-700/30 font-semibold">
+                        <td className="px-4 py-2.5 text-slate-300" colSpan={6}>Total Booked P&L ({exited.length} exits)</td>
+                        <td className={`px-4 py-2.5 text-right font-mono ${pnlClass(totalBooked)}`}>
+                          {pnlAmt(totalBooked)}
+                        </td>
+                        <td colSpan={3} />
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              </div>
+            )}
+          </>
+        )
+      })()}
     </div>
   )
 }

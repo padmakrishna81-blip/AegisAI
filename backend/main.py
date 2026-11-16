@@ -40,6 +40,8 @@ from api.routes import broker as broker_routes
 from api.routes import market_brain as market_brain_routes
 from api.routes import stock_trader as stock_trader_routes
 from api.routes import wheel_v2 as wheel_v2_routes
+from api.routes import nifty_wheel as nifty_wheel_routes
+from api.routes import chart_intelligence as chart_intelligence_routes
 
 app = FastAPI(
     title="AegisAI",
@@ -81,6 +83,8 @@ app.include_router(broker_routes.router, prefix="/api", tags=["broker"])
 app.include_router(market_brain_routes.router, prefix="/api", tags=["market-brain"])
 app.include_router(stock_trader_routes.router, prefix="/api", tags=["stock-trader"])
 app.include_router(wheel_v2_routes.router,    prefix="/api", tags=["wheel-v2"])
+app.include_router(nifty_wheel_routes.router, prefix="/api", tags=["nifty-wheel"])
+app.include_router(chart_intelligence_routes.router, prefix="/api", tags=["chart-intelligence"])
 
 
 # ── Database initialisation ───────────────────────────────────────────────────

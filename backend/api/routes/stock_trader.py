@@ -336,6 +336,214 @@ async def manual_fill(cid: str, symbol: str, body: dict, user=Depends(get_curren
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@router.post("/stock-trader/campaign/{cid}/stock/{symbol}/manual-exit")
+async def manual_exit_stock(cid: str, symbol: str, body: dict, user=Depends(get_current_user)):
+    """
+    Manually exit a stock position in a campaign.
+    Body: { exit_price?: float, note?: str, use_broker?: bool }
+
+    Broker flow (use_broker=true):
+      - Places SELL order on Angel One.
+      - If order placement fails → returns 400, position is NOT changed.
+      - If order is placed (order_id received) → sets status = "exit_pending".
+        Position stays in Open Positions until the user confirms the fill.
+
+    Paper/record-only flow (use_broker=false):
+      - Immediately sets status = "exited" with the supplied exit_price.
+      - Use this when you have already sold on the broker outside the app.
+    """
+    try:
+        from data.stock_trader_store import get_campaign, update_campaign
+        from datetime import datetime
+        c = get_campaign(cid)
+        if not c:
+            return JSONResponse({"error": "Campaign not found"}, status_code=404)
+        if c["username"] != user["username"] and user.get("role") != "admin":
+            return JSONResponse({"error": "Access denied"}, status_code=403)
+
+        stock = next((s for s in c["stocks"] if s["symbol"] == symbol), None)
+        if not stock:
+            return JSONResponse({"error": f"{symbol} not found in campaign"}, status_code=404)
+        if stock.get("status") in ("exited",):
+            return JSONResponse({"error": f"{symbol} is already exited"}, status_code=400)
+
+        qty   = int(stock.get("total_qty") or 0)
+        avg_p = float(stock.get("avg_price") or 0)
+
+        # Resolve exit price
+        exit_price = float(body["exit_price"]) if body.get("exit_price") else None
+        if not exit_price:
+            import yfinance as yf
+            try:
+                fi = yf.Ticker(symbol if "." in symbol else symbol + ".NS").fast_info
+                exit_price = float(getattr(fi, "last_price", 0) or 0)
+            except Exception:
+                pass
+        if not exit_price:
+            return JSONResponse({"error": "exit_price not provided and could not fetch CMP"}, status_code=400)
+
+        booked_pnl = round((exit_price - avg_p) * qty, 2) if qty and avg_p else 0.0
+        now = datetime.utcnow().isoformat()
+        use_broker = bool(body.get("use_broker", False))
+
+        if use_broker:
+            # ── Live broker path ───────────────────────────────────────────
+            from auth.auth_utils import has_min_role
+            if not has_min_role(user, "live_trader"):
+                return JSONResponse({"error": "live_trader role required to place broker orders"}, status_code=403)
+            try:
+                from data.broker_creds import get_session
+                from brokers.angel_one import AngelOneClient
+                session = get_session(user["username"], "angelone")
+                if not session:
+                    return JSONResponse({"error": "Not connected to Angel One. Please reconnect."}, status_code=400)
+                client = AngelOneClient(session, cache_key=f"{user['username']}:angelone")
+                clean_sym = symbol.replace(".NS", "").replace(".BO", "")
+                broker_result = client.place_order({
+                    "symbol": clean_sym, "side": "SELL", "qty": qty,
+                    "order_type": "MARKET", "price": 0,
+                    "product": "DELIVERY", "asset_type": "stock",
+                })
+            except Exception as be:
+                return JSONResponse({"error": f"Broker order failed: {be}. Position NOT changed."}, status_code=400)
+
+            # Extract order_id
+            if isinstance(broker_result, dict) and broker_result.get("error"):
+                return JSONResponse({"error": f"Broker rejected order: {broker_result['error']}. Position NOT changed."}, status_code=400)
+
+            order_id = broker_result.get("order_id") if isinstance(broker_result, dict) else str(broker_result or "")
+            if not order_id:
+                return JSONResponse({"error": "Broker did not return an order ID. Position NOT changed."}, status_code=400)
+
+            # Set exit_pending — position stays open until user confirms fill
+            prev_status = stock.get("status", "chunk1_placed")
+            for s in c["stocks"]:
+                if s["symbol"] == symbol:
+                    s["status"]           = "exit_pending"
+                    s["exit_order_id"]    = order_id
+                    s["exit_price_req"]   = exit_price   # requested exit price (may differ from fill)
+                    s["exit_pending_at"]  = now
+                    s["exit_note"]        = body.get("note", "Manual exit via Angel One")
+                    s["prev_status"]      = prev_status  # stored so revert works
+                    break
+
+            update_campaign(cid, {"stocks": c["stocks"]})
+            return {
+                "ok": True, "status": "exit_pending",
+                "symbol": symbol, "qty": qty,
+                "exit_price_req": exit_price,
+                "broker_order_id": order_id,
+                "message": f"Sell order placed on Angel One (ID: {order_id}). Position is now Exit Pending — confirm fill once executed.",
+            }
+
+        else:
+            # ── Paper / record-only path ───────────────────────────────────
+            for s in c["stocks"]:
+                if s["symbol"] == symbol:
+                    s["status"]     = "exited"
+                    s["exit_price"] = exit_price
+                    s["booked_pnl"] = booked_pnl
+                    s["exited_at"]  = now
+                    s["exit_note"]  = body.get("note", "Manual exit (recorded)")
+                    break
+
+            update_campaign(cid, {"stocks": c["stocks"]})
+            return {
+                "ok": True, "status": "exited",
+                "symbol": symbol, "exit_price": exit_price,
+                "qty": qty, "booked_pnl": booked_pnl,
+            }
+
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.post("/stock-trader/campaign/{cid}/stock/{symbol}/confirm-exit")
+async def confirm_exit_stock(cid: str, symbol: str, body: dict, user=Depends(get_current_user)):
+    """
+    Confirm that an exit_pending order was filled.
+    Body: { fill_price: float }
+    Moves status from exit_pending → exited and records the actual fill price.
+    """
+    try:
+        from data.stock_trader_store import get_campaign, update_campaign
+        from datetime import datetime
+        c = get_campaign(cid)
+        if not c:
+            return JSONResponse({"error": "Campaign not found"}, status_code=404)
+        if c["username"] != user["username"] and user.get("role") != "admin":
+            return JSONResponse({"error": "Access denied"}, status_code=403)
+
+        stock = next((s for s in c["stocks"] if s["symbol"] == symbol), None)
+        if not stock:
+            return JSONResponse({"error": f"{symbol} not found"}, status_code=404)
+        if stock.get("status") != "exit_pending":
+            return JSONResponse({"error": f"{symbol} is not in exit_pending state"}, status_code=400)
+
+        fill_price = float(body.get("fill_price") or stock.get("exit_price_req") or 0)
+        if not fill_price:
+            return JSONResponse({"error": "fill_price required"}, status_code=400)
+
+        qty   = int(stock.get("total_qty") or 0)
+        avg_p = float(stock.get("avg_price") or 0)
+        booked_pnl = round((fill_price - avg_p) * qty, 2) if qty and avg_p else 0.0
+        now = datetime.utcnow().isoformat()
+
+        for s in c["stocks"]:
+            if s["symbol"] == symbol:
+                s["status"]     = "exited"
+                s["exit_price"] = fill_price
+                s["booked_pnl"] = booked_pnl
+                s["exited_at"]  = now
+                s.pop("exit_pending_at", None)
+                s.pop("prev_status", None)
+                break
+
+        update_campaign(cid, {"stocks": c["stocks"]})
+        return {"ok": True, "symbol": symbol, "exit_price": fill_price, "booked_pnl": booked_pnl}
+
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.post("/stock-trader/campaign/{cid}/stock/{symbol}/revert-exit")
+async def revert_exit_stock(cid: str, symbol: str, user=Depends(get_current_user)):
+    """
+    Revert an exit_pending (or erroneously exited) position back to active.
+    Restores the previous status (stored in prev_status) or falls back to chunk1_placed.
+    """
+    try:
+        from data.stock_trader_store import get_campaign, update_campaign
+        c = get_campaign(cid)
+        if not c:
+            return JSONResponse({"error": "Campaign not found"}, status_code=404)
+        if c["username"] != user["username"] and user.get("role") != "admin":
+            return JSONResponse({"error": "Access denied"}, status_code=403)
+
+        stock = next((s for s in c["stocks"] if s["symbol"] == symbol), None)
+        if not stock:
+            return JSONResponse({"error": f"{symbol} not found"}, status_code=404)
+        if stock.get("status") not in ("exit_pending", "exited"):
+            return JSONResponse({"error": f"{symbol} is not in exit_pending or exited state"}, status_code=400)
+
+        restore_status = stock.get("prev_status") or "chunk1_placed"
+
+        for s in c["stocks"]:
+            if s["symbol"] == symbol:
+                s["status"] = restore_status
+                # Clear all exit-related fields
+                for field in ("exit_order_id", "exit_price_req", "exit_pending_at", "exit_price",
+                              "booked_pnl", "exited_at", "exit_note", "prev_status"):
+                    s.pop(field, None)
+                break
+
+        update_campaign(cid, {"stocks": c["stocks"]})
+        return {"ok": True, "symbol": symbol, "restored_status": restore_status}
+
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @router.delete("/stock-trader/campaign/{cid}/stock/{symbol}")
 async def remove_stock_from_campaign(cid: str, symbol: str, user=Depends(get_current_user)):
     """Remove a stock from a campaign. Stops monitoring; does NOT place broker sell orders."""

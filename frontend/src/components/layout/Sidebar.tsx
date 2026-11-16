@@ -18,6 +18,7 @@ const NAV_ITEMS = [
   { path: '/trade',           label: 'Paper Trade',      icon: '◈',  min_role: 'paper_trader' },
   { path: '/wheel',           label: 'Wheel Strategy',   icon: '🎡', min_role: 'paper_trader' },
   { path: '/smart-wheel',     label: 'Smart Wheel V2',   icon: '⚙️', min_role: 'paper_trader' },
+  { path: '/nifty-wheel',     label: 'NIFTY Wheel',      icon: '🎯', min_role: 'paper_trader' },
   { path: '/stock-trader',    label: 'AI Stock Trader',  icon: '📈', min_role: 'paper_trader' },
   { path: '/ai-insights',     label: 'AI Insights',      icon: '◇',  min_role: 'paper_trader' },
   { path: '/market-brain',    label: 'Market Brain',     icon: '🧠', min_role: 'paper_trader' },
@@ -31,6 +32,7 @@ const NAV_ITEMS = [
   { path: '/multi-builder',    label: 'Multi-Asset',      icon: '🧩', min_role: 'paper_trader' },
   { path: '/strategy-monitor', label: 'Strategy Monitor', icon: '📡', min_role: 'paper_trader' },
   { path: '/custom-fly',       label: 'Custom Fly',       icon: '🦋', min_role: 'paper_trader' },
+  { path: '/chart-intelligence', label: 'Chart Intelligence', icon: '📊', min_role: 'paper_trader' },
 
   { divider: true, label: 'Live Trading' },
 

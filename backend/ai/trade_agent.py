@@ -818,7 +818,7 @@ def generate_monthly_report(username: str) -> dict:
         portfolio_totals["total_booked_pnl"] + portfolio_totals["total_unrealised_pnl"], 2
     )
 
-    # ── 3. Prompt LLM ─────────────────────────────────────────────────────────
+    # ── 3. Prompt LLM (with rule-based fallback) ─────────────────────────────
     prompt = f"""You are a portfolio analyst generating a structured equity report for {mn}.
 
 ## Portfolio Capital Summary
@@ -870,12 +870,116 @@ Brief table: Sector | No. of Stocks | Invested | Unrealised P&L | Comment
 ### Outlook for Next Month
 2–3 sentences."""
 
+    def _rule_based_report() -> str:
+        pt   = portfolio_totals
+        dep_pct = round(pt["total_consumed"] / pt["total_allocated"] * 100, 1) if pt["total_allocated"] else 0
+        total_pnl_pct = round(pt["total_pnl"] / pt["total_consumed"] * 100, 2) if pt["total_consumed"] else 0
+        health = "healthy" if pt["total_pnl"] >= 0 else "under pressure"
+        open_cnt = sum(cs["active_positions"] for cs in campaign_stats)
+
+        lines = [
+            f"### Executive Summary",
+            f"Portfolio is {health} for {mn} with ₹{pt['total_consumed']:,.0f} deployed across {open_cnt} open position(s). "
+            f"Booked P&L: ₹{pt['total_booked_pnl']:+,.2f} | MTM: ₹{pt['total_unrealised_pnl']:+,.2f} | "
+            f"Total P&L: ₹{pt['total_pnl']:+,.2f} ({total_pnl_pct:+.2f}% on deployed). "
+            f"Capital utilisation: {dep_pct}%.",
+            "",
+            "### Capital Allocation",
+            "| Campaign | Allocated | Deployed | Remaining | Mode |",
+            "|---|---|---|---|---|",
+        ]
+        for cs in campaign_stats:
+            mode = "Auto" if cs.get("auto_trade") else "Manual"
+            lines.append(
+                f"| {cs['name']} | ₹{cs['reserved_fund']:,.0f} | ₹{cs['chunk1_deployed']:,.0f}"
+                f" | ₹{cs['remaining']:,.0f} | {mode} |"
+            )
+        lines += [
+            f"| **TOTAL** | ₹{pt['total_allocated']:,.0f} | ₹{pt['total_consumed']:,.0f}"
+            f" | ₹{pt['total_remaining']:,.0f} | — |",
+            "",
+            "### Stock Performance",
+            "| Symbol | Sector | Avg Cost | CMP | Qty | Invested | P&L | P&L% |",
+            "|---|---|---|---|---|---|---|---|",
+        ]
+        for row in all_stock_rows:
+            pnl_sign = "+" if row["pnl"] >= 0 else ""
+            lines.append(
+                f"| {row['symbol']} | {row['sector']} | ₹{row['avg_price']:.2f}"
+                f" | ₹{row['current_price']:.2f} | {row['qty']}"
+                f" | ₹{row['invested']:,.0f} | {pnl_sign}₹{row['pnl']:,.2f}"
+                f" | {pnl_sign}{row['pnl_pct']:.2f}% |"
+            )
+        if not all_stock_rows:
+            lines.append("| — | No open positions | — | — | — | — | — | — |")
+        lines.append("")
+
+        lines.append("### Chunk 2 Reserve Candidates")
+        if chunk2_candidates:
+            for c2 in chunk2_candidates:
+                lines.append(
+                    f"- **{c2['symbol']}** ({c2['campaign']}) — {c2['pnl_pct']:.2f}% loss. "
+                    f"Avg cost ₹{c2['avg_price']:.2f}, CMP ₹{c2['current_price']:.2f}. "
+                    f"Action: average down with Chunk 2 if conviction remains."
+                )
+        else:
+            lines.append("No positions at or beyond the -3% averaging trigger.")
+        lines.append("")
+
+        lines.append("### Sector Analysis")
+        lines += [
+            "| Sector | Stocks | Invested | Unrealised P&L |",
+            "|---|---|---|---|",
+        ]
+        for sec, sd in sorted(sector_map.items(), key=lambda x: -abs(x[1]["unrealised_pnl"])):
+            sign = "+" if sd["unrealised_pnl"] >= 0 else ""
+            lines.append(
+                f"| {sec} | {len(sd['stocks'])} | ₹{sd['invested']:,.0f}"
+                f" | {sign}₹{sd['unrealised_pnl']:,.2f} |"
+            )
+        if not sector_map:
+            lines.append("| — | No active sector data | — | — |")
+        lines.append("")
+
+        lines.append("### Portfolio Insights")
+        insights = []
+        if pt["total_remaining"] > 0:
+            insights.append(f"₹{pt['total_remaining']:,.0f} in reserve — available for Chunk 2 averaging or new entries.")
+        if chunk2_candidates:
+            syms = ", ".join(c2["symbol"] for c2 in chunk2_candidates)
+            insights.append(f"{len(chunk2_candidates)} position(s) near Chunk 2 trigger: {syms}. Review conviction before averaging.")
+        if pt["total_booked_pnl"] > 0:
+            insights.append(f"₹{pt['total_booked_pnl']:,.2f} profit already booked this cycle — consider recycling capital.")
+        elif pt["total_booked_pnl"] < 0:
+            insights.append(f"₹{abs(pt['total_booked_pnl']):,.2f} booked losses this cycle — review exit discipline.")
+        if pt["total_unrealised_pnl"] < 0:
+            insights.append(f"MTM is negative (₹{pt['total_unrealised_pnl']:,.2f}). Monitor stop-loss levels.")
+        if dep_pct < 50:
+            insights.append(f"Only {dep_pct}% of capital deployed — campaign may be waiting for entry triggers.")
+        if not insights:
+            insights.append("Portfolio within normal parameters. Continue monitoring per campaign config.")
+        for ins in insights:
+            lines.append(f"- {ins}")
+        lines.append("")
+
+        lines.append("### Outlook for Next Month")
+        pos_count = sum(1 for r in all_stock_rows if r["pnl_pct"] > 0)
+        neg_count = sum(1 for r in all_stock_rows if r["pnl_pct"] < 0)
+        lines.append(
+            f"{pos_count} position(s) in profit, {neg_count} in loss out of {open_cnt} open. "
+            f"With ₹{pt['total_remaining']:,.0f} remaining, the next focus is deploying Chunk 2 for candidates "
+            f"near the averaging trigger while protecting gains via trailing stop-loss on profitable positions."
+        )
+        return "\n".join(lines)
+
     try:
         text = call_llm(prompt,
                         system="You are a senior portfolio analyst. Generate a structured, data-driven monthly report. Use plain-text tables (pipe-separated). Be concise and specific to the numbers provided.",
                         max_tokens=3000)
-    except Exception as e:
-        text = f"Report generation failed: {e}"
+        if text.startswith("[LLM"):
+            text = _rule_based_report()
+    except Exception:
+        text = _rule_based_report()
 
     report = {
         "year_month":        ym,

@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { useMarket } from '../hooks/useMarket'
 import { scoreToColor, scoreToLabel, marketModeColor, shortSymbol } from '../utils/formatters'
 import ScoreBreakdownPanel from '../components/scores/ScoreBreakdown'
-import { RadarChart, PolarGrid, PolarAngleAxis, Radar, ResponsiveContainer, Tooltip } from 'recharts'
+import { RadarChart, PolarGrid, PolarAngleAxis, Radar, ResponsiveContainer, Tooltip, AreaChart, Area, BarChart, Bar, Cell, XAxis, YAxis } from 'recharts'
 import client from '../api/client'
 import { useWatchlistStore } from '../store/watchlistStore'
 import GlobalStockDetailModal from '../components/GlobalStockDetailModal'
@@ -1357,7 +1357,395 @@ function IndianADRsTab() {
   )
 }
 
-type MarketTab = 'overview' | 'global' | 'global_stocks' | 'news' | 'results' | 'history' | 'adrs'
+// ─── Research Tab ─────────────────────────────────────────────────────────────
+
+interface SparkPoint { date: string; value: number }
+
+interface ResearchPredictions {
+  market_bias: 'bullish' | 'bearish' | 'neutral'
+  bias_reason: string
+  confidence: number
+  nifty_prediction: { direction: string; target_low: number; target_high: number; key_level: number }
+  banknifty_prediction: { direction: string; target_low: number; target_high: number; key_level: number }
+  fii_prediction: string
+  fii_reason: string
+  vix_prediction: string
+  vix_target: number
+  crude_prediction: string
+  crude_target: number
+  gold_prediction: string
+  usdinr_prediction: string
+  usdinr_target: number
+  top_sectors_bullish: string[]
+  top_sectors_bearish: string[]
+  top_10_gainers: { sector: string; reason: string }[]
+  top_10_losers: { sector: string; reason: string }[]
+}
+
+interface ResearchData {
+  commodities: { crude: SparkPoint[]; gold: SparkPoint[]; silver: SparkPoint[]; usdinr: SparkPoint[] }
+  vix: SparkPoint[]
+  nifty: SparkPoint[]
+  banknifty: SparkPoint[]
+  fii_flow: SparkPoint[]
+  dii_flow: SparkPoint[]
+  predictions: ResearchPredictions
+  events: { date: string; event: string; type: string; impact: string; days_away: number }[]
+}
+
+function MiniSparkline({ data, color = '#3b82f6', label, sub }: {
+  data: SparkPoint[]
+  color?: string
+  label: string
+  sub?: string
+}) {
+  const last = data.length ? data[data.length - 1].value : null
+  const first = data.length ? data[0].value : null
+  const pct = first && last ? ((last - first) / first * 100).toFixed(1) : null
+  const up = pct !== null ? parseFloat(pct) >= 0 : true
+  const gradId = `sg_${label.replace(/[^a-z0-9]/gi, '_')}`
+  const fmtMonth = (d: string) => new Date(d + 'T00:00:00').toLocaleDateString('en-IN', { month: 'short' })
+  const fmtVal = (v: number) => v >= 10000 ? `${(v / 1000).toFixed(0)}k` : v >= 1000 ? `${(v / 1000).toFixed(1)}k` : v.toFixed(v < 10 ? 1 : 0)
+
+  return (
+    <div className="bg-slate-800/60 rounded-lg p-3 space-y-1">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-medium text-muted">{label}</span>
+        {pct !== null && (
+          <span className={`text-xs font-bold ${up ? 'text-green-400' : 'text-red-400'}`}>
+            {up ? '+' : ''}{pct}%
+          </span>
+        )}
+      </div>
+      {last !== null && (
+        <div className="text-sm font-bold text-white">
+          {last.toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+        </div>
+      )}
+      {data.length > 1 ? (
+        <ResponsiveContainer width="100%" height={90}>
+          <AreaChart data={data} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
+            <defs>
+              <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor={color} stopOpacity={0.35} />
+                <stop offset="95%" stopColor={color} stopOpacity={0} />
+              </linearGradient>
+            </defs>
+            <XAxis dataKey="date" tickFormatter={fmtMonth} tick={{ fill: '#64748b', fontSize: 9 }} tickLine={false} axisLine={false} interval="preserveStartEnd" />
+            <YAxis domain={['auto', 'auto']} tick={{ fill: '#64748b', fontSize: 9 }} tickLine={false} axisLine={false} width={36} tickFormatter={fmtVal} />
+            <Area type="monotone" dataKey="value" stroke={color} strokeWidth={1.5} fill={`url(#${gradId})`} dot={false} />
+          </AreaChart>
+        </ResponsiveContainer>
+      ) : (
+        <div className="h-[90px] flex items-center text-xs text-muted">No history</div>
+      )}
+      {sub && <div className="text-[10px] text-slate-400">{sub}</div>}
+    </div>
+  )
+}
+
+function FlowSparkline({ data, label, sub }: { data: SparkPoint[]; label: string; sub?: string }) {
+  if (!data.length) {
+    return (
+      <div className="bg-slate-800/60 rounded-lg p-3">
+        <div className="text-xs font-medium text-muted">{label}</div>
+        <div className="text-xs text-muted mt-2">Not available from NSE</div>
+        {sub && <div className="text-[10px] text-slate-400 mt-1">{sub}</div>}
+      </div>
+    )
+  }
+
+  const net = data.reduce((s, d) => s + d.value, 0)
+  const netInflow = net >= 0
+  const weekly: SparkPoint[] = []
+  for (let i = 0; i < data.length; i += 5) {
+    const chunk = data.slice(i, i + 5)
+    const sum = chunk.reduce((s, d) => s + d.value, 0)
+    weekly.push({ date: chunk[0].date, value: Math.round(sum) })
+  }
+  const fmtMonth = (d: string) => new Date(d + 'T00:00:00').toLocaleDateString('en-IN', { month: 'short' })
+  const fmtCr = (v: number) => `${(Math.abs(v) / 100).toFixed(0)}`
+
+  return (
+    <div className="bg-slate-800/60 rounded-lg p-3 space-y-1">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-medium text-muted">{label}</span>
+        <span className={`text-xs font-bold ${netInflow ? 'text-green-400' : 'text-red-400'}`}>
+          {netInflow ? 'Net Inflow' : 'Net Outflow'}
+        </span>
+      </div>
+      <div className="text-sm font-bold text-white">
+        ₹{(Math.abs(net) / 100).toFixed(0)} Cr (3M)
+      </div>
+      <ResponsiveContainer width="100%" height={90}>
+        <BarChart data={weekly} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
+          <XAxis dataKey="date" tickFormatter={fmtMonth} tick={{ fill: '#64748b', fontSize: 9 }} tickLine={false} axisLine={false} interval="preserveStartEnd" />
+          <YAxis domain={['auto', 'auto']} tick={{ fill: '#64748b', fontSize: 9 }} tickLine={false} axisLine={false} width={36} tickFormatter={fmtCr} />
+          <Bar dataKey="value" radius={[2, 2, 0, 0]}>
+            {weekly.map((entry, i) => (
+              <Cell key={i} fill={entry.value >= 0 ? '#22c55e' : '#ef4444'} />
+            ))}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+      {sub && <div className="text-[10px] text-slate-400">{sub}</div>}
+    </div>
+  )
+}
+
+const EVENT_ICONS: Record<string, string> = {
+  expiry: '📅',
+  central_bank: '🏦',
+  economic_data: '📊',
+  policy: '🏛️',
+  earnings: '📋',
+}
+const IMPACT_COLORS: Record<string, string> = {
+  high: 'text-red-400 bg-red-400/10 border border-red-400/30',
+  medium: 'text-yellow-400 bg-yellow-400/10 border border-yellow-400/30',
+  low: 'text-slate-400 bg-slate-700 border border-slate-600',
+}
+
+function ResearchTab() {
+  const [data, setData] = useState<ResearchData | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    client.get('/market/research')
+      .then(r => setData(r.data))
+      .catch(e => setError(e?.response?.data?.error || 'Failed to load research data'))
+      .finally(() => setLoading(false))
+  }, [])
+
+  if (loading) {
+    return (
+      <div className="bg-card border border-border rounded-xl p-10 text-center text-muted text-sm animate-pulse">
+        Fetching market research data (commodities, VIX, FII/DII, predictions)...
+      </div>
+    )
+  }
+
+  if (error || !data) {
+    return (
+      <div className="bg-card border border-border rounded-xl p-6 text-center text-red-400 text-sm">
+        {error || 'No data available'}
+      </div>
+    )
+  }
+
+  const { predictions: pred, commodities, vix, nifty, banknifty, fii_flow, dii_flow, events } = data
+
+  const biasColor = pred.market_bias === 'bullish'
+    ? 'text-green-400 bg-green-400/10 border-green-400/30'
+    : pred.market_bias === 'bearish'
+    ? 'text-red-400 bg-red-400/10 border-red-400/30'
+    : 'text-yellow-400 bg-yellow-400/10 border-yellow-400/30'
+
+  const dirIcon = (d: string) => d === 'up' ? '↑' : d === 'down' ? '↓' : '→'
+  const dirColor = (d: string) => d === 'up' ? 'text-green-400' : d === 'down' ? 'text-red-400' : 'text-yellow-400'
+
+  return (
+    <div className="space-y-5 pb-16 md:pb-0">
+
+      {/* ── Market Bias Indicator ── */}
+      <div className={`rounded-xl border p-5 ${biasColor}`}>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="text-xs font-medium mb-1 opacity-70">Overall Market Bias — Next 3 Weeks</div>
+            <div className="text-4xl font-black tracking-wide uppercase">{pred.market_bias}</div>
+            <div className="text-sm mt-2 opacity-80 max-w-lg">{pred.bias_reason}</div>
+          </div>
+          <div className="text-right shrink-0">
+            <div className="text-xs opacity-70 mb-1">Confidence</div>
+            <div className="text-2xl font-bold">{pred.confidence}%</div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Nifty + BankNifty Predictions ── */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {[
+          { label: 'Nifty 50 Outlook', p: pred.nifty_prediction, series: nifty },
+          { label: 'Bank Nifty Outlook', p: pred.banknifty_prediction, series: banknifty },
+        ].map(({ label, p, series }) => (
+          <div key={label} className="bg-card border border-border rounded-xl p-4">
+            <div className="text-xs text-muted mb-2">{label}</div>
+            <div className="flex items-center gap-3 mb-3">
+              <span className={`text-2xl font-bold ${dirColor(p.direction)}`}>{dirIcon(p.direction)}</span>
+              <span className={`text-lg font-semibold capitalize ${dirColor(p.direction)}`}>{p.direction}</span>
+              {p.target_low && p.target_high && (
+                <span className="text-sm text-muted ml-auto">
+                  {p.target_low.toLocaleString('en-IN')} – {p.target_high.toLocaleString('en-IN')}
+                </span>
+              )}
+            </div>
+            {series.length > 1 && (
+              <ResponsiveContainer width="100%" height={120}>
+                <AreaChart data={series} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
+                  <defs>
+                    <linearGradient id={`idx_${label.replace(/\s/g, '')}`} x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
+                      <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <XAxis dataKey="date" tickFormatter={(d: string) => new Date(d + 'T00:00:00').toLocaleDateString('en-IN', { month: 'short' })} tick={{ fill: '#64748b', fontSize: 9 }} tickLine={false} axisLine={false} interval="preserveStartEnd" />
+                  <YAxis domain={['auto', 'auto']} tick={{ fill: '#64748b', fontSize: 9 }} tickLine={false} axisLine={false} width={46} tickFormatter={(v: number) => `${(v / 1000).toFixed(0)}k`} />
+                  <Area type="monotone" dataKey="value" stroke="#3b82f6" strokeWidth={2} fill={`url(#idx_${label.replace(/\s/g, '')})`} dot={false} />
+                </AreaChart>
+              </ResponsiveContainer>
+            )}
+            {p.key_level && (
+              <div className="text-[10px] text-slate-400 mt-1">Key level: {p.key_level.toLocaleString('en-IN')}</div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* ── FII / DII Flows ── */}
+      <div className="bg-card border border-border rounded-xl p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="text-sm font-semibold text-white">FII / DII Flows (3 Months)</div>
+          <div className="text-[10px] text-muted">Weekly net ₹Cr</div>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <FlowSparkline
+            data={fii_flow}
+            label="FII (Foreign Institutional)"
+            sub={`3-week prediction: ${pred.fii_prediction} — ${pred.fii_reason}`}
+          />
+          <FlowSparkline
+            data={dii_flow}
+            label="DII (Domestic Institutional)"
+            sub="Typically counter-balances FII flows"
+          />
+        </div>
+        {!fii_flow.length && (
+          <div className="text-[10px] text-slate-500 bg-slate-800 rounded p-2">
+            FII/DII data requires NSE session cookies. Prediction is estimated from global macro factors.
+          </div>
+        )}
+      </div>
+
+      {/* ── Commodities ── */}
+      <div className="bg-card border border-border rounded-xl p-4 space-y-3">
+        <div className="text-sm font-semibold text-white">Key Commodity Prices (3 Months)</div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <MiniSparkline
+            data={commodities.crude} color="#f97316" label="Crude Oil ($/bbl)"
+            sub={`Prediction: ${pred.crude_prediction}${pred.crude_target ? ' → $' + pred.crude_target : ''}`}
+          />
+          <MiniSparkline
+            data={commodities.gold} color="#fbbf24" label="Gold ($/oz)"
+            sub={`Prediction: ${pred.gold_prediction}`}
+          />
+          <MiniSparkline
+            data={commodities.silver} color="#94a3b8" label="Silver ($/oz)"
+          />
+          <MiniSparkline
+            data={commodities.usdinr} color="#a78bfa" label="USD / INR"
+            sub={`Prediction: ${pred.usdinr_prediction.replace(/_/g, ' ')}${pred.usdinr_target ? ' → ₹' + pred.usdinr_target : ''}`}
+          />
+        </div>
+      </div>
+
+      {/* ── VIX ── */}
+      <div className="bg-card border border-border rounded-xl p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="text-sm font-semibold text-white">India VIX (Volatility Index)</div>
+          <div className="text-[10px] text-muted">3-month weekly</div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-start">
+          <MiniSparkline
+            data={vix} color="#c084fc" label="India VIX"
+            sub={`3-week prediction: ${pred.vix_prediction}${pred.vix_target ? ' → ' + pred.vix_target : ''}`}
+          />
+          <div className="space-y-2 text-sm">
+            <div className="text-xs text-muted">VIX Interpretation</div>
+            {vix.length > 0 && (() => {
+              const current = vix[vix.length - 1].value
+              const zone = current < 12 ? { label: 'Extreme Complacency', color: 'text-green-400', detail: 'Market is very calm. Historically precedes rallies but can also signal a top.' }
+                : current < 17 ? { label: 'Low Volatility', color: 'text-green-300', detail: 'Normal market conditions. Good environment for premium selling.' }
+                : current < 22 ? { label: 'Moderate Volatility', color: 'text-yellow-400', detail: 'Some uncertainty. Reduce position sizes slightly.' }
+                : current < 28 ? { label: 'High Volatility', color: 'text-orange-400', detail: 'Elevated fear. Options premiums high. Watch for reversal.' }
+                : { label: 'Extreme Fear', color: 'text-red-400', detail: 'Panic zone. Historically good contrarian buying opportunity.' }
+              return (
+                <div className="bg-slate-800 rounded-lg p-3 space-y-1">
+                  <div className={`font-semibold ${zone.color}`}>{current.toFixed(1)} — {zone.label}</div>
+                  <div className="text-xs text-slate-400">{zone.detail}</div>
+                </div>
+              )
+            })()}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Sector Outlook ── */}
+      {(pred.top_sectors_bullish.length > 0 || pred.top_sectors_bearish.length > 0) && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="bg-card border border-border rounded-xl p-4 space-y-2">
+            <div className="text-sm font-semibold text-green-400">Bullish Sectors (Next 3 Weeks)</div>
+            <div className="flex flex-wrap gap-2">
+              {pred.top_sectors_bullish.map((s, i) => (
+                <span key={i} className="px-2.5 py-1 bg-green-400/10 border border-green-400/30 text-green-300 text-xs rounded-full font-medium">{s}</span>
+              ))}
+            </div>
+            {pred.top_10_gainers.slice(0, 5).map((g, i) => (
+              <div key={i} className="text-xs text-slate-400 flex gap-2">
+                <span className="text-green-400 shrink-0">↑</span>
+                <span><span className="text-white font-medium">{g.sector}</span> — {g.reason}</span>
+              </div>
+            ))}
+          </div>
+          <div className="bg-card border border-border rounded-xl p-4 space-y-2">
+            <div className="text-sm font-semibold text-red-400">Bearish Sectors (Next 3 Weeks)</div>
+            <div className="flex flex-wrap gap-2">
+              {pred.top_sectors_bearish.map((s, i) => (
+                <span key={i} className="px-2.5 py-1 bg-red-400/10 border border-red-400/30 text-red-300 text-xs rounded-full font-medium">{s}</span>
+              ))}
+            </div>
+            {pred.top_10_losers.slice(0, 5).map((g, i) => (
+              <div key={i} className="text-xs text-slate-400 flex gap-2">
+                <span className="text-red-400 shrink-0">↓</span>
+                <span><span className="text-white font-medium">{g.sector}</span> — {g.reason}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Upcoming Events ── */}
+      <div className="bg-card border border-border rounded-xl p-4 space-y-3">
+        <div className="text-sm font-semibold text-white">Important Market Events — Next 35 Days</div>
+        {events.length === 0 ? (
+          <div className="text-xs text-muted">No major events in the next 35 days.</div>
+        ) : (
+          <div className="space-y-2">
+            {events.map((ev, i) => (
+              <div key={i} className="flex items-start gap-3 py-2 border-b border-border last:border-0">
+                <div className="text-xl shrink-0">{EVENT_ICONS[ev.type] || '📌'}</div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium text-white leading-snug">{ev.event}</div>
+                  <div className="text-xs text-muted mt-0.5">
+                    {new Date(ev.date + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}
+                    <span className="mx-1">·</span>
+                    {ev.days_away === 0 ? 'Today' : ev.days_away === 1 ? 'Tomorrow' : `In ${ev.days_away} days`}
+                  </div>
+                </div>
+                <span className={`text-[10px] font-semibold px-2 py-0.5 rounded capitalize shrink-0 ${IMPACT_COLORS[ev.impact] || IMPACT_COLORS.low}`}>
+                  {ev.impact}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+    </div>
+  )
+}
+
+type MarketTab = 'overview' | 'global' | 'global_stocks' | 'news' | 'results' | 'history' | 'adrs' | 'research'
 
 export default function Market() {
   const { macro, sectors, loading } = useMarket()
@@ -1372,7 +1760,7 @@ export default function Market() {
   return (
     <div className="p-6 space-y-5">
       {/* Tabs */}
-      <div className="flex gap-2 border-b border-border">
+      <div className="flex gap-2 border-b border-border overflow-x-auto scrollbar-none">
         {([
           { key: 'overview',      label: '📊 Market Overview' },
           { key: 'global',        label: '🌍 Global Indices' },
@@ -1381,11 +1769,12 @@ export default function Market() {
           { key: 'news',          label: '📰 News Room' },
           { key: 'results',       label: '📋 Quarterly Results' },
           { key: 'history',       label: '📈 History' },
+          { key: 'research',      label: '🔬 Research' },
         ] as { key: MarketTab; label: string }[]).map(({ key, label }) => (
           <button
             key={key}
             onClick={() => setTab(key)}
-            className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+            className={`shrink-0 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
               tab === key ? 'border-blue-500 text-white' : 'border-transparent text-muted hover:text-white'
             }`}
           >
@@ -1506,6 +1895,7 @@ export default function Market() {
       {tab === 'results' && <ResultsCalendarTab />}
       {tab === 'history' && <IndexHistoryTab />}
       {tab === 'adrs' && <IndianADRsTab />}
+      {tab === 'research' && <ResearchTab />}
     </div>
   )
 }

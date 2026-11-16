@@ -1,10 +1,11 @@
 """Market endpoints — macro environment, sector strength, global indices, news."""
 
-from fastapi import APIRouter, Path
+from fastapi import APIRouter, Depends, Path
 from fastapi.responses import JSONResponse
 from engines.macro_environment import calculate as calc_macro
 from engines.sector_strength import calculate as calc_sector
 from api.utils import clean_for_json
+from api.routes.auth import get_current_user
 from data.indices import SECTOR_INDEX_MAP
 
 router = APIRouter()
@@ -825,3 +826,301 @@ async def get_adrs():
     _ADR_CACHE["data"] = items
     _ADR_CACHE["ts"] = time.time()
     return JSONResponse(content=clean_for_json({"adrs": items, "count": len(items)}))
+
+
+# ── /market/research ──────────────────────────────────────────────────────────
+
+_RESEARCH_CACHE: dict = {"data": None, "ts": 0.0}
+_RESEARCH_TTL = 1800  # 30 minutes
+
+
+@router.get("/market/research")
+async def get_market_research(user=Depends(get_current_user)):
+    """
+    Research tab data:
+    - 3-month weekly commodity prices (Crude, Gold, Silver, USD/INR)
+    - India VIX, Nifty, BankNifty weekly series
+    - FII/DII net flows (NSE API, best-effort)
+    - LLM-powered 3-week predictions + market bias
+    - Upcoming important market events (next 35 days)
+    """
+    import asyncio
+    import math
+    import datetime
+    import json as _json
+    from concurrent.futures import ThreadPoolExecutor
+
+    global _RESEARCH_CACHE
+    import time as _time
+    if _RESEARCH_CACHE["data"] is not None and (_time.time() - _RESEARCH_CACHE["ts"]) < _RESEARCH_TTL:
+        return JSONResponse(content=_RESEARCH_CACHE["data"])
+
+    loop = asyncio.get_running_loop()
+    executor = ThreadPoolExecutor(max_workers=4)
+
+    # ── 1. Weekly price series (3 months) ─────────────────────────────────────
+    def _fetch_weekly(sym_map: dict) -> dict:
+        import yfinance as yf
+        end = datetime.datetime.now()
+        start = end - datetime.timedelta(days=105)
+        result: dict = {}
+        for key, sym in sym_map.items():
+            try:
+                hist = yf.Ticker(sym).history(start=start, end=end, interval="1wk")
+                rows = []
+                for ts, row in hist.iterrows():
+                    c = float(row["Close"])
+                    if not math.isnan(c):
+                        rows.append({"date": ts.strftime("%Y-%m-%d"), "value": round(c, 2)})
+                result[key] = rows
+            except Exception:
+                result[key] = []
+        return result
+
+    price_syms = {
+        "crude":     "CL=F",
+        "gold":      "GC=F",
+        "silver":    "SI=F",
+        "usdinr":    "USDINR=X",
+        "vix":       "^INDIAVIX",
+        "nifty":     "^NSEI",
+        "banknifty": "^NSEBANK",
+    }
+    prices = await loop.run_in_executor(executor, _fetch_weekly, price_syms)
+
+    # ── 2. FII/DII net flows (NSE best-effort) ────────────────────────────────
+    def _fetch_fii_dii() -> tuple:
+        try:
+            import requests
+            hdrs = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Connection": "keep-alive",
+            }
+            s = requests.Session()
+            # Step 1: land on NSE homepage to get cookies
+            s.get("https://www.nseindia.com/", headers={**hdrs, "Accept": "text/html"}, timeout=8)
+            # Step 2: visit the FII/DII page to refresh session
+            s.get("https://www.nseindia.com/market-data/fii-dii-activity", headers={**hdrs, "Accept": "text/html", "Referer": "https://www.nseindia.com/"}, timeout=8)
+            # Step 3: fetch the API
+            r = s.get(
+                "https://www.nseindia.com/api/fiidiiTradeReact",
+                headers={**hdrs, "Referer": "https://www.nseindia.com/market-data/fii-dii-activity"},
+                timeout=8,
+            )
+            if r.status_code == 200:
+                raw = r.json()
+                fii, dii = [], []
+                for item in (raw or [])[-60:]:
+                    try:
+                        d = str(item.get("date", ""))
+                        fn = float(str(item.get("fiiBuySell", {}).get("netBuySell", 0)).replace(",", ""))
+                        dn = float(str(item.get("diiBuySell", {}).get("netBuySell", 0)).replace(",", ""))
+                        fii.append({"date": d, "value": round(fn, 2)})
+                        dii.append({"date": d, "value": round(dn, 2)})
+                    except Exception:
+                        continue
+                return fii, dii
+        except Exception:
+            pass
+        return [], []
+
+    fii_flow, dii_flow = await loop.run_in_executor(executor, _fetch_fii_dii)
+
+    # ── 3. LLM predictions ────────────────────────────────────────────────────
+    def _predictions() -> dict:
+        from ai.llm_client import call_llm, is_configured
+
+        def last_v(series: list) -> float | None:
+            return series[-1]["value"] if series else None
+
+        def trend_pct(series: list, n: int = 4) -> float | None:
+            if len(series) >= n + 1:
+                old = series[-(n + 1)]["value"]
+                new = series[-1]["value"]
+                if old and old != 0:
+                    return round((new - old) / old * 100, 1)
+            return None
+
+        ctx = {
+            "crude_last":      last_v(prices.get("crude", [])),
+            "crude_trend":     trend_pct(prices.get("crude", [])),
+            "gold_last":       last_v(prices.get("gold", [])),
+            "gold_trend":      trend_pct(prices.get("gold", [])),
+            "silver_last":     last_v(prices.get("silver", [])),
+            "usdinr_last":     last_v(prices.get("usdinr", [])),
+            "usdinr_trend":    trend_pct(prices.get("usdinr", [])),
+            "vix_last":        last_v(prices.get("vix", [])),
+            "vix_trend":       trend_pct(prices.get("vix", [])),
+            "nifty_last":      last_v(prices.get("nifty", [])),
+            "nifty_trend":     trend_pct(prices.get("nifty", [])),
+            "banknifty_last":  last_v(prices.get("banknifty", [])),
+        }
+
+        def rule_based() -> dict:
+            vix = ctx.get("vix_last") or 15
+            crude_t = ctx.get("crude_trend") or 0
+            usdinr_t = ctx.get("usdinr_trend") or 0
+            nifty_t = ctx.get("nifty_trend") or 0
+            score = 0
+            if nifty_t > 2: score += 2
+            elif nifty_t < -2: score -= 2
+            if crude_t < -5: score += 1
+            elif crude_t > 8: score -= 1
+            if usdinr_t > 1: score -= 1
+            elif usdinr_t < -1: score += 1
+            if vix < 13: score += 1
+            elif vix > 20: score -= 2
+
+            bias = "bullish" if score >= 2 else "bearish" if score <= -2 else "neutral"
+            nb = ctx.get("nifty_last") or 24000
+            bn = ctx.get("banknifty_last") or 52000
+            return {
+                "market_bias": bias,
+                "bias_reason": f"VIX at {vix:.1f}, crude {crude_t:+.1f}% 4-week, Nifty {nifty_t:+.1f}% 4-week.",
+                "confidence": min(40 + abs(score) * 10, 80),
+                "nifty_prediction": {
+                    "direction": "up" if bias == "bullish" else "down" if bias == "bearish" else "sideways",
+                    "target_low": round(nb * 0.97),
+                    "target_high": round(nb * 1.04),
+                    "key_level": round(nb * 1.01),
+                },
+                "banknifty_prediction": {
+                    "direction": "up" if bias == "bullish" else "down" if bias == "bearish" else "sideways",
+                    "target_low": round(bn * 0.97),
+                    "target_high": round(bn * 1.04),
+                    "key_level": round(bn * 1.01),
+                },
+                "fii_prediction": "inflow" if bias == "bullish" else "outflow" if bias == "bearish" else "neutral",
+                "fii_reason": "Estimated from global risk-on/risk-off environment.",
+                "vix_prediction": "falling" if bias == "bullish" else "rising" if bias == "bearish" else "stable",
+                "vix_target": round(vix * (0.88 if bias == "bullish" else 1.12), 1),
+                "crude_prediction": "rising" if crude_t > 3 else "falling" if crude_t < -3 else "stable",
+                "crude_target": round(ctx.get("crude_last") or 80, 2),
+                "gold_prediction": "rising" if bias == "bearish" else "stable",
+                "usdinr_prediction": "strengthening_rupee" if score > 0 else "weakening_rupee" if score < 0 else "stable",
+                "usdinr_target": round((ctx.get("usdinr_last") or 84) * (0.995 if score > 0 else 1.005), 2),
+                "top_sectors_bullish": ["IT", "Banking", "Auto"],
+                "top_sectors_bearish": ["Oil & Gas", "Metals"],
+                "top_10_gainers": [],
+                "top_10_losers": [],
+            }
+
+        if not is_configured():
+            return rule_based()
+
+        nifty_val = ctx.get("nifty_last") or 24000
+        bnifty_val = ctx.get("banknifty_last") or 52000
+
+        prompt = f"""You are a senior Indian equity analyst. Analyze the following 4-week market data and predict the next 3 weeks.
+
+Data:
+- Crude Oil: ${ctx['crude_last']} (4w: {ctx['crude_trend']:+.1f}%)
+- Gold: ${ctx['gold_last']} (4w: {ctx['gold_trend']:+.1f}%)
+- Silver: ${ctx['silver_last']}
+- USD/INR: {ctx['usdinr_last']} (4w: {ctx['usdinr_trend']:+.1f}%)
+- India VIX: {ctx['vix_last']} (4w: {ctx['vix_trend']:+.1f}%)
+- Nifty 50: {nifty_val} (4w: {ctx['nifty_trend']:+.1f}%)
+- Bank Nifty: {bnifty_val}
+
+Return ONLY valid JSON (no markdown, no explanation):
+{{
+  "market_bias": "bullish"|"bearish"|"neutral",
+  "bias_reason": "one concise sentence",
+  "confidence": 50,
+  "nifty_prediction": {{"direction": "up"|"down"|"sideways", "target_low": {round(nifty_val*0.97)}, "target_high": {round(nifty_val*1.04)}, "key_level": {round(nifty_val)}}},
+  "banknifty_prediction": {{"direction": "up"|"down"|"sideways", "target_low": {round(bnifty_val*0.97)}, "target_high": {round(bnifty_val*1.04)}, "key_level": {round(bnifty_val)}}},
+  "fii_prediction": "inflow"|"outflow"|"neutral",
+  "fii_reason": "one sentence",
+  "vix_prediction": "rising"|"falling"|"stable",
+  "vix_target": {round((ctx.get('vix_last') or 15), 1)},
+  "crude_prediction": "rising"|"falling"|"stable",
+  "crude_target": {ctx.get('crude_last') or 80},
+  "gold_prediction": "rising"|"falling"|"stable",
+  "usdinr_prediction": "strengthening_rupee"|"weakening_rupee"|"stable",
+  "usdinr_target": {ctx.get('usdinr_last') or 84},
+  "top_sectors_bullish": ["IT", "Banking", "Auto"],
+  "top_sectors_bearish": ["FMCG", "Pharma"],
+  "top_10_gainers": [{{"sector": "IT", "reason": "reason"}}],
+  "top_10_losers": [{{"sector": "Oil & Gas", "reason": "reason"}}]
+}}"""
+
+        resp = call_llm(prompt, system="Expert Indian equity analyst. Return ONLY valid JSON.")
+        if resp.startswith("[LLM"):
+            return rule_based()
+        try:
+            clean = resp.strip()
+            if "```" in clean:
+                parts = clean.split("```")
+                clean = parts[1] if len(parts) > 1 else clean
+                if clean.startswith("json"):
+                    clean = clean[4:].strip()
+            return _json.loads(clean)
+        except Exception:
+            return rule_based()
+
+    predictions = await loop.run_in_executor(executor, _predictions)
+
+    # ── 4. Upcoming market events (next 35 days) ──────────────────────────────
+    today = datetime.date.today()
+    cutoff = today + datetime.timedelta(days=35)
+
+    raw_events = [
+        # NSE F&O monthly expiry (last Thursday of month)
+        {"date": "2026-11-26", "event": "NSE F&O Monthly Expiry (November 2026)", "type": "expiry", "impact": "medium"},
+        {"date": "2026-12-24", "event": "NSE F&O Monthly Expiry (December 2026)", "type": "expiry", "impact": "medium"},
+        # RBI MPC
+        {"date": "2026-12-05", "event": "RBI Monetary Policy Committee Decision", "type": "central_bank", "impact": "high"},
+        {"date": "2027-02-05", "event": "RBI Monetary Policy Committee Decision", "type": "central_bank", "impact": "high"},
+        # US Fed FOMC
+        {"date": "2026-12-17", "event": "US Federal Reserve FOMC Meeting Decision", "type": "central_bank", "impact": "high"},
+        # India inflation
+        {"date": "2026-11-14", "event": "India CPI Inflation — October 2026", "type": "economic_data", "impact": "high"},
+        {"date": "2026-12-12", "event": "India CPI Inflation — November 2026", "type": "economic_data", "impact": "high"},
+        # US inflation
+        {"date": "2026-11-13", "event": "US CPI Inflation — October 2026", "type": "economic_data", "impact": "high"},
+        {"date": "2026-12-11", "event": "US CPI Inflation — November 2026", "type": "economic_data", "impact": "high"},
+        # India GDP
+        {"date": "2026-11-28", "event": "India Q2 FY27 GDP Growth (July–Sep)", "type": "economic_data", "impact": "high"},
+        # Union Budget
+        {"date": "2027-02-01", "event": "India Union Budget 2027–28", "type": "policy", "impact": "high"},
+        # GST council
+        {"date": "2026-12-20", "event": "GST Council Meeting", "type": "policy", "impact": "medium"},
+        # India WPI
+        {"date": "2026-11-14", "event": "India WPI Inflation — October 2026", "type": "economic_data", "impact": "medium"},
+        {"date": "2026-12-14", "event": "India WPI Inflation — November 2026", "type": "economic_data", "impact": "medium"},
+        # IIP
+        {"date": "2026-11-12", "event": "India IIP Industrial Production — Sep 2026", "type": "economic_data", "impact": "medium"},
+    ]
+
+    events = []
+    for e in raw_events:
+        try:
+            edate = datetime.date.fromisoformat(e["date"])
+            if today <= edate <= cutoff:
+                events.append({**e, "days_away": (edate - today).days})
+        except Exception:
+            pass
+    events.sort(key=lambda x: x["date"])
+
+    # ── 5. Assemble + cache ───────────────────────────────────────────────────
+    payload = clean_for_json({
+        "commodities": {
+            "crude":  prices.get("crude", []),
+            "gold":   prices.get("gold", []),
+            "silver": prices.get("silver", []),
+            "usdinr": prices.get("usdinr", []),
+        },
+        "vix":        prices.get("vix", []),
+        "nifty":      prices.get("nifty", []),
+        "banknifty":  prices.get("banknifty", []),
+        "fii_flow":   fii_flow,
+        "dii_flow":   dii_flow,
+        "predictions": predictions,
+        "events":     events,
+    })
+    _RESEARCH_CACHE["data"] = payload
+    _RESEARCH_CACHE["ts"] = _time.time()
+    return JSONResponse(content=payload)

@@ -26,7 +26,9 @@ import BrokerPortfolio from './pages/BrokerPortfolio'
 import MarketBrain from './pages/MarketBrain'
 import StockTrader from './pages/StockTrader'
 import WheelV2 from './pages/WheelV2'
+import NiftyWheel from './pages/NiftyWheel'
 import FlyStrategy from './pages/FlyStrategy'
+import ChartIntelligence from './pages/ChartIntelligence'
 import client from './api/client'
 
 function ProtectedLayout() {
@@ -65,6 +67,7 @@ function ProtectedLayout() {
             <Route path="/covered-calls"    element={isPaper ? <CoveredCalls />    : <UpgradeWall minRole="paper_trader" />} />
             <Route path="/wheel"            element={isPaper ? <Wheel />           : <UpgradeWall minRole="paper_trader" />} />
             <Route path="/smart-wheel"      element={isPaper ? <WheelV2 />         : <UpgradeWall minRole="paper_trader" />} />
+            <Route path="/nifty-wheel"      element={isPaper ? <NiftyWheel />      : <UpgradeWall minRole="paper_trader" />} />
             <Route path="/stock-trader"     element={isPaper ? <StockTrader />     : <UpgradeWall minRole="paper_trader" />} />
             <Route path="/ai-insights"      element={isPaper ? <AIInsights />      : <UpgradeWall minRole="paper_trader" />} />
             <Route path="/strategies"       element={isPaper ? <Strategies />      : <UpgradeWall minRole="paper_trader" />} />
@@ -74,6 +77,7 @@ function ProtectedLayout() {
             <Route path="/multi-builder"    element={isPaper ? <MultiBuilder />    : <UpgradeWall minRole="paper_trader" />} />
             <Route path="/strategy-monitor" element={isPaper ? <StrategyMonitor /> : <UpgradeWall minRole="paper_trader" />} />
             <Route path="/custom-fly"       element={isPaper ? <FlyStrategy />     : <UpgradeWall minRole="paper_trader" />} />
+            <Route path="/chart-intelligence" element={isPaper ? <ChartIntelligence /> : <UpgradeWall minRole="paper_trader" />} />
 
             {/* Live Trader only */}
             <Route path="/broker-portfolio" element={isLive ? <BrokerPortfolio /> : <UpgradeWall minRole="live_trader" />} />
