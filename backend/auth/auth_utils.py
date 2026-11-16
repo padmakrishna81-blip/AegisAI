@@ -35,6 +35,31 @@ ROLE_PERMISSIONS: dict[str, list[str]] = {
     "admin":        ["market", "ai_insights", "covered_calls", "wheel", "paper_trade", "broker_connect", "live_trade"],
 }
 
+# Default page access per role — used when user has no explicit page_permissions override
+ROLE_DEFAULT_PAGES: dict[str, list[str]] = {
+    "viewer": [
+        "dashboard", "market", "discover",
+    ],
+    "paper_trader": [
+        "dashboard", "market", "discover",
+        "portfolio", "holdings", "paper_trade",
+        "wheel", "smart_wheel", "nifty_wheel",
+        "stock_trader", "ai_insights", "market_brain", "covered_calls",
+        "strategies", "cushion_strangle", "custom_strangle",
+        "multi_builder", "strategy_monitor", "custom_fly", "chart_intelligence",
+    ],
+    "live_trader": [
+        "dashboard", "market", "discover",
+        "portfolio", "holdings", "paper_trade",
+        "wheel", "smart_wheel", "nifty_wheel",
+        "stock_trader", "ai_insights", "market_brain", "covered_calls",
+        "strategies", "cushion_strangle", "custom_strangle",
+        "multi_builder", "strategy_monitor", "custom_fly", "chart_intelligence",
+        "broker_portfolio",
+    ],
+    "admin": [],  # admin always gets everything — empty list = unrestricted
+}
+
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
 USERS_FILE  = os.path.join(os.path.dirname(__file__), "..", "users.json")
@@ -155,8 +180,10 @@ def authenticate_user(username: str, password: str) -> Optional[dict]:
 
 def _safe_user(user: dict) -> dict:
     u = {k: v for k, v in user.items() if k != "hashed_password"}
-    # Ensure permissions are always role-derived (single source of truth)
+    # Legacy role-derived permissions (kept for backwards compat)
     u["permissions"] = ROLE_PERMISSIONS.get(u.get("role", "viewer"), [])
+    # Per-user page access override (None = use role defaults)
+    u["page_permissions"] = user.get("page_permissions", None)
     return u
 
 
@@ -250,6 +277,21 @@ def update_user(username: str, full_name: Optional[str] = None, email: Optional[
         if role not in VALID_ROLES:
             raise ValueError(f"Invalid role '{role}'")
         users[username]["role"] = role
+    _save_users(users)
+    return _safe_user(users[username])
+
+
+def update_page_permissions(username: str, page_permissions: list[str] | None) -> dict:
+    """Set per-user page-level access overrides.
+    Pass None to clear the override and fall back to role defaults.
+    """
+    users = _load_users()
+    if username not in users:
+        raise ValueError(f"User '{username}' not found")
+    if page_permissions is None:
+        users[username].pop("page_permissions", None)
+    else:
+        users[username]["page_permissions"] = list(page_permissions)
     _save_users(users)
     return _safe_user(users[username])
 

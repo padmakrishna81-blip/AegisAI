@@ -27,11 +27,12 @@ export default function Login() {
       login(
         res.data.access_token,
         {
-          username:    res.data.username,
-          email:       res.data.email || '',
-          full_name:   res.data.full_name,
-          role:        res.data.role,
-          permissions: res.data.permissions || [],
+          username:         res.data.username,
+          email:            res.data.email || '',
+          full_name:        res.data.full_name,
+          role:             res.data.role,
+          permissions:      res.data.permissions || [],
+          page_permissions: res.data.page_permissions ?? null,
         },
         res.data.refresh_token,
       )

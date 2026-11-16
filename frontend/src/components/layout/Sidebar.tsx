@@ -1,44 +1,44 @@
 import { NavLink } from 'react-router-dom'
 import { useState, useEffect } from 'react'
 import type { AuthUser } from '../../store/authStore'
-import { hasMinRole, roleBadgeClass, roleLabel } from '../../store/authStore'
+import { hasMinRole, hasPageAccess, roleBadgeClass, roleLabel } from '../../store/authStore'
 import client from '../../api/client'
 
-// min_role: minimum role needed to access the route
+// page_key: matches the backend ROLE_DEFAULT_PAGES keys
 const NAV_ITEMS = [
   // Always accessible
-  { path: '/',        label: 'Dashboard',  icon: '⬡',  min_role: null },
-  { path: '/market',  label: 'Market',     icon: '◊',  min_role: null },
-  { path: '/discover',label: 'Discover',   icon: '⬢',  min_role: null },
+  { path: '/',        label: 'Dashboard',  icon: '⬡',  min_role: null,           page_key: 'dashboard' },
+  { path: '/market',  label: 'Market',     icon: '◊',  min_role: null,           page_key: 'market' },
+  { path: '/discover',label: 'Discover',   icon: '⬢',  min_role: null,           page_key: 'discover' },
 
   { divider: true, label: 'Paper Trading' },
 
-  { path: '/portfolio',       label: 'Portfolio',        icon: '⬣',  min_role: 'paper_trader' },
-  { path: '/holdings',        label: 'Holdings',         icon: '💼', min_role: 'paper_trader' },
-  { path: '/trade',           label: 'Paper Trade',      icon: '◈',  min_role: 'paper_trader' },
-  { path: '/wheel',           label: 'Wheel Strategy',   icon: '🎡', min_role: 'paper_trader' },
-  { path: '/smart-wheel',     label: 'Smart Wheel V2',   icon: '⚙️', min_role: 'paper_trader' },
-  { path: '/nifty-wheel',     label: 'NIFTY Wheel',      icon: '🎯', min_role: 'paper_trader' },
-  { path: '/stock-trader',    label: 'AI Stock Trader',  icon: '📈', min_role: 'paper_trader' },
-  { path: '/ai-insights',     label: 'AI Insights',      icon: '◇',  min_role: 'paper_trader' },
-  { path: '/market-brain',    label: 'Market Brain',     icon: '🧠', min_role: 'paper_trader' },
-  { path: '/covered-calls',   label: 'Covered Calls',    icon: '◉',  min_role: 'paper_trader' },
+  { path: '/portfolio',       label: 'Portfolio',        icon: '⬣',  min_role: 'paper_trader', page_key: 'portfolio' },
+  { path: '/holdings',        label: 'Holdings',         icon: '💼', min_role: 'paper_trader', page_key: 'holdings' },
+  { path: '/trade',           label: 'Paper Trade',      icon: '◈',  min_role: 'paper_trader', page_key: 'paper_trade' },
+  { path: '/wheel',           label: 'Wheel Strategy',   icon: '🎡', min_role: 'paper_trader', page_key: 'wheel' },
+  { path: '/smart-wheel',     label: 'Smart Wheel V2',   icon: '⚙️', min_role: 'paper_trader', page_key: 'smart_wheel' },
+  { path: '/nifty-wheel',     label: 'NIFTY Wheel',      icon: '🎯', min_role: 'paper_trader', page_key: 'nifty_wheel' },
+  { path: '/stock-trader',    label: 'AI Stock Trader',  icon: '📈', min_role: 'paper_trader', page_key: 'stock_trader' },
+  { path: '/ai-insights',     label: 'AI Insights',      icon: '◇',  min_role: 'paper_trader', page_key: 'ai_insights' },
+  { path: '/market-brain',    label: 'Market Brain',     icon: '🧠', min_role: 'paper_trader', page_key: 'market_brain' },
+  { path: '/covered-calls',   label: 'Covered Calls',    icon: '◉',  min_role: 'paper_trader', page_key: 'covered_calls' },
 
   { divider: true, label: 'Strategy Tools' },
 
-  { path: '/strategies',       label: 'Strategies',       icon: '⚡', min_role: 'paper_trader' },
-  { path: '/cushion-strangle', label: 'Cushion Strangle', icon: '🛡️', min_role: 'paper_trader' },
-  { path: '/custom-strangle',  label: 'Custom Builder',   icon: '🔧', min_role: 'paper_trader' },
-  { path: '/multi-builder',    label: 'Multi-Asset',      icon: '🧩', min_role: 'paper_trader' },
-  { path: '/strategy-monitor', label: 'Strategy Monitor', icon: '📡', min_role: 'paper_trader' },
-  { path: '/custom-fly',       label: 'Custom Fly',       icon: '🦋', min_role: 'paper_trader' },
-  { path: '/chart-intelligence', label: 'Chart Intelligence', icon: '📊', min_role: 'paper_trader' },
+  { path: '/strategies',       label: 'Strategies',       icon: '⚡', min_role: 'paper_trader', page_key: 'strategies' },
+  { path: '/cushion-strangle', label: 'Cushion Strangle', icon: '🛡️', min_role: 'paper_trader', page_key: 'cushion_strangle' },
+  { path: '/custom-strangle',  label: 'Custom Builder',   icon: '🔧', min_role: 'paper_trader', page_key: 'custom_strangle' },
+  { path: '/multi-builder',    label: 'Multi-Asset',      icon: '🧩', min_role: 'paper_trader', page_key: 'multi_builder' },
+  { path: '/strategy-monitor', label: 'Strategy Monitor', icon: '📡', min_role: 'paper_trader', page_key: 'strategy_monitor' },
+  { path: '/custom-fly',       label: 'Custom Fly',       icon: '🦋', min_role: 'paper_trader', page_key: 'custom_fly' },
+  { path: '/chart-intelligence', label: 'Chart Intelligence', icon: '📊', min_role: 'paper_trader', page_key: 'chart_intelligence' },
 
   { divider: true, label: 'Live Trading' },
 
-  { path: '/broker-portfolio', label: 'Broker Portfolio', icon: '🏦', min_role: 'live_trader' },
+  { path: '/broker-portfolio', label: 'Broker Portfolio', icon: '🏦', min_role: 'live_trader', page_key: 'broker_portfolio' },
 
-  { path: '/settings', label: 'Settings', icon: '⚙', min_role: null },
+  { path: '/settings', label: 'Settings', icon: '⚙', min_role: null, page_key: 'settings' },
 ] as const
 
 type NavItem = {
@@ -46,6 +46,7 @@ type NavItem = {
   label: string
   icon: string
   min_role: 'paper_trader' | 'live_trader' | null
+  page_key: string
 } | { divider: true; label: string }
 
 interface SidebarProps {
@@ -113,7 +114,12 @@ export default function Sidebar({ user, onLogout }: SidebarProps) {
             )
           }
 
-          const allowed = item.min_role === null || hasMinRole(user, item.min_role)
+          // If user has explicit page_permissions, use that; otherwise fall back to min_role check
+          const roleAllowed = item.min_role === null || hasMinRole(user, item.min_role)
+          const pageAllowed = user?.page_permissions != null
+            ? hasPageAccess(user, item.page_key)
+            : roleAllowed
+          const allowed = pageAllowed
           const isLocked = !allowed
 
           if (isLocked) {

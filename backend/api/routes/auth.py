@@ -8,7 +8,7 @@ from typing import Optional, List
 from auth.auth_utils import (
     authenticate_user, create_access_token, create_refresh_token, decode_token,
     get_user, list_users, create_user, update_user, delete_user, register_user,
-    ROLE_PERMISSIONS,
+    update_page_permissions, ROLE_PERMISSIONS, ROLE_DEFAULT_PAGES,
 )
 
 router = APIRouter()
@@ -218,3 +218,27 @@ async def admin_set_role(username: str, body: dict, _: dict = Depends(require_ad
         return {"message": f"Role updated to '{role}'", "user": user}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.put("/admin/users/{username}/page-permissions")
+async def admin_set_page_permissions(username: str, body: dict, _: dict = Depends(require_admin)):
+    """
+    Set per-user page-level access overrides.
+    Body: { page_permissions: [list of page keys] } or { page_permissions: null } to reset to role defaults.
+    """
+    if "page_permissions" not in body:
+        raise HTTPException(status_code=400, detail="page_permissions key required")
+    pp = body["page_permissions"]
+    if pp is not None and not isinstance(pp, list):
+        raise HTTPException(status_code=400, detail="page_permissions must be a list or null")
+    try:
+        user = update_page_permissions(username, pp)
+        return {"message": "Page permissions updated", "user": user}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/admin/page-defaults")
+async def get_page_defaults(_: dict = Depends(require_admin)):
+    """Return the default page lists per role, for the admin UI to display."""
+    return ROLE_DEFAULT_PAGES

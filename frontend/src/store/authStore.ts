@@ -4,11 +4,12 @@ import { persist } from 'zustand/middleware'
 export type UserRole = 'admin' | 'live_trader' | 'paper_trader' | 'viewer'
 
 export interface AuthUser {
-  username:   string
-  email:      string
-  full_name:  string
-  role:       UserRole
-  permissions: string[]
+  username:         string
+  email:            string
+  full_name:        string
+  role:             UserRole
+  permissions:      string[]
+  page_permissions: string[] | null   // null = use role defaults
 }
 
 interface AuthState {
@@ -82,6 +83,20 @@ export function hasPermission(user: AuthUser | null, perm: string): boolean {
   if (!user) return false
   if (user.role === 'admin') return true
   return user.permissions?.includes(perm) ?? false
+}
+
+/** Page-level access check.
+ *  - admin always has access to every page.
+ *  - If user has explicit page_permissions list → check that list.
+ *  - Otherwise fall back to role-based min_role check done in Sidebar.
+ */
+export function hasPageAccess(user: AuthUser | null, pageKey: string): boolean {
+  if (!user) return false
+  if (user.role === 'admin') return true
+  if (user.page_permissions !== null && user.page_permissions !== undefined) {
+    return user.page_permissions.includes(pageKey)
+  }
+  return true  // fallback: let Sidebar min_role gate handle it
 }
 
 /** Human-readable role label. */
